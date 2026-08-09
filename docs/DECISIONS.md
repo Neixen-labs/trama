@@ -8,4 +8,4 @@
 
 **Why:** Keep source visible and permit evaluation, contribution, and internal adoption without allowing an unlicensed hosted competitor during the initial commercial phase.
 
-**Consequence:** TRAMA is source-available, not OSI open source. New released versions must carry their own BSL change date.
+**Consequence:** TRAMA is source-available, not OSI open source. New released versions must carry their own BSL change date. External contributions require the Individual Contributor License Agreement so the Licensor can relicense future versions.

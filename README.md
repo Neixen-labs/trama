@@ -18,6 +18,10 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 
 Join the early-access list at the project website (deployment pending).
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). External pull requests require acceptance of the [Individual Contributor License Agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md).
+
 ## License
 
 [Business Source License 1.1](LICENSE). Production use is permitted for internal business operations; offering TRAMA as a hosted or managed service to third parties requires a commercial license. Version 0.0.0-pre-alpha changes to Apache-2.0 on 2030-08-09.
