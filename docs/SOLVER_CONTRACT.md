@@ -156,7 +156,7 @@ The response has `Content-Type: text/event-stream`. Events are:
 
 ```text
 event: ready
-data: {"contract_version":"0.1.0","solver_id":"example-flow"}
+data: {"contract_version":"0.1.0","solver_id":"example-network"}
 
 event: delta
 data: AQID...base64...
@@ -171,7 +171,7 @@ On failure, the server sends exactly one terminal event and closes the stream:
 
 ```text
 event: error
-data: {"code":"invalid_input","message":"required property capacity is absent"}
+data: {"code":"invalid_input","message":"required property edge_weight is absent"}
 ```
 
 Error codes are `invalid_request`, `unsupported_contract`, `invalid_input`, `fetch_failed`, `execution_failed`, and `internal_error`. Clients MUST treat any stream ending without `complete` as failed.
