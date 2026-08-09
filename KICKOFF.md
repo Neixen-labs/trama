@@ -32,7 +32,7 @@ Licencia **Apache-2.0** en todo el core. Primer vertical comercial: utilities de
 - CI: Azure DevOps para lo privado; GitHub Actions para el open source.
 - El compilador de datos se escribe en Python; el runtime de render en TypeScript.
 
-**Naming (verificado)**: org GitHub `tramamaps`, scope npm `@trama` (libres a fecha ago-2026).
+**Naming**: org GitHub `Neixen-labs`, scope npm `@trama` (libres a fecha ago-2026).
 PyPI `trama` está cogido → usar `trama-engine`. Dominio pendiente [HUMANO].
 
 ---
@@ -40,7 +40,7 @@ PyPI `trama` está cogido → usar `trama-engine`. Dominio pendiente [HUMANO].
 ## Fase 1 — Infraestructura y landing (1 día)
 
 ### [HUMANO] Antes de lanzar la IA
-- [ ] Crear org GitHub `tramamaps` y repo `trama` (público, vacío).
+- [x] Crear org GitHub `Neixen-labs` y repo `trama` (público).
 - [ ] Comprar dominio (`trama.dev` preferido; alternativas `trama.build`, `tramamaps.com`).
 - [ ] Crear cuenta Formspree (o Buttondown) → obtener endpoint del formulario.
 - [ ] Crear cuenta npm y reservar el scope `@trama` (publicar placeholder `@trama/core` v0.0.1).
