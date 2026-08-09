@@ -16,7 +16,7 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 
 **Pre-alpha. Specification in progress.**
 
-Join the early-access list at the project website (deployment pending).
+Join the early-access list at [trama.build](https://trama.build).
 
 ## Contributing
 
