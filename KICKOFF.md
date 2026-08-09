@@ -23,7 +23,7 @@
 **Qué NO es**: no es un GIS generalista (QGIS ya existe), no compite con MapLibre en basemaps
 (lo usa como capa), no mete lógica de dominio en el núcleo.
 
-**Posicionamiento**: "análisis de red para gente sin GIS". Open-core estilo Grafana/Supabase.
+**Posicionamiento**: "análisis de red para gente sin GIS". Modelo comercial source-available.
 Licencia **BSL 1.1** en el core: uso interno permitido; servicio alojado o gestionado a terceros requiere licencia comercial. Primer vertical comercial: utilities de agua medianas.
 
 **Restricciones técnicas del propietario** (respetar siempre):
