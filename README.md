@@ -18,6 +18,7 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 
 - [File format specification](docs/SPEC.md)
 - [Solver contract](docs/SOLVER_CONTRACT.md)
+- [Public RFC discussion](https://github.com/Neixen-labs/trama/issues/1)
 
 Join the early-access list at [trama.build](https://trama.build).
 
