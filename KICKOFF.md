@@ -42,7 +42,7 @@ PyPI `trama` está cogido → usar `trama-engine`. Dominio: `trama.build` (Cloud
 ### [HUMANO] Antes de lanzar la IA
 - [x] Crear org GitHub `Neixen-labs` y repo `trama` (público).
 - [x] Registrar `trama.build` y añadirlo a Cloudflare.
-- [ ] Crear cuenta Formspree (o Buttondown) → obtener endpoint del formulario.
+- [x] Crear cuenta Formspree (o Buttondown) → obtener endpoint del formulario.
 - [ ] Crear cuenta npm y reservar el scope `@trama` (publicar placeholder `@trama/core` v0.0.1).
 - [x] Cuenta Cloudflare Pages conectada al repo.
 
