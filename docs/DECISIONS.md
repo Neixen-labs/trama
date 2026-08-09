@@ -9,3 +9,11 @@
 **Why:** Keep source visible and permit evaluation, contribution, and internal adoption without allowing an unlicensed hosted competitor during the initial commercial phase.
 
 **Consequence:** TRAMA is source-available, not OSI open source. New released versions must carry their own BSL change date. External contributions require the Individual Contributor License Agreement so the Licensor can relicense future versions.
+
+## 2026-08-09 — Tile-local 16-bit geometry coordinates
+
+**Decision:** Store v0 geometry positions as unsigned 16-bit normalized coordinates relative to each tile extent.
+
+**Why:** This halves geometry coordinate storage versus `f32`, is GPU-friendly, and preserves controllable local precision. At a 10 km tile width, one quantization step is about 15 cm.
+
+**Consequence:** Each tile must declare its extent. Exact engineering values remain typed properties; they are not recovered from quantized render geometry.
