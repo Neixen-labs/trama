@@ -24,7 +24,7 @@
 (lo usa como capa), no mete lógica de dominio en el núcleo.
 
 **Posicionamiento**: "análisis de red para gente sin GIS". Open-core estilo Grafana/Supabase.
-Licencia **Apache-2.0** en todo el core. Primer vertical comercial: utilities de agua medianas.
+Licencia **BSL 1.1** en el core: uso interno permitido; servicio alojado o gestionado a terceros requiere licencia comercial. Primer vertical comercial: utilities de agua medianas.
 
 **Restricciones técnicas del propietario** (respetar siempre):
 - Backend Python: FastAPI + uvicorn + uv, SQLAlchemy 2.0 async, Pydantic v2.
@@ -51,7 +51,7 @@ PyPI `trama` está cogido → usar `trama-engine`. Dominio pendiente [HUMANO].
    ```
    trama/
    ├── KICKOFF.md              # este documento
-   ├── LICENSE                 # Apache-2.0
+   ├── LICENSE                 # BSL 1.1
    ├── README.md               # pitch corto + estado del proyecto + link a lista de espera
    ├── docs/
    │   ├── POSITIONING.md      # (pegar el one-pager existente)
@@ -171,7 +171,7 @@ scrub fluido y hace un fly-through. Este es el material del lanzamiento público
 
 ## Reglas permanentes para la IA
 
-1. **Apache-2.0 en todo**; cabecera de licencia en cada archivo fuente.
+1. **BSL 1.1 en todo el core**; cabecera de licencia en cada archivo fuente.
 2. **La espec manda**: si el código necesita algo que la espec no cubre, se cambia la espec
    primero (PR separado), nunca se improvisa formato.
 3. **Núcleo agnóstico**: prohibido cualquier concepto de dominio (tubería, presión, carretera)

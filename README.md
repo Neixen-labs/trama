@@ -1,8 +1,8 @@
 # TRAMA
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL--1.1-orange.svg)](LICENSE)
 
-**Open network-map engine for people who do not use GIS.**
+**Source-available network-map engine for people who do not use GIS.**
 
 TRAMA packages a network graph, pre-tessellated geometry, and typed properties into one portable binary file. It renders network state on the GPU across time and runs analysis through open solver plugins—locally or on a server. The core stays domain-agnostic: it knows nodes, edges, properties, and state channels, not pipes, roads, or power lines.
 
@@ -20,4 +20,4 @@ Join the early-access list at the project website (deployment pending).
 
 ## License
 
-[Apache-2.0](LICENSE)
+[Business Source License 1.1](LICENSE). Production use is permitted for internal business operations; offering TRAMA as a hosted or managed service to third parties requires a commercial license. Version 0.0.0-pre-alpha changes to Apache-2.0 on 2030-08-09.
