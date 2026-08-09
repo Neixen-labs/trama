@@ -107,27 +107,6 @@
   .wl-status.error{border-color:var(--electric);color:var(--electric);background:rgba(232,93,74,.07)}
   .wl button:disabled{cursor:wait;opacity:.75;transform:none}
 
-  /* Scrubber temporal del hero */
-  .scrub{
-    position:relative;margin-top:56px;max-width:560px;
-    background:rgba(11,29,51,.82);border:1px solid var(--line);border-radius:var(--radius);
-    padding:16px 18px 14px;backdrop-filter:blur(4px);
-  }
-  .scrub-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
-  .scrub-head .t{font-family:'IBM Plex Mono',monospace;font-size:1.05rem;font-weight:600;color:var(--water)}
-  .scrub input[type=range]{
-    width:100%;appearance:none;height:4px;border-radius:2px;
-    background:linear-gradient(90deg,var(--water) var(--p,33%),var(--line) var(--p,33%));
-    cursor:pointer;
-  }
-  .scrub input[type=range]::-webkit-slider-thumb{
-    appearance:none;width:18px;height:18px;border-radius:50%;
-    background:var(--stroke);border:3px solid var(--water);
-  }
-  .scrub input[type=range]::-moz-range-thumb{
-    width:14px;height:14px;border-radius:50%;background:var(--stroke);border:3px solid var(--water);
-  }
-  .scrub-cap{margin-top:8px;font-size:.72rem;color:var(--muted);font-family:'IBM Plex Mono',monospace;letter-spacing:.06em}
 
   /* ============ SECCIONES ============ */
   h2{
@@ -245,15 +224,7 @@
       <p class="wl-note mono">Acceso anticipado por orden de lista · sin spam, solo hitos del proyecto</p>
       <div class="wl-status" id="status1" role="status" aria-live="polite"></div>
 
-      <div class="scrub">
-        <div class="scrub-head">
-          <span class="eyebrow"><span class="tick">▸</span> simulación · 24 h</span>
-          <span class="t" id="clock">08:00</span>
-        </div>
-        <input type="range" id="time" min="0" max="1439" value="480" step="1"
-               aria-label="Arrastrar para recorrer 24 horas de estado simulado de la red">
-        <div class="scrub-cap">ARRASTRA — el estado de la red es un eje temporal, no una foto fija</div>
-      </div>
+
     </div>
   </div>
 
@@ -414,17 +385,10 @@ function wireForm(formId, statusId){
 }
 wireForm("wl1","status1"); wireForm("wl2","status2");
 
-/* ================== RED ANIMADA + SCRUB TEMPORAL ================== */
+/* ================== RED ANIMADA ================== */
 const cv = document.getElementById("net"), ctx = cv.getContext("2d");
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let W,H,DPR, nodes=[], edges=[], pulses=[];
-let simT = 480; // minutos (08:00)
-
-const slider = document.getElementById("time"), clock = document.getElementById("clock");
-function fmt(m){ return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0"); }
-function setP(){ slider.style.setProperty("--p",(slider.value/1439*100)+"%"); }
-slider.addEventListener("input",()=>{ simT=+slider.value; clock.textContent=fmt(simT); setP(); if(reduced) draw(0,true); });
-setP();
 
 function build(){
   DPR = Math.min(devicePixelRatio||1,2);
@@ -451,23 +415,13 @@ function build(){
 }
 function mk(a,b){ return {a,b,base:.4+Math.random()*.6,off:Math.random()*Math.PI*2}; }
 
-/* La "demanda" simulada modula la intensidad de la red según la hora:
-   valle nocturno, punta de mañana y punta de tarde — como una red de agua real. */
-function demand(min){
-  const h = min/60;
-  const morning = Math.exp(-Math.pow(h-8.5,2)/4.5);
-  const evening = Math.exp(-Math.pow(h-20,2)/6);
-  const night = .18;
-  return Math.min(1, night + morning*.85 + evening*.65);
-}
-
 let last=0;
 function draw(ts,force){
   if(reduced && !force){ /* estático: un solo frame */ }
-  const d = demand(simT);
+  const d = .65;
   ctx.clearRect(0,0,W,H);
 
-  // aristas — intensidad ligada a la demanda de la hora seleccionada
+  // aristas
   for(const e of edges){
     const flick = reduced?1:(0.85+0.15*Math.sin(ts*.0006+e.off));
     const alpha = (0.05 + e.base*d*.22)*flick;
