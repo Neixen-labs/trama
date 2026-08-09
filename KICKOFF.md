@@ -33,7 +33,7 @@ Licencia **BSL 1.1** en el core: uso interno permitido; servicio alojado o gesti
 - El compilador de datos se escribe en Python; el runtime de render en TypeScript.
 
 **Naming**: org GitHub `Neixen-labs`, scope npm `@trama` (libres a fecha ago-2026).
-PyPI `trama` está cogido → usar `trama-engine`. Dominio pendiente [HUMANO].
+PyPI `trama` está cogido → usar `trama-engine`. Dominio elegido: `trama.build` [HUMANO: registrar y añadir a Cloudflare].
 
 ---
 
@@ -41,7 +41,7 @@ PyPI `trama` está cogido → usar `trama-engine`. Dominio pendiente [HUMANO].
 
 ### [HUMANO] Antes de lanzar la IA
 - [x] Crear org GitHub `Neixen-labs` y repo `trama` (público).
-- [ ] Comprar dominio (`trama.dev` preferido; alternativas `trama.build`, `tramamaps.com`).
+- [ ] Registrar `trama.build` y añadirlo a Cloudflare.
 - [ ] Crear cuenta Formspree (o Buttondown) → obtener endpoint del formulario.
 - [ ] Crear cuenta npm y reservar el scope `@trama` (publicar placeholder `@trama/core` v0.0.1).
 - [ ] Cuenta Cloudflare Pages conectada al repo.
