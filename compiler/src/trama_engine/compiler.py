@@ -166,17 +166,14 @@ def _geometry_section(paths: list[tuple[int, list[tuple[int, int]]]]) -> bytes:
         for (edge_index, path), first_vertex in zip(paths, first_vertices)
     )
     vertices = b"".join(struct.pack("<HH", *point) for _edge_index, path in paths for point in path)
-    mesh_vertices = b"".join(
-        struct.pack("<HHI", point[0], point[1], edge_index) for edge_index, path in paths for point in path
-    )
     header_size = 32
     paths_offset = header_size
     vertices_offset = paths_offset + len(path_headers)
-    mesh_vertices_offset = vertices_offset + len(vertices)
-    mesh_indices_offset = mesh_vertices_offset + len(mesh_vertices)
+    # SPEC 3.3: lines carry no mesh, so both mesh arrays are empty and start past the vertices.
+    mesh_offset = vertices_offset + len(vertices)
     vertex_count = sum(len(path) for _edge_index, path in paths)
-    header = struct.pack("<8I", len(paths), vertex_count, vertex_count, 0, paths_offset, vertices_offset, mesh_vertices_offset, mesh_indices_offset)
-    return header + path_headers + vertices + mesh_vertices
+    header = struct.pack("<8I", len(paths), vertex_count, 0, 0, paths_offset, vertices_offset, mesh_offset, mesh_offset)
+    return header + path_headers + vertices
 
 
 def _graph_section(edges: list[tuple[int, int, int]], geometry_refs: list[list[tuple[int, int]]]) -> bytes:
