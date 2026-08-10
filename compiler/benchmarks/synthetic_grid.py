@@ -21,17 +21,22 @@ SPACING_DEGREES = 0.0006  # about 50 m at this latitude
 ORIGIN = (-3.75, 40.35)
 
 
-def write_grid(destination: Path, side: int) -> int:
+def write_grid(
+    destination: Path,
+    side: int,
+    spacing: float = SPACING_DEGREES,
+    origin: tuple[float, float] = ORIGIN,
+) -> int:
     """A side x side node grid wired horizontally and vertically, like a distribution network."""
     features = []
     for row in range(side):
         for column in range(side):
-            longitude = ORIGIN[0] + column * SPACING_DEGREES
-            latitude = ORIGIN[1] + row * SPACING_DEGREES
+            longitude = origin[0] + column * spacing
+            latitude = origin[1] + row * spacing
             if column + 1 < side:
-                features.append(_edge(f"h{row}-{column}", (longitude, latitude), (longitude + SPACING_DEGREES, latitude), row, column))
+                features.append(_edge(f"h{row}-{column}", (longitude, latitude), (longitude + spacing, latitude), row, column))
             if row + 1 < side:
-                features.append(_edge(f"v{row}-{column}", (longitude, latitude), (longitude, latitude + SPACING_DEGREES), row, column))
+                features.append(_edge(f"v{row}-{column}", (longitude, latitude), (longitude, latitude + spacing), row, column))
     destination.write_text(json.dumps({"type": "FeatureCollection", "features": features}))
     return len(features)
 
