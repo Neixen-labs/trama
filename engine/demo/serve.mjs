@@ -6,7 +6,8 @@ import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..", "..");
-const port = Number(process.env.PORT ?? 8787);
+// 8787 is taken by Herd on a lot of Macs; this one is out of the way. PORT overrides it.
+const port = Number(process.env.PORT ?? 8790);
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -55,6 +56,12 @@ const server = createServer((request, response) => {
     "Content-Range": `bytes ${start}-${end}/${stats.size}`,
   });
   createReadStream(file, { start, end }).pipe(response);
+});
+
+server.on("error", (error) => {
+  if (error.code !== "EADDRINUSE") throw error;
+  console.error(`port ${port} is already in use. Run: PORT=<free port> npm run demo`);
+  process.exit(1);
 });
 
 server.listen(port, () => {
