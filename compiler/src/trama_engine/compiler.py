@@ -22,7 +22,7 @@ _ID_KEY = "_trama_id"
 _COMPRESSION_LEVEL = 19
 
 
-def compile_geojson(source: Path, destination: Path) -> None:
+def compile_geojson(source: Path, destination: Path, channels: list[dict[str, Any]] | None = None) -> None:
     """Compile GeoJSON into a TRAMA file, one GEOM record per tile.
 
     `source` is a FeatureCollection, or a directory holding the `edges.geojson` and
@@ -91,7 +91,7 @@ def compile_geojson(source: Path, destination: Path) -> None:
         (b"GRPH", 0, 0, 0, _graph_section(edges, geometry_refs)),
         (b"PROP", 0, 0, 0, _property_section(edge_properties)),
         # SPEC 6: strings_offset must address a u32 count, so an empty table still needs those 4 bytes.
-        (b"STCH", 0, 0, 0, struct.pack("<4I", 0, 12, 16, 0)),
+        (b"STCH", 0, 0, 0, _state_channel_section(channels or [])),
     ]
     file_uuid = hashlib.sha256(b"".join(payload for *_, payload in decoded)).digest()[:16]
     stored = [(kind, z, x, y, payload, zstandard.ZstdCompressor(level=_COMPRESSION_LEVEL).compress(payload)) for kind, z, x, y, payload in decoded]
@@ -293,6 +293,49 @@ def _column_values(value_type: int, values: list[Any], string_values: list[str])
     if value_type == 2:
         return b"".join(struct.pack("<q", value) for value in values)
     return b"".join(struct.pack("<d", value) for value in values)
+
+
+_ENTITY_KINDS = {"node": 1, "edge": 2}
+
+
+def _state_channel_section(channels: list[dict[str, Any]]) -> bytes:
+    """Encode STCH per SPEC section 6. The file declares what solvers may write, never samples."""
+    strings: list[str] = []
+
+    def string_id(value: str) -> int:
+        if value not in strings:
+            strings.append(value)
+        return strings.index(value)
+
+    records = []
+    for index, channel in enumerate(channels):
+        name = str(channel["name"])
+        entity_kind = _ENTITY_KINDS.get(str(channel.get("entity_kind", "edge")))
+        if entity_kind is None:
+            raise ValueError(f"channel {name!r} must apply to a node or an edge")
+        minimum, maximum = channel.get("min"), channel.get("max")
+        if (minimum is None) != (maximum is None):
+            raise ValueError(f"channel {name!r} declares half a range")
+        if minimum is not None and maximum is not None and float(minimum) > float(maximum):
+            raise ValueError(f"channel {name!r} declares an inverted range")
+        flags = (1 if minimum is not None else 0) | (2 if channel.get("interpolate", True) else 0)
+        records.append(
+            struct.pack(
+                "<HBBIIffI",
+                index + 1,  # SPEC 6: ids are unique and non-zero
+                entity_kind,
+                1,
+                string_id(name),
+                string_id(str(channel.get("unit", "1"))),
+                0.0 if minimum is None else float(minimum),
+                0.0 if maximum is None else float(maximum),
+                flags,
+            )
+        )
+
+    header_size = 12
+    string_table = _string_dictionary(strings)
+    return struct.pack("<3I", len(records), header_size, header_size + len(string_table)) + string_table + b"".join(records)
 
 
 def _string_dictionary(values: list[str]) -> bytes:

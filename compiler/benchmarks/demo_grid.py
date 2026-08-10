@@ -25,13 +25,20 @@ SIDE = 40
 SPACING_DEGREES = 0.0018
 ORIGIN = (-3.72, 40.39)
 
+# Declared so the demo has channels to scrub once a solver writes to them. The file never
+# holds samples: STCH is the contract, not the data.
+CHANNELS = [
+    {"name": "pressure", "entity_kind": "node", "unit": "m", "min": 0, "max": 80},
+    {"name": "flow", "entity_kind": "edge", "unit": "l/s", "min": -50, "max": 50},
+]
+
 
 def main() -> None:
     destination = Path(__file__).resolve().parents[2] / "fixtures" / "demo-grid.trama"
     with tempfile.TemporaryDirectory() as directory:
         source = Path(directory) / "demo-grid.geojson"
         edges = write_grid(source, SIDE, SPACING_DEGREES, ORIGIN)
-        compile_geojson(source, destination)
+        compile_geojson(source, destination, CHANNELS)
     validate_container(destination)
     print(f"{edges} edges -> {destination} ({destination.stat().st_size} bytes)")
 
