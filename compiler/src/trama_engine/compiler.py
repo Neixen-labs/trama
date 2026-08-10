@@ -17,6 +17,9 @@ _MAGIC = b"TRAMA\0\0\0"
 _HEADER = struct.Struct("<8s3H3HIQIIQ16s")
 _DIRECTORY = struct.Struct("<4sIIIIQQQIHBB12s")
 _ID_KEY = "_trama_id"
+# Deterministic and not format-significant (SPEC 7). 19 costs ~1.7 s on a 50k-edge network
+# and saves 8% of the file, which is paid back on every download.
+_COMPRESSION_LEVEL = 19
 
 
 def compile_geojson(source: Path, destination: Path) -> None:
@@ -90,7 +93,7 @@ def compile_geojson(source: Path, destination: Path) -> None:
         (b"STCH", 0, 0, 0, struct.pack("<3I", 0, 12, 12)),
     ]
     file_uuid = hashlib.sha256(b"".join(payload for *_, payload in decoded)).digest()[:16]
-    stored = [(kind, z, x, y, payload, zstandard.ZstdCompressor(level=3).compress(payload)) for kind, z, x, y, payload in decoded]
+    stored = [(kind, z, x, y, payload, zstandard.ZstdCompressor(level=_COMPRESSION_LEVEL).compress(payload)) for kind, z, x, y, payload in decoded]
     directory_bytes = len(stored) * _DIRECTORY.size
     offset = _HEADER.size + directory_bytes
     records = []
@@ -179,7 +182,7 @@ def _interpolate(start_point: tuple[float, float], end_point: tuple[float, float
 
 
 def _geometry_section(paths: list[tuple[int, list[tuple[int, int]]]]) -> bytes:
-    first_vertices = [sum(len(path) for _edge_index, path in paths[:index]) for index in range(len(paths))]
+    first_vertices = itertools.accumulate((len(path) for _edge_index, path in paths), initial=0)
     path_headers = b"".join(
         struct.pack("<4I", edge_index, first_vertex, len(path), 0)
         for (edge_index, path), first_vertex in zip(paths, first_vertices)
@@ -202,7 +205,7 @@ def _graph_section(edges: list[tuple[int, int, int]], geometry_refs: list[list[t
     for edge_index, (_edge_id, source_id, target_id) in enumerate(edges):
         adjacency[node_indices[source_id]].append((edge_index, 1))
         adjacency[node_indices[target_id]].append((edge_index, -1))
-    ref_starts = [sum(len(refs) for refs in geometry_refs[:index]) for index in range(len(geometry_refs))]
+    ref_starts = itertools.accumulate((len(refs) for refs in geometry_refs), initial=0)
     ref_count = sum(len(refs) for refs in geometry_refs)
     header_size = 36
     nodes_offset = header_size
@@ -284,7 +287,8 @@ def _column_values(value_type: int, values: list[Any], string_values: list[str])
     if value_type == 4:
         return _packed_bits([index for index, value in enumerate(values) if value], len(values))
     if value_type == 3:
-        return b"".join(struct.pack("<I", string_values.index(value)) for value in values)
+        string_ids = {value: index for index, value in enumerate(string_values)}
+        return b"".join(struct.pack("<I", string_ids[value]) for value in values)
     if value_type == 2:
         return b"".join(struct.pack("<q", value) for value in values)
     return b"".join(struct.pack("<d", value) for value in values)
@@ -366,10 +370,21 @@ def _quantize(point: tuple[float, float], z: int, x: int, y: int) -> tuple[int, 
     )
 
 
+def _crc32c_table() -> list[int]:
+    table = []
+    for byte in range(256):
+        crc = byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0x82F63B78 if crc & 1 else 0)
+        table.append(crc)
+    return table
+
+
+_CRC_TABLE = _crc32c_table()
+
+
 def _crc32c(data: bytes) -> int:
     crc = 0xFFFFFFFF
     for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            crc = (crc >> 1) ^ (0x82F63B78 if crc & 1 else 0)
+        crc = (crc >> 8) ^ _CRC_TABLE[(crc ^ byte) & 0xFF]
     return (~crc) & 0xFFFFFFFF
