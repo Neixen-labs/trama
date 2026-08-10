@@ -14,7 +14,7 @@ from typing import NamedTuple
 import zstandard
 
 from trama_engine import container
-from trama_engine.model import Edge, Network, Node
+from trama_engine.model import Edge, Network, Node, Source
 
 
 class Section(NamedTuple):
@@ -97,7 +97,31 @@ def read_network(path: Path) -> Network:
         Node(node_id, points_by_node[node_id], node_properties.get(index, {}))
         for index, node_id in enumerate(node_ids)
     ]
-    return Network(nodes, edges)
+    return Network(nodes, edges, _read_sources(sections))
+
+
+def _read_sources(sections: list[Section]) -> list[Source]:
+    """Decode the optional SRCE section. Its bytes stay opaque here."""
+    payloads = [section.payload for section in sections if section.kind == b"SRCE"]
+    if not payloads:
+        return []
+    if len(payloads) > 1:
+        raise ValueError(f"expected at most one SRCE section, found {len(payloads)}")
+    payload = payloads[0]
+    count, strings_offset, documents_offset = struct.unpack_from("<3I", payload, 0)
+    strings = container.unpack_strings(payload, strings_offset)
+
+    documents = []
+    for index in range(count):
+        format_id, name_id, content_offset, content_bytes = struct.unpack_from(
+            "<4I", payload, documents_offset + index * 16
+        )
+        if content_offset + content_bytes > len(payload):
+            raise ValueError("source document runs past the end of the SRCE section")
+        documents.append(
+            Source(strings[format_id], strings[name_id], payload[content_offset : content_offset + content_bytes])
+        )
+    return documents
 
 
 def _single(sections: list[Section], kind: bytes) -> bytes:

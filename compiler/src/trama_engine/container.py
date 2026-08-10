@@ -11,7 +11,7 @@ import math
 import struct
 
 MAGIC = b"TRAMA\0\0\0"
-FORMAT_VERSION = (0, 1, 2)
+FORMAT_VERSION = (0, 2, 0)
 MINIMUM_READER_VERSION = (0, 1, 0)
 HEADER = struct.Struct("<8s3H3HIQIIQ16s")
 DIRECTORY = struct.Struct("<4sIIIIQQQIHBB12s")

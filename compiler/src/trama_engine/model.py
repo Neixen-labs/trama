@@ -8,6 +8,7 @@ property means.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from typing import NamedTuple
 
 
@@ -25,12 +26,21 @@ class Edge(NamedTuple):
     properties: dict[str, object]
 
 
+class Source(NamedTuple):
+    """Verbatim bytes from an input file that the container does not otherwise model."""
+
+    format: str
+    name: str
+    content: bytes
+
+
 class Network(NamedTuple):
     nodes: list[Node]
     edges: list[Edge]
+    sources: Sequence[Source] = ()
 
 
-def network(nodes: list[Node], edges: list[Edge]) -> Network:
+def network(nodes: list[Node], edges: list[Edge], sources: list[Source] | None = None) -> Network:
     """Sort both entity arrays by stable ID, as the format requires, and reject a broken graph."""
     by_id = {}
     for node in nodes:
@@ -49,7 +59,7 @@ def network(nodes: list[Node], edges: list[Edge]) -> Network:
             raise ValueError(f"edge {_label(edge)} needs at least two vertices")
     if not edges:
         raise ValueError("network contains no edges")
-    return Network(sorted(nodes), sorted(edges))
+    return Network(sorted(nodes), sorted(edges), sorted(sources or []))
 
 
 def stable_id(value: str) -> int:

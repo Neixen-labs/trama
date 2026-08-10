@@ -10,8 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from trama_engine import container
-from trama_engine.model import Edge, Network, Node, network, stable_id
+from trama_engine.model import Edge, Network, Node, Source, network, stable_id
 from trama_engine.reader import read_network
+
+_FORMAT = "epanet-inp"
 
 # Section name, entity type label, and the property each positional field carries.
 _NODE_SECTIONS = {
@@ -30,11 +32,18 @@ _LINK_SECTIONS = {
 _TEXT_PROPERTIES = {"demand_pattern", "head_pattern", "volume_curve", "status", "parameters", "valve_type"}
 # A pump's parameters are a keyword list, not one field, so this property takes the rest of the line.
 _TAIL_PROPERTIES = {"parameters"}
+# Sections the graph and its properties represent; everything else is kept verbatim as source material.
+_MODELLED_SECTIONS = {*_NODE_SECTIONS, *_LINK_SECTIONS, "COORDINATES", "VERTICES", "END"}
 
 
 def read(source: Path) -> Network:
-    """Read the topological sections of an `.inp` file into a network."""
-    sections = _sections(source.read_text())
+    """Read the topological sections of an `.inp` file into a network.
+
+    Whatever this reader does not model — patterns, curves, controls, options, times —
+    is kept verbatim in a source document so `export` can hand it back.
+    """
+    text = source.read_text()
+    sections = _sections(text)
     coordinates = _coordinates(sections)
 
     nodes = []
@@ -74,17 +83,22 @@ def read(source: Path) -> Network:
 
     if not nodes:
         raise ValueError("EPANET file declares no nodes")
-    return network(nodes, edges)
+    residual = _residual(text)
+    # The file name is deliberately not stored: it is not network data, and letting it in
+    # would make the same model compile to different bytes from a different path.
+    sources = [Source(_FORMAT, "", residual.encode())] if residual.strip() else []
+    return network(nodes, edges, sources)
 
 
 def export(source: Path, destination: Path) -> tuple[Path]:
-    """Write the topological sections of a network back out as an `.inp` file.
+    """Write a network back out as an `.inp` file.
 
-    ponytail: rebuilds the graph sections only. Patterns, curves, controls, options,
-    and times are not in the container, so they cannot come back; see the README.
+    Graph sections are regenerated from the container, which is authoritative. Sections the
+    container does not model are replayed from the stored source document, when there is one.
     """
     result = read_network(source)
     path = destination if destination.suffix else destination.with_suffix(".inp")
+    residual = next((document for document in result.sources if document.format == _FORMAT), None)
     nodes_by_id = {node.id: node for node in result.nodes}
     by_type: dict[str, list] = {}
     for entity in [*result.nodes, *result.edges]:
@@ -92,7 +106,10 @@ def export(source: Path, destination: Path) -> tuple[Path]:
     for entities in by_type.values():
         entities.sort(key=_name)
 
-    lines = ["[TITLE]", "Exported by trama-engine", ""]
+    # Filter the stored text again on the way out: the graph is authoritative, so source
+    # material may never reintroduce a section the container already represents.
+    lines = _residual(residual.content.decode()).splitlines() if residual else ["[TITLE]", "Exported by trama-engine"]
+    lines.append("")
     for section, (label, fields) in _NODE_SECTIONS.items():
         lines += [f"[{section}]", ";ID\t" + "\t".join(fields)]
         for node in by_type.get(label, []):
@@ -118,6 +135,24 @@ def export(source: Path, destination: Path) -> tuple[Path]:
     lines += ["", "[END]", ""]
     path.write_text("\n".join(lines))
     return (path,)
+
+
+def _residual(text: str) -> str:
+    """Return the sections this reader does not model, verbatim and in their original order."""
+    kept: list[str] = []
+    seen_section = False
+    keeping = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            seen_section = True
+            name = stripped.strip("[]").strip().upper()
+            keeping = name not in _MODELLED_SECTIONS
+            if keeping:
+                kept.append(line)
+        elif keeping or not seen_section:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def _sections(text: str) -> dict[str, list[list[str]]]:

@@ -31,6 +31,25 @@ TRAMA compiler test network
 ;ID	Node1	Node2	Diam	Type	Setting	MinorLoss
  V1	J2	T1	200	PRV	50	0
 
+[PATTERNS]
+;ID	Multipliers
+ P1	0.8	0.9	1.2	1.4	1.1	0.9
+
+[CURVES]
+;ID	X-Value	Y-Value
+ C1	100	200
+
+[CONTROLS]
+ LINK P2 CLOSED AT TIME 6
+
+[OPTIONS]
+ Units	LPS
+ Headloss	H-W
+
+[TIMES]
+ Duration	24:00
+ Hydraulic Timestep	1:00
+
 [COORDINATES]
 ;Node	X-Coord	Y-Coord
  J1	-3.704	40.416

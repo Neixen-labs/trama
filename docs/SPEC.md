@@ -1,17 +1,18 @@
 # TRAMA File Format Specification
 
-**Specification version:** 0.1.2
+**Specification version:** 0.2.0
 **Status:** Draft
 **Normative language:** The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in RFC 2119.
 
 TRAMA is a domain-agnostic, single-file binary format for network maps. A reader knows nodes, edges, typed properties, render geometry, and declared state channels. It MUST NOT need domain concepts to decode a file.
 
-v0 has four logical section kinds:
+v0 has five logical section kinds, four of them required:
 
 - `GEOM`: independently fetchable, pre-tessellated render geometry tiles;
 - `GRPH`: stable graph identities, topology, CSR adjacency, and geometry references;
 - `PROP`: typed node and edge properties with a global key dictionary;
-- `STCH`: state-channel declarations.
+- `STCH`: state-channel declarations;
+- `SRCE`: optional verbatim source material, opaque to the core.
 
 A TRAMA file contains no runtime state samples or solver results.
 
@@ -65,7 +66,7 @@ A reader MUST reject a file when its supported version is lower than `minimum_re
 
 | Offset | Type | Name | Meaning |
 |---:|---|---|---|
-| `0x00` | `FourCC` | `type` | `GEOM`, `GRPH`, `PROP`, or `STCH` |
+| `0x00` | `FourCC` | `type` | `GEOM`, `GRPH`, `PROP`, `STCH`, or `SRCE` |
 | `0x04` | `u32` | `record_flags` | bit 0: required; remaining bits zero in v0 |
 | `0x08` | `u32` | `key0` | `GEOM`: zoom `z`; otherwise zero |
 | `0x0c` | `u32` | `key1` | `GEOM`: tile `x`; otherwise zero |
@@ -79,7 +80,7 @@ A reader MUST reject a file when its supported version is lower than `minimum_re
 | `0x33` | `u8` | `reserved0` | zero |
 | `0x34` | `u8[12]` | `reserved1` | zero |
 
-There MUST be exactly one `GRPH`, one `PROP`, and one `STCH` record. There MAY be zero or more `GEOM` records; each `(z, x, y)` tuple MUST be unique. All v0 records use `codec = 1`; the directory is never compressed. Writers SHOULD align payloads to 4096 bytes.
+There MUST be exactly one `GRPH`, one `PROP`, and one `STCH` record, and there MAY be zero or one `SRCE` record. There MAY be zero or more `GEOM` records; each `(z, x, y)` tuple MUST be unique. All v0 records use `codec = 1`; the directory is never compressed. Writers SHOULD align payloads to 4096 bytes.
 
 Readers MUST verify decoded length and CRC-32C. v0 uses no shared zstd dictionary, so every directory record is independently decodable.
 
@@ -257,11 +258,34 @@ The solver delta tuple is:
 (entity_id: u64, channel_id: u16, t: f32, value: f32)
 ```
 
-## 7. Compression and integrity
+## 7. `SRCE`: source material
 
-Every `GEOM`, `GRPH`, `PROP`, and `STCH` directory record is one independent zstd frame. v0 permits no other codec, no mixed codecs, and no cross-record dictionary. Writers SHOULD use deterministic zstd settings. Compression level is not format-significant. A reader MUST reject malformed frames, decoded-size mismatches, checksum mismatches, and invalid references.
+`SRCE` carries verbatim bytes from the file a container was compiled from. It is optional, opaque to the core, and never needed to decode a network. It exists for round-trip fidelity: an input format may carry data this format does not model, and silently discarding it makes export lossy in a way the user cannot recover.
 
-## 8. Export and import mapping
+A writer SHOULD store only the parts of a source document that the container does not otherwise represent, rather than the whole document, so `SRCE` stays small beside the data it accompanies. A writer MUST NOT rely on `SRCE` to reconstruct anything the other sections already hold: the graph, the properties, and the geometry are authoritative, and an exporter MUST prefer them when they disagree with stored source material.
+
+```text
+SourceHeader
+  u32 document_count
+  u32 strings_offset
+  u32 documents_offset
+
+SourceDocument[document_count]
+  u32 format_string_id         # source format identifier, for example "epanet-inp"
+  u32 name_string_id           # original file name; may be the empty string
+  u32 content_offset           # from the start of this section payload
+  u32 content_bytes
+```
+
+`strings_offset` points to `u32 count` followed by length-prefixed UTF-8 strings. Content bytes are opaque; a reader MUST NOT interpret them, and MUST bounds-check `content_offset` and `content_bytes` against the decoded payload before reading. Documents are ordered by `format_string_id`, then by `name_string_id`. A reader that does not recognise a format identifier MUST still decode every other section normally.
+
+The `SRCE` directory record MUST have its required bit clear, so a reader written before this section existed can ignore it.
+
+## 8. Compression and integrity
+
+Every directory record is one independent zstd frame. v0 permits no other codec, no mixed codecs, and no cross-record dictionary. Writers SHOULD use deterministic zstd settings. Compression level is not format-significant. A reader MUST reject malformed frames, decoded-size mismatches, checksum mismatches, and invalid references.
+
+## 9. Export and import mapping
 
 ### GeoJSON
 
@@ -277,12 +301,14 @@ Export creates `nodes` and `edges` feature layers in `EPSG:3857`, with `trama_id
 
 MVT is export-only in v0. The exporter emits `nodes` and `edges` layers for selected `GEOM z/x/y` records. MVT extent is `4096`; convert a normalized coordinate with `round(q * 4096 / 65535)`. MVT is not graph-preserving: it loses CSR topology, traversal order, nullable typing, channel declarations, mesh details, and possibly `u64` fidelity.
 
-## 9. Versioning and compatibility
+## 10. Versioning and compatibility
 
 Format versions follow semantic versioning:
 
 - **Major:** incompatible binary or semantic change.
 - **Minor:** backward-compatible addition; unknown optional records may be ignored.
 - **Patch:** clarification or bug fix with no binary-layout change.
+
+`SRCE` arrived in `0.2.0` as such an addition. Because it is optional and its record is not required, a writer emitting it MUST leave `minimum_reader_version` at `0.1.0`: a reader that predates the section skips it and still decodes the network.
 
 A writer MUST set `minimum_reader_version` to the oldest reader able to interpret every required record. Readers MUST reject unknown required records, duplicate singleton sections, invalid tile keys, non-zero reserved fields in strict mode, malformed zstd payloads, bad checksums, and invalid references. v0 has no in-place mutation model: a new dataset version is a new `.trama` file and `file_uuid`; unchanged source entities retain their stable IDs.

@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: LicenseRef-BSL-1.1
 import shutil
+import struct
 from pathlib import Path
 
 import pytest
 
-from trama_engine import epanet
+from trama_engine import epanet, writer
 from trama_engine.compiler import compile_file, export_file
+from trama_engine.model import Source
 from trama_engine.reader import read_network
 
 _SOURCE = Path(__file__).parent / "data" / "network.inp"
@@ -88,6 +90,65 @@ def test_exported_inp_is_byte_stable_across_a_second_round_trip(tmp_path: Path) 
     assert once.read_text() == twice.read_text()
 
 
+def test_read_keeps_unmodelled_sections_as_source_material() -> None:
+    network = epanet.read(_SOURCE)
+
+    (residual,) = network.sources
+    assert residual.format == "epanet-inp"
+    # The file name is not stored: it is not network data.
+    assert residual.name == ""
+    text = residual.content.decode()
+    assert "[PATTERNS]" in text and "0.8\t0.9" in text
+    assert "[CONTROLS]" in text and "[OPTIONS]" in text and "[TIMES]" in text
+    assert "TRAMA compiler test network" in text
+    # Sections the graph represents are not duplicated into the source document.
+    assert "[JUNCTIONS]" not in text and "[COORDINATES]" not in text
+
+
+def test_export_replays_the_simulation_sections(tmp_path: Path) -> None:
+    destination = tmp_path / "network.trama"
+    compile_file(_SOURCE, destination)
+    (exported,) = export_file(destination, tmp_path / "again.inp", "epanet")
+
+    text = exported.read_text()
+    for section in ("[PATTERNS]", "[CURVES]", "[CONTROLS]", "[OPTIONS]", "[TIMES]"):
+        assert section in text
+    assert "Duration\t24:00" in text
+    assert "LINK P2 CLOSED AT TIME 6" in text
+    assert "Sector" not in text and "TRAMA compiler test network" in text
+    # The graph still comes from the container, not from the stored text.
+    assert text.count("[JUNCTIONS]") == 1
+
+
+def test_source_section_is_optional_for_readers(tmp_path: Path) -> None:
+    destination = tmp_path / "network.trama"
+    compile_file(_SOURCE, destination)
+
+    data = destination.read_bytes()
+    count = struct.unpack_from("<I", data, 0x20)[0]
+    records = {
+        data[64 + index * 64 : 64 + index * 64 + 4]: struct.unpack_from("<I", data, 64 + index * 64 + 4)[0]
+        for index in range(count)
+    }
+    assert records[b"SRCE"] & 1 == 0, "SRCE must not be marked required"
+    assert all(flags & 1 for kind, flags in records.items() if kind != b"SRCE")
+    # An addition that old readers may skip keeps the minimum reader version where it was.
+    assert struct.unpack_from("<HHH", data, 8) == (0, 2, 0)
+    assert struct.unpack_from("<HHH", data, 14) == (0, 1, 0)
+
+
+def test_source_material_costs_little_next_to_the_graph(tmp_path: Path) -> None:
+    """The reader stores the residue, not the whole file, so the container stays compact."""
+    with_sources = tmp_path / "network.trama"
+    compile_file(_SOURCE, with_sources)
+    stripped = epanet.read(_SOURCE)._replace(sources=[])
+    without_sources = tmp_path / "bare.trama"
+    writer.write(stripped, without_sources)
+
+    overhead = with_sources.stat().st_size - without_sources.stat().st_size
+    assert 0 < overhead < _SOURCE.stat().st_size
+
+
 def test_compile_rejects_coordinates_outside_wgs84(tmp_path: Path) -> None:
     source = tmp_path / "local.inp"
     source.write_text(
@@ -125,3 +186,19 @@ def test_compile_rejects_an_unsupported_input_format(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unsupported input format"):
         compile_file(source, tmp_path / "network.trama")
+
+
+def test_export_ignores_graph_sections_smuggled_into_source_material(tmp_path: Path) -> None:
+    """The graph is authoritative: stored text may not reintroduce a section it represents."""
+    tampered = epanet.read(_SOURCE)._replace(
+        sources=[Source("epanet-inp", "", b"[TITLE]\nkept\n\n[JUNCTIONS]\n FAKE\t1\t2\n")]
+    )
+    destination = tmp_path / "tampered.trama"
+    writer.write(tampered, destination)
+
+    (exported,) = export_file(destination, tmp_path / "out.inp", "epanet")
+
+    text = exported.read_text()
+    assert "kept" in text
+    assert "FAKE" not in text
+    assert text.count("[JUNCTIONS]") == 1

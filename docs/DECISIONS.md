@@ -66,4 +66,14 @@
 
 **Consequence:** `[PATTERNS]`, `[CURVES]`, `[CONTROLS]`, `[OPTIONS]`, `[TIMES]`, `[REPORT]`, and the other simulation sections are not represented, so `trama export --to epanet` cannot bring them back. A `.inp` round trip preserves identity, topology, and per-entity properties, but produces a topology-only model. Link vertices still pass through quantization, so an intermediate vertex returns within about one quantization step. The exported file has not been validated against the EPANET solver itself, only against this compiler.
 
-**Open:** carrying the untouched simulation sections through would need a new container section for source material, which is a specification change, not a compiler change.
+**Resolved** by the `SRCE` section below, which carries those sections verbatim.
+
+## 2026-08-10 — `SRCE` section for unmodelled source material
+
+**Decision:** Add an optional `SRCE` section, specification `0.2.0`, holding verbatim bytes from the file a container was compiled from, tagged with a format identifier. A reader that does not know the section skips it, so `minimum_reader_version` stays at `0.1.0`. An input adapter SHOULD store only what the container does not otherwise model. The EPANET adapter stores its patterns, curves, controls, options, times, and title, and its exporter replays them around a graph regenerated from `GRPH` and `PROP`.
+
+**Why:** Without it, `.inp` in and out returns a topology-only model, which is not a round trip a water utility can use: their model stops being simulable. Storing only the residue keeps the cost to a few kilobytes instead of duplicating the whole source, which for a large network would outweigh the container itself.
+
+**Consequence:** The graph sections stay authoritative. When stored source material disagrees with them, the exporter MUST prefer the graph, so an edit made through TRAMA is never silently reverted by replayed text. The section is opaque to the core, which keeps the format domain-agnostic: only the EPANET adapter knows what an EPANET pattern is. The stored file name is deliberately empty, so the same model compiles to the same bytes from any path.
+
+**Later:** modelling patterns and curves as first-class named time series in the format, so a solver can consume them without an adapter parsing text back out. That is the durable answer and it belongs after the EPANET solver plugin exists, when its real requirements are known. Until then `SRCE` keeps the data safe but opaque.

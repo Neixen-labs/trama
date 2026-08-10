@@ -12,7 +12,7 @@ import zstandard
 
 from trama_engine import container
 from trama_engine.container import BOOL, EDGE_KIND, F64, I64, NODE_KIND, STRING
-from trama_engine.model import Network
+from trama_engine.model import Network, Source
 
 
 def write(network: Network, destination: Path) -> None:
@@ -38,6 +38,8 @@ def write(network: Network, destination: Path) -> None:
         (b"PROP", 0, 0, 0, _property_section(network)),
         (b"STCH", 0, 0, 0, _state_channel_section()),
     ]
+    if network.sources:
+        decoded.append((b"SRCE", 0, 0, 0, _source_section(network.sources)))
 
     file_uuid = hashlib.sha256(b"".join(payload for *_, payload in decoded)).digest()[:16]
     compressor = zstandard.ZstdCompressor(level=3)
@@ -62,7 +64,7 @@ def write(network: Network, destination: Path) -> None:
     directory = b"".join(
         container.DIRECTORY.pack(
             kind,
-            1,
+            0 if kind == b"SRCE" else 1,
             z,
             x,
             y,
@@ -261,6 +263,28 @@ def _encode_values(value_type: int, values: list[object], string_ids: dict[str, 
     if value_type == I64:
         return b"".join(struct.pack("<q", value) for value in values)
     return b"".join(struct.pack("<d", float(value)) for value in values)
+
+
+def _source_section(sources: list[Source]) -> bytes:
+    """Store source documents verbatim. The core never looks inside them."""
+    strings = sorted({value for document in sources for value in (document.format, document.name)})
+    string_ids = {value: index for index, value in enumerate(strings)}
+    dictionary = container.pack_strings(strings)
+
+    header_size = 12
+    documents_offset = header_size + len(dictionary)
+    offset = documents_offset + len(sources) * 16
+    records = b""
+    body = b""
+    for document in sources:
+        records += struct.pack(
+            "<4I", string_ids[document.format], string_ids[document.name], offset, len(document.content)
+        )
+        body += document.content
+        offset += len(document.content)
+
+    header = struct.pack("<3I", len(sources), header_size, documents_offset)
+    return header + dictionary + records + body
 
 
 def _state_channel_section() -> bytes:
