@@ -6,6 +6,7 @@ export type Section = Readonly<{
   offset: bigint;
   storedBytes: bigint;
   uncompressedBytes: bigint;
+  crc32c: number;
   codec: number;
 }>;
 
@@ -55,6 +56,7 @@ function parseSection(view: DataView, offset: number, fileBytes: number, directo
     offset: sectionOffset,
     storedBytes,
     uncompressedBytes: view.getBigUint64(offset + 36, true),
+    crc32c: view.getUint32(offset + 44, true),
     codec: view.getUint16(offset + 48, true),
   };
 }
