@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: LicenseRef-BSL-1.1
 """Command-line interface for the TRAMA compiler."""
 
+import json
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -17,11 +19,16 @@ def main() -> None:
 
 
 @app.command()
-def compile(source: Path, destination: Path) -> None:
-    """Compile one GeoJSON LineString feature to a `.trama` file."""
+def compile(
+    source: Path,
+    destination: Path,
+    channels: Annotated[Path | None, typer.Option(help="JSON list of state channels to declare.")] = None,
+) -> None:
+    """Compile GeoJSON into a `.trama` file."""
     try:
-        compile_geojson(source, destination)
-    except (OSError, TypeError, ValueError) as error:
+        declared = json.loads(channels.read_text()) if channels is not None else None
+        compile_geojson(source, destination, declared)
+    except (OSError, TypeError, ValueError, KeyError) as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(1) from error
 

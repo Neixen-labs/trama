@@ -228,3 +228,36 @@ test("reports a miss for a time never written and for an unknown channel", () =>
   assert.equal(ring.sampleRows(600, 7), null);
   assert.equal(ring.sampleRows(0, 99), null);
 });
+
+
+test("reads the channels the compiler declared in a real container", () => {
+  const grid = readFileSync(new URL("../../fixtures/demo-grid.trama", import.meta.url));
+  const gridFile = grid.buffer.slice(grid.byteOffset, grid.byteOffset + grid.byteLength);
+  const container = parseContainer(gridFile);
+  const section = container.sections.find((candidate) => candidate.type === "STCH")!;
+
+  const channels = parseStateChannels(readSection(gridFile, section, (stored) => decompress(stored)));
+
+  assert.deepEqual(channels, [
+    {
+      channelId: 1,
+      entityKind: 1,
+      name: "pressure",
+      unit: "m",
+      declaredMin: 0,
+      declaredMax: 80,
+      rangePresent: true,
+      linearInterpolation: true,
+    },
+    {
+      channelId: 2,
+      entityKind: 2,
+      name: "flow",
+      unit: "l/s",
+      declaredMin: -50,
+      declaredMax: 50,
+      rangePresent: true,
+      linearInterpolation: true,
+    },
+  ]);
+});
