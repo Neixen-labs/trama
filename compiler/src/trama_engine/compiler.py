@@ -90,7 +90,8 @@ def compile_geojson(source: Path, destination: Path) -> None:
     decoded = [(b"GEOM", *tile, _geometry_section(tile_paths[tile])) for tile in tiles] + [
         (b"GRPH", 0, 0, 0, _graph_section(edges, geometry_refs)),
         (b"PROP", 0, 0, 0, _property_section(edge_properties)),
-        (b"STCH", 0, 0, 0, struct.pack("<3I", 0, 12, 12)),
+        # SPEC 6: strings_offset must address a u32 count, so an empty table still needs those 4 bytes.
+        (b"STCH", 0, 0, 0, struct.pack("<4I", 0, 12, 16, 0)),
     ]
     file_uuid = hashlib.sha256(b"".join(payload for *_, payload in decoded)).digest()[:16]
     stored = [(kind, z, x, y, payload, zstandard.ZstdCompressor(level=_COMPRESSION_LEVEL).compress(payload)) for kind, z, x, y, payload in decoded]
