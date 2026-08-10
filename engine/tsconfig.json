@@ -3,9 +3,18 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "noEmit": true,
-    "target": "ES2022"
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ]
   },
-  "include": ["src", "test"]
+  "include": [
+    "src",
+    "test"
+  ]
 }
