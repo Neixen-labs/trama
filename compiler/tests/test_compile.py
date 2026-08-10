@@ -338,3 +338,14 @@ def test_compile_geojson_stays_deterministic_across_tiles(tmp_path: Path) -> Non
 
     assert first.read_bytes() == second.read_bytes()
     validate_container(first)
+
+
+def test_compile_geojson_writes_no_mesh_for_lines(tmp_path: Path) -> None:
+    destination = _compile_features(tmp_path, {"a": {}, "b": {}})
+
+    geometry = _decode_section(destination, 0)
+    path_count, vertex_count, mesh_vertex_count, mesh_index_count = struct.unpack_from("<4I", geometry)
+    _paths_offset, vertices_offset, mesh_vertices_offset, mesh_indices_offset = struct.unpack_from("<4I", geometry, 16)
+    assert (mesh_vertex_count, mesh_index_count) == (0, 0)
+    assert mesh_vertices_offset == mesh_indices_offset == vertices_offset + vertex_count * 4 == len(geometry)
+    assert path_count == 2
