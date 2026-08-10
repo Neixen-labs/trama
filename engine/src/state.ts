@@ -103,6 +103,31 @@ export class StateRing {
   }
 
   /**
+   * Resolves a scrub time into the two texture rows to blend and the factor between them.
+   *
+   * Returns `null` when either slot holds a different time than the one asked for — a wrapped
+   * or never-written slot still contains numbers, and blending them would render stale values
+   * as if they were current.
+   */
+  sampleRows(t: number, channelId: number): { rowA: number; rowB: number; mix: number } | null {
+    const found = this.#channels.get(channelId);
+    if (found === undefined || !Number.isFinite(t)) return null;
+    const startTime = Math.floor(t / this.#step) * this.#step;
+    const rowA = this.#rowAt(startTime, found.row);
+    if (rowA === null) return null;
+    if (!found.channel.linearInterpolation) return { rowA, rowB: rowA, mix: 0 };
+    const rowB = this.#rowAt(startTime + this.#step, found.row);
+    if (rowB === null) return { rowA, rowB: rowA, mix: 0 };
+    return { rowA, rowB, mix: (t - startTime) / this.#step };
+  }
+
+  #rowAt(slotTime: number, channelRow: number): number | null {
+    const slot = this.slotFor(slotTime);
+    if (this.slotSeconds[slot] !== slotTime) return null;
+    return slot * this.#channels.size + channelRow;
+  }
+
+  /**
    * Applies a packed delta stream. Every record is validated before any texel is written, so a
    * rejected stream leaves the ring untouched rather than half-applied.
    */
