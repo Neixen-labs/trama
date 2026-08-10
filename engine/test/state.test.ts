@@ -181,3 +181,50 @@ test("leaves the ring untouched when any record in the stream is invalid", () =>
   assert.throws(() => ring.apply(stream), /outside the declared range/);
   assert.equal(ring.texels[0], 0, "a rejected stream must not be half-applied");
 });
+
+
+test("blends between the two slots surrounding a scrub time", () => {
+  const ring = new StateRing(ringOptions);
+  ring.apply(delta(10n, 7, 0, 10));
+  ring.apply(delta(10n, 7, 60, 20));
+
+  const rows = ring.sampleRows(15, 7);
+
+  assert.equal(rows?.mix, 0.25);
+  assert.equal(rows?.rowA, 0);
+  assert.equal(rows?.rowB, 1);
+});
+
+test("holds the earlier sample for a channel that declares no interpolation", () => {
+  const ring = new StateRing({ ...ringOptions, channels: [{ ...pressure, linearInterpolation: false }] });
+  ring.apply(delta(10n, 7, 0, 10));
+  ring.apply(delta(10n, 7, 60, 20));
+
+  const rows = ring.sampleRows(45, 7);
+
+  assert.deepEqual(rows, { rowA: 0, rowB: 0, mix: 0 });
+});
+
+test("holds the earlier sample when the next slot has not arrived", () => {
+  const ring = new StateRing(ringOptions);
+  ring.apply(delta(10n, 7, 0, 10));
+
+  assert.deepEqual(ring.sampleRows(30, 7), { rowA: 0, rowB: 0, mix: 0 });
+});
+
+test("reports a miss rather than blending a wrapped slot", () => {
+  const ring = new StateRing(ringOptions);
+  ring.apply(delta(10n, 7, 0, 10));
+  // 180 s reuses slot 0, so the value at 0 s is gone even though the texels still hold numbers.
+  ring.apply(delta(10n, 7, 180, 99));
+
+  assert.equal(ring.sampleRows(0, 7), null);
+  assert.notEqual(ring.sampleRows(180, 7), null);
+});
+
+test("reports a miss for a time never written and for an unknown channel", () => {
+  const ring = new StateRing(ringOptions);
+
+  assert.equal(ring.sampleRows(600, 7), null);
+  assert.equal(ring.sampleRows(0, 99), null);
+});

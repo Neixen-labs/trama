@@ -1,12 +1,23 @@
 // SPDX-License-Identifier: LicenseRef-BSL-1.1
 import type { LineInstances } from "./lines.js";
 
+/** Colours a line by its state value; omit it and every line draws in `color`. */
+export type StateStyle = Readonly<{
+  texture: WebGLTexture;
+  /** The two rows to blend and the factor between them, from `StateRing.sampleRows`. */
+  rows: Readonly<{ rowA: number; rowB: number; mix: number }>;
+  /** Value range mapped across the ramp, normally the channel's declared range. */
+  range: readonly [number, number];
+  highColor: readonly [number, number, number, number];
+}>;
+
 export type LineStyle = Readonly<{
   /** Tile-normalized [0,1] coordinates to clip space, as a MapLibre custom layer receives. */
   matrix: Float32Array;
   resolutionPixels: readonly [number, number];
   widthPixels: number;
   color: readonly [number, number, number, number];
+  state?: StateStyle;
 }>;
 
 export type LineRenderer = Readonly<{
@@ -40,13 +51,32 @@ void main() {
   v_edge_index = a_edge_index;
 }`;
 
+// Two explicit fetches rather than a filtered sample: the blend is the one the channel declares,
+// and R32F never needs OES_texture_float_linear. A negative u_row_a means no state is bound.
 const FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 flat in uint v_edge_index;
 uniform vec4 u_color;
+uniform vec4 u_high_color;
+uniform highp sampler2D u_state;
+uniform int u_row_a;
+uniform int u_row_b;
+uniform float u_mix;
+uniform vec2 u_range;
 out vec4 fragment_color;
 void main() {
-  fragment_color = u_color;
+  if (u_row_a < 0) {
+    fragment_color = u_color;
+    return;
+  }
+  int column = int(v_edge_index);
+  float value = mix(
+    texelFetch(u_state, ivec2(column, u_row_a), 0).r,
+    texelFetch(u_state, ivec2(column, u_row_b), 0).r,
+    u_mix);
+  float span = u_range.y - u_range.x;
+  float normalized = span > 0.0 ? clamp((value - u_range.x) / span, 0.0, 1.0) : 0.0;
+  fragment_color = mix(u_color, u_high_color, normalized);
 }`;
 
 const VERTICES_PER_INSTANCE = 4;
@@ -65,6 +95,12 @@ export function createLineRenderer(gl: WebGL2RenderingContext): LineRenderer {
     resolution: gl.getUniformLocation(program, "u_resolution"),
     width: gl.getUniformLocation(program, "u_width"),
     color: gl.getUniformLocation(program, "u_color"),
+    highColor: gl.getUniformLocation(program, "u_high_color"),
+    state: gl.getUniformLocation(program, "u_state"),
+    rowA: gl.getUniformLocation(program, "u_row_a"),
+    rowB: gl.getUniformLocation(program, "u_row_b"),
+    mix: gl.getUniformLocation(program, "u_mix"),
+    range: gl.getUniformLocation(program, "u_range"),
   };
 
   return {
@@ -92,6 +128,7 @@ export function createLineRenderer(gl: WebGL2RenderingContext): LineRenderer {
       gl.uniform2f(uniforms.resolution, style.resolutionPixels[0], style.resolutionPixels[1]);
       gl.uniform1f(uniforms.width, style.widthPixels);
       gl.uniform4f(uniforms.color, style.color[0], style.color[1], style.color[2], style.color[3]);
+      bindState(gl, uniforms, style.state);
 
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, VERTICES_PER_INSTANCE, instances.count);
       gl.bindVertexArray(null);
@@ -102,6 +139,24 @@ export function createLineRenderer(gl: WebGL2RenderingContext): LineRenderer {
       gl.deleteVertexArray(vertexArray);
     },
   };
+}
+
+type Uniforms = Record<"state" | "rowA" | "rowB" | "mix" | "range" | "highColor", WebGLUniformLocation | null>;
+
+/** A negative row is how the shader is told no state is bound; the flat colour then wins. */
+function bindState(gl: WebGL2RenderingContext, uniforms: Uniforms, state: StateStyle | undefined): void {
+  if (state === undefined) {
+    gl.uniform1i(uniforms.rowA, -1);
+    return;
+  }
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, state.texture);
+  gl.uniform1i(uniforms.state, 0);
+  gl.uniform1i(uniforms.rowA, state.rows.rowA);
+  gl.uniform1i(uniforms.rowB, state.rows.rowB);
+  gl.uniform1f(uniforms.mix, state.rows.mix);
+  gl.uniform2f(uniforms.range, state.range[0], state.range[1]);
+  gl.uniform4f(uniforms.highColor, state.highColor[0], state.highColor[1], state.highColor[2], state.highColor[3]);
 }
 
 function link(gl: WebGL2RenderingContext): WebGLProgram {
