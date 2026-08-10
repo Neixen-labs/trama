@@ -48,14 +48,22 @@ def test_compile_geojson_writes_deterministic_v0_container(tmp_path: Path) -> No
     assert section_types == [b"GEOM", b"GRPH", b"PROP", b"STCH"]
 
 
-def test_compile_geojson_rejects_properties_until_prop_encoding_exists(tmp_path: Path) -> None:
+def test_compile_geojson_writes_typed_edge_properties(tmp_path: Path) -> None:
     source = tmp_path / "network.geojson"
     source.write_text(
-        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"edge_weight":3},"geometry":{"type":"LineString","coordinates":[[0,0],[0.001,0.001]]}}]}'
+        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"active":true,"label":"main","loss":1.5,"rank":3},"geometry":{"type":"LineString","coordinates":[[-3.704,40.416],[-3.703,40.417]]}}]}'
     )
+    destination = tmp_path / "network.trama"
 
-    with pytest.raises(ValueError, match="does not support properties"):
-        compile_geojson(source, tmp_path / "network.trama")
+    compile_geojson(source, destination)
+
+    data = destination.read_bytes()
+    prop_record = 64 + 2 * 64
+    prop_offset = struct.unpack_from("<Q", data, prop_record + 20)[0]
+    prop_size = struct.unpack_from("<Q", data, prop_record + 36)[0]
+    prop = zstandard.ZstdDecompressor().decompress(data[prop_offset : prop_offset + prop_size])
+    assert struct.unpack_from("<5I", prop) == (4, 1, 0, 0, 4)
+    assert b"active" in prop and b"label" in prop and b"loss" in prop and b"rank" in prop
 
 
 def test_compile_geojson_rejects_lines_that_span_tiles(tmp_path: Path) -> None:
