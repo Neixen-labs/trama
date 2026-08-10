@@ -13,7 +13,11 @@ dependencies = [
 trama = "trama_engine.cli:app"
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "mypy>=2.3.0",
+    "pytest>=8.0",
+    "ruff>=0.16.2",
+]
 
 [build-system]
 requires = ["hatchling"]
