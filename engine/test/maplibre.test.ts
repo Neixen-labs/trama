@@ -13,44 +13,40 @@ const file = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteL
 const container = parseContainer(file);
 const inflate = (stored: Uint8Array) => decompress(stored);
 
-/** An independent column-major 4x4 multiply, to check tileMatrix's shortcut against. */
-function multiply(a: readonly number[], b: readonly number[]): number[] {
-  const result = new Array(16).fill(0);
-  for (let column = 0; column < 4; column += 1) {
-    for (let row = 0; row < 4; row += 1) {
-      let sum = 0;
-      for (let k = 0; k < 4; k += 1) sum += a[k * 4 + row]! * b[column * 4 + k]!;
-      result[column * 4 + row] = sum;
-    }
-  }
-  return result;
+/** MapLibre's tile matrix, recorded so the test can assert what was asked for. */
+function projectionInput(mainMatrix: number[]) {
+  const asked: unknown[] = [];
+  return {
+    asked,
+    input: {
+      getProjectionData(params: { tileID: { canonical: { x: number; y: number; z: number } } }) {
+        asked.push(params);
+        return { mainMatrix };
+      },
+    },
+  };
 }
 
-function placement(z: number, x: number, y: number): number[] {
-  const scale = 1 / 2 ** z;
-  // Column-major: scale on the diagonal, tile origin in the translation column.
-  return [scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, 1, 0, x * scale, y * scale, 0, 1];
-}
+test("asks MapLibre for the matrix of the tile being drawn", () => {
+  const { asked, input } = projectionInput(new Array(16).fill(0));
 
-test("composes the tile placement into the map matrix", () => {
-  const mapMatrix = [2, 3, 0, 0, 5, 7, 0, 0, 0, 0, 1, 0, 11, 13, 0, 1];
+  tileMatrix(input, [14, 8024, 6177]);
 
-  const composed = [...tileMatrix(mapMatrix, [14, 8024, 6177])];
-
-  assert.deepEqual(
-    composed.map((value) => Math.round(value * 1e6) / 1e6),
-    multiply(mapMatrix, placement(14, 8024, 6177)).map((value) => Math.round(value * 1e6) / 1e6),
-  );
+  assert.deepEqual(asked, [{ tileID: { canonical: { x: 8024, y: 6177, z: 14 } } }]);
 });
 
-test("maps a tile-local corner to the same clip position as its world coordinate", () => {
-  const identity = [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, -1, -1, 0, 1];
-  const matrix = tileMatrix(identity, [14, 8024, 6177]);
-  const scale = 1 / 2 ** 14;
+test("scales the tile matrix from EXTENT units to the renderer's [0,1] vertices", () => {
+  // Column-major identity, so the scaling is visible per column.
+  const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  const { input } = projectionInput(identity);
 
-  // The tile's top-left corner, (0,0) locally, is (8024, 6177) / 2^14 in world coordinates.
-  const clipX = matrix[0]! * 0 + matrix[4]! * 0 + matrix[12]!;
-  assert.ok(Math.abs(clipX - (2 * 8024 * scale - 1)) < 1e-6);
+  const matrix = [...tileMatrix(input, [14, 8024, 6177])];
+
+  // A vertex at local (1,1) must land where MapLibre puts tile coordinate (EXTENT, EXTENT).
+  assert.equal(matrix[0], 8192);
+  assert.equal(matrix[5], 8192);
+  // The translation column is MapLibre's, untouched.
+  assert.deepEqual(matrix.slice(12), [0, 0, 0, 1]);
 });
 
 test("selects the tiles a viewport covers and no others", () => {
@@ -129,14 +125,14 @@ test("fetches each visible tile once and repaints when it arrives", async () => 
   });
   layer.onAdd(map, gl);
 
-  layer.render(gl, new Float32Array(16));
-  layer.render(gl, new Float32Array(16));
+  layer.render(gl, projectionInput(new Array(16).fill(0)).input);
+  layer.render(gl, projectionInput(new Array(16).fill(0)).input);
   assert.equal(draws.length, 0, "nothing draws until a tile has arrived");
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(requests, 2, "two visible tiles, fetched once each despite two renders");
   assert.equal(repaints(), 2);
-  layer.render(gl, new Float32Array(16));
+  layer.render(gl, projectionInput(new Array(16).fill(0)).input);
   assert.equal(draws.length, 2);
 });
 
@@ -146,9 +142,9 @@ test("draws nothing when the viewport holds no tiles", async () => {
   const layer = createTramaLayer(layerOptions);
   layer.onAdd(map, gl);
 
-  layer.render(gl, new Float32Array(16));
+  layer.render(gl, projectionInput(new Array(16).fill(0)).input);
   await new Promise((resolve) => setImmediate(resolve));
-  layer.render(gl, new Float32Array(16));
+  layer.render(gl, projectionInput(new Array(16).fill(0)).input);
 
   assert.equal(draws.length, 0);
 });
@@ -167,9 +163,9 @@ test("retries a tile whose fetch failed the next time it is visible", async () =
   });
   layer.onAdd(map, gl);
 
-  layer.render(gl, new Float32Array(16));
+  layer.render(gl, projectionInput(new Array(16).fill(0)).input);
   await new Promise((resolve) => setImmediate(resolve));
-  layer.render(gl, new Float32Array(16));
+  layer.render(gl, projectionInput(new Array(16).fill(0)).input);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.ok(attempts > 2, "a failed tile must not be cached as requested forever");
@@ -182,7 +178,7 @@ test("releases the renderer when removed", () => {
   layer.onAdd(map, gl);
 
   layer.onRemove(map, gl);
-  layer.render(gl, new Float32Array(16));
+  layer.render(gl, projectionInput(new Array(16).fill(0)).input);
 
   assert.equal(draws.length, 0);
 });

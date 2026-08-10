@@ -1,0 +1,133 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: LicenseRef-BSL-1.1 -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TRAMA demo</title>
+    <link rel="stylesheet" href="/engine/node_modules/maplibre-gl/dist/maplibre-gl.css" />
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: #0b0f14; color: #e6edf3; }
+      #map { position: absolute; inset: 0; }
+      #panel {
+        position: absolute; z-index: 1; margin: 12px; padding: 10px 12px; max-width: 22rem;
+        background: #11161dd9; border: 1px solid #263041; border-radius: 8px; backdrop-filter: blur(6px);
+      }
+      #panel h1 { margin: 0 0 6px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #7fd1ff; }
+      dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
+      dt { color: #8b98a9; }
+      dd { margin: 0; }
+      .error { color: #ff9a9a; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <h1>TRAMA</h1>
+      <dl id="stats"></dl>
+    </div>
+    <div id="map"></div>
+
+    <!-- No bundler: tsc emits ESM whose relative imports already end in .js, and this map
+         resolves the two bare specifiers straight out of node_modules. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "fzstd": "/engine/node_modules/fzstd/esm/index.mjs",
+          "maplibre-gl": "/engine/node_modules/maplibre-gl/dist/maplibre-gl.mjs"
+        }
+      }
+    </script>
+    <script type="module">
+      // maplibre-gl 6 ships named exports only; there is no default.
+      import { Map } from "maplibre-gl";
+      import { decompress } from "fzstd";
+
+      import { openContainer, httpRangeReader } from "/engine/dist/range.js";
+      import { createTramaLayer } from "/engine/dist/maplibre.js";
+
+      const stats = document.querySelector("#stats");
+      const show = (rows) => {
+        stats.innerHTML = "";
+        for (const [term, value] of rows) {
+          stats.insertAdjacentHTML("beforeend", `<dt>${term}</dt><dd>${value}</dd>`);
+        }
+      };
+
+      const name = new URLSearchParams(location.search).get("file") ?? "network.trama";
+      const url = `/fixtures/${name}`;
+
+      /** Counts what the page actually transfers, so the range loading is visible, not claimed. */
+      let transferred = 0;
+      const read = (() => {
+        const inner = httpRangeReader(url);
+        return async (start, end) => {
+          const bytes = await inner(start, end);
+          transferred += bytes.byteLength;
+          return bytes;
+        };
+      })();
+
+      try {
+        const container = await openContainer(read);
+        const tiles = container.sections.filter((section) => section.type === "GEOM");
+        if (tiles.length === 0) throw new Error("this container holds no GEOM tiles");
+
+        const map = new Map({
+          container: "map",
+          // A background-only style: the demo shows the network, and stays offline.
+          style: { version: 8, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#0b0f14" } }] },
+          bounds: boundsOf(tiles),
+          fitBoundsOptions: { padding: 48 },
+        });
+
+        window.__map = map; // exposed for debugging from the console
+        map.on("load", () => {
+          map.addLayer(
+            createTramaLayer({
+              id: "trama-network",
+              container,
+              read,
+              decompress: (stored) => decompress(stored),
+              style: { widthPixels: 2.5, color: [0.49, 0.82, 1, 1] },
+              resolutionPixels: () => [
+                map.getCanvas().width,
+                map.getCanvas().height,
+              ],
+            }),
+          );
+        });
+
+        const report = () =>
+          show([
+            ["file", name],
+            ["sections", container.sections.map((section) => section.type).join(" ")],
+            ["tiles", tiles.length],
+            ["zoom", map.getZoom().toFixed(2)],
+            ["transferred", `${transferred} B`],
+          ]);
+        report();
+        map.on("render", report);
+      } catch (error) {
+        show([["error", `<span class="error">${error.message}</span>`]]);
+      }
+
+      /** Frames whatever container it is given, from its GEOM tile keys. */
+      function boundsOf(tiles) {
+        const corners = tiles.flatMap(({ key: [z, x, y] }) => [
+          lonLat(z, x, y),
+          lonLat(z, x + 1, y + 1),
+        ]);
+        const longitudes = corners.map(([longitude]) => longitude);
+        const latitudes = corners.map(([, latitude]) => latitude);
+        return [Math.min(...longitudes), Math.min(...latitudes), Math.max(...longitudes), Math.max(...latitudes)];
+      }
+
+      function lonLat(z, x, y) {
+        const tiles = 2 ** z;
+        const n = Math.PI - (2 * Math.PI * y) / tiles;
+        return [(x / tiles) * 360 - 180, (180 / Math.PI) * Math.atan(Math.sinh(n))];
+      }
+    </script>
+  </body>
+</html>
