@@ -16,42 +16,54 @@ import zstandard
 _MAGIC = b"TRAMA\0\0\0"
 _HEADER = struct.Struct("<8s3H3HIQIIQ16s")
 _DIRECTORY = struct.Struct("<4sIIIIQQQIHBB12s")
+_ID_KEY = "_trama_id"
 
 
 def compile_geojson(source: Path, destination: Path) -> None:
-    """Compile a GeoJSON LineString collection into a TRAMA file, one GEOM record per tile."""
-    document = json.loads(source.read_text())
-    features = document.get("features", [])
-    if not features or any(feature.get("geometry", {}).get("type") != "LineString" for feature in features):
+    """Compile GeoJSON into a TRAMA file, one GEOM record per tile.
+
+    `source` is a FeatureCollection, or a directory holding the `edges.geojson` and
+    `nodes.geojson` an export wrote. A feature carrying `_trama_id` keeps that identity.
+    """
+    features = [feature for path in _sources(source) for feature in json.loads(path.read_text()).get("features", [])]
+    lines = [feature for feature in features if feature.get("geometry", {}).get("type") == "LineString"]
+    points = [feature for feature in features if feature.get("geometry", {}).get("type") == "Point"]
+    if not lines or len(lines) + len(points) != len(features):
         raise ValueError("v0 compiler slice requires one LineString feature")
-    properties = [feature.get("properties") or {} for feature in features]
+    properties = [feature.get("properties") or {} for feature in lines]
     if any(not isinstance(value, dict) for value in properties):
         raise TypeError("GeoJSON properties must be an object")
 
-    lines = []
-    for index, feature in enumerate(features):
+    line_records = []
+    for index, feature in enumerate(lines):
         coordinates = feature["geometry"].get("coordinates", [])
         if len(coordinates) < 2:
             raise ValueError("LineString requires at least two coordinates")
-        points = [_web_mercator(*coordinate[:2]) for coordinate in coordinates]
-        lines.append((str(feature.get("id", f"edge-{index}")), coordinates, points))
+        projected = [_web_mercator(*coordinate[:2]) for coordinate in coordinates]
+        line_records.append((str(feature.get("id", f"edge-{index}")), coordinates, projected))
+    # A Point only names a node; an exported nodes.geojson is how node identity survives a round trip.
     node_ids = {
         tuple(coordinates[endpoint][:2]): _stable_id(f"node:{coordinates[endpoint][0]!r},{coordinates[endpoint][1]!r}")
-        for _feature_id, coordinates, _points in lines
+        for _feature_id, coordinates, _projected in line_records
         for endpoint in (0, -1)
     }
+    for feature in points:
+        coordinate = tuple(feature["geometry"].get("coordinates", [])[:2])
+        declared = _declared_id(feature)
+        if declared is not None:
+            node_ids[coordinate] = declared
     ordered = sorted(
         (
             (
                 (
-                    _stable_id(f"edge:{feature_id}"),
+                    _declared(feature, f"edge:{feature_id}"),
                     node_ids[tuple(coordinates[0][:2])],
                     node_ids[tuple(coordinates[-1][:2])],
                 ),
-                _split_by_tile(points),
-                row,
+                _split_by_tile(projected),
+                {key: value for key, value in row.items() if key != _ID_KEY},
             )
-            for (feature_id, coordinates, points), row in zip(lines, properties)
+            for feature, (feature_id, coordinates, projected), row in zip(lines, line_records, properties)
         ),
         key=lambda record: record[0][0],
     )
@@ -292,6 +304,36 @@ def _value_type(value: object) -> int:
     if isinstance(value, str):
         return 3
     raise ValueError("v0 properties support only finite numbers, strings, and booleans")
+
+
+def _sources(source: Path) -> list[Path]:
+    if not source.is_dir():
+        return [source]
+    paths = [source / name for name in ("edges.geojson", "nodes.geojson")]
+    present = [path for path in paths if path.exists()]
+    if not present:
+        raise ValueError(f"{source} holds no edges.geojson or nodes.geojson")
+    return present
+
+
+def _declared(feature: dict[str, Any], derived_from: str) -> int:
+    """The feature's declared identity, or one derived from its source name. `0` is a valid ID."""
+    declared = _declared_id(feature)
+    return _stable_id(derived_from) if declared is None else declared
+
+
+def _declared_id(feature: dict[str, Any]) -> int | None:
+    """Reads `_trama_id`, rejecting a malformed one rather than silently deriving a replacement."""
+    declared = (feature.get("properties") or {}).get(_ID_KEY)
+    if declared is None:
+        return None
+    try:
+        value = int(declared)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{_ID_KEY} must be a decimal integer, got {declared!r}") from error
+    if not 0 <= value < 1 << 64:
+        raise ValueError(f"{_ID_KEY} must fit in u64, got {declared!r}")
+    return value
 
 
 def _stable_id(value: str) -> int:
