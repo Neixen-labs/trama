@@ -100,7 +100,7 @@ This structural example has format `0.1.0`, a 64-byte header, and its first dire
 
 ## 3. `GEOM`: tile-local geometry
 
-Each `GEOM` record is one `EPSG:3857` tile. It contains ordered centerline paths for traversal and a triangle mesh for rendering.
+Each `GEOM` record is one `EPSG:3857` tile. It contains ordered centerline paths for traversal and, for geometry that needs it, a triangle mesh for rendering.
 
 ### 3.1 Quantization
 
@@ -146,6 +146,14 @@ u32 MeshIndex[mesh_index_count]
 ```
 
 Mesh indices MUST be less than `mesh_vertex_count`; their count MUST be divisible by three. A tile may contain clipped pieces of an edge. `PathVertex` order is authoritative for traversal within that tile; the mesh is a rendering derivative.
+
+### 3.3 Line geometry carries no mesh
+
+A `MeshVertex` states a position and an edge, not which side of a centerline it sits on. It therefore cannot describe a ribbon whose width is constant in screen space, because the offset direction is unknown to the renderer and the width is unknown until the camera is known.
+
+A writer MUST NOT tessellate line geometry. For a tile whose paths are all lines, `mesh_vertex_count` and `mesh_index_count` MUST be zero, and `mesh_vertices_offset` and `mesh_indices_offset` MUST point at the end of the vertex array. A renderer builds the ribbon itself from consecutive `PathVertex` pairs, which keeps stroke width a camera-time and style-time decision rather than a compile-time one.
+
+The mesh fields remain in the header for geometry that genuinely requires triangulation — a polygon interior cannot be reconstructed from a centerline. A reader MUST accept a zero mesh and MUST NOT treat it as a malformed tile.
 
 ## 4. `GRPH`: stable graph and CSR topology
 
