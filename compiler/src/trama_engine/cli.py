@@ -21,4 +21,5 @@ def compile(source: Path, destination: Path) -> None:
     try:
         compile_geojson(source, destination)
     except (OSError, ValueError) as error:
-        raise typer.Exit(str(error)) from error
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
