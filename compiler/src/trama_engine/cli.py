@@ -20,6 +20,6 @@ def compile(source: Path, destination: Path) -> None:
     """Compile one GeoJSON LineString feature to a `.trama` file."""
     try:
         compile_geojson(source, destination)
-    except (OSError, ValueError) as error:
+    except (OSError, TypeError, ValueError) as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(1) from error

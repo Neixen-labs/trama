@@ -23,8 +23,9 @@ def compile_geojson(source: Path, destination: Path) -> None:
     if len(features) != 1 or features[0].get("geometry", {}).get("type") != "LineString":
         raise ValueError("v0 compiler slice requires one LineString feature")
     feature = features[0]
-    if feature.get("properties"):
-        raise ValueError("v0 compiler slice does not support properties yet")
+    properties = feature.get("properties") or {}
+    if not isinstance(properties, dict):
+        raise TypeError("GeoJSON properties must be an object")
     coordinates = feature["geometry"].get("coordinates", [])
     if len(coordinates) < 2:
         raise ValueError("LineString requires at least two coordinates")
@@ -41,7 +42,7 @@ def compile_geojson(source: Path, destination: Path) -> None:
     decoded = [
         (b"GEOM", z, x, y, _geometry_section(quantized)),
         (b"GRPH", 0, 0, 0, _graph_section(node_ids, edge_id)),
-        (b"PROP", 0, 0, 0, struct.pack("<10I", *([0] * 10))),
+        (b"PROP", 0, 0, 0, _property_section(properties)),
         (b"STCH", 0, 0, 0, struct.pack("<3I", 0, 12, 12)),
     ]
     file_uuid = hashlib.sha256(b"".join(payload for *_, payload in decoded)).digest()[:16]
@@ -96,6 +97,52 @@ def _graph_section(node_ids: tuple[int, int], edge_id: int) -> bytes:
     )
     geometry_ref = struct.pack("<IIb3x", 0, 0, 1)
     return header + nodes + edge + csr + adjacency + geometry_ref
+
+
+def _property_section(properties: dict[str, object]) -> bytes:
+    keys = sorted(properties)
+    if any(not isinstance(key, str) for key in keys):
+        raise ValueError("property keys must be strings")
+    string_values = sorted({value for value in properties.values() if isinstance(value, str)})
+    key_dictionary = _string_dictionary(keys)
+    string_dictionary = _string_dictionary(string_values)
+    enum_dictionary = struct.pack("<I", 0)
+    header_size = 40
+    key_offset = header_size
+    string_offset = key_offset + len(key_dictionary)
+    enum_offset = string_offset + len(string_dictionary)
+    columns_offset = enum_offset + len(enum_dictionary)
+    values_offset = columns_offset + len(keys) * 20
+    columns: list[bytes] = []
+    bodies: list[bytes] = []
+    for key_id, key in enumerate(keys):
+        value = properties[key]
+        value_type, encoded = _property_value(value, string_values)
+        presence_offset = values_offset + sum(len(body) for body in bodies)
+        body = b"\x01" + encoded
+        value_offset = presence_offset + 1
+        columns.append(struct.pack("<IBBHIII", key_id, 2, value_type, 0, 1, presence_offset, value_offset))
+        bodies.append(body)
+    header = struct.pack(
+        "<10I", len(keys), len(string_values), 0, 0, len(keys), key_offset, string_offset, enum_offset, columns_offset, columns_offset
+    )
+    return header + key_dictionary + string_dictionary + enum_dictionary + b"".join(columns) + b"".join(bodies)
+
+
+def _string_dictionary(values: list[str]) -> bytes:
+    return struct.pack("<I", len(values)) + b"".join(struct.pack("<I", len(value.encode())) + value.encode() for value in values)
+
+
+def _property_value(value: object, string_values: list[str]) -> tuple[int, bytes]:
+    if isinstance(value, bool):
+        return 4, bytes([value])
+    if isinstance(value, int):
+        return 2, struct.pack("<q", value)
+    if isinstance(value, float) and math.isfinite(value):
+        return 1, struct.pack("<d", value)
+    if isinstance(value, str):
+        return 3, struct.pack("<I", string_values.index(value))
+    raise ValueError("v0 properties support only finite numbers, strings, and booleans")
 
 
 def _stable_id(value: str) -> int:
