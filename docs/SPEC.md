@@ -57,9 +57,9 @@ A range reader fetches the header, then the directory, then only the visible `GE
 | `0x20` | `u32` | `section_count` | directory record count |
 | `0x24` | `u32` | `container_flags` | zero in v0 |
 | `0x28` | `u64` | `file_bytes` | complete object length |
-| `0x30` | `u8[16]` | `file_uuid` | file identity, not an entity identity |
+| `0x30` | `u8[16]` | `file_uuid` | deterministic file identity, not an entity identity |
 
-A reader MUST reject a file when its supported version is lower than `minimum_reader_version`, when `header_bytes != 64`, or when a known object length disagrees with `file_bytes`.
+A reader MUST reject a file when its supported version is lower than `minimum_reader_version`, when `header_bytes != 64`, or when a known object length disagrees with `file_bytes`. A writer MUST set `file_uuid` to the first 16 bytes of SHA-256 over the decoded section payloads in directory order. This makes repeated compilation of identical logical data byte-identical.
 
 ### 2.2 Directory record (64 bytes)
 
