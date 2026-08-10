@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import struct
@@ -18,7 +19,7 @@ _DIRECTORY = struct.Struct("<4sIIIIQQQIHBB12s")
 
 
 def compile_geojson(source: Path, destination: Path) -> None:
-    """Compile a same-tile GeoJSON LineString collection into a TRAMA file."""
+    """Compile a GeoJSON LineString collection into a TRAMA file, one GEOM record per tile."""
     document = json.loads(source.read_text())
     features = document.get("features", [])
     if not features or any(feature.get("geometry", {}).get("type") != "LineString" for feature in features):
@@ -34,10 +35,6 @@ def compile_geojson(source: Path, destination: Path) -> None:
             raise ValueError("LineString requires at least two coordinates")
         points = [_web_mercator(*coordinate[:2]) for coordinate in coordinates]
         lines.append((str(feature.get("id", f"edge-{index}")), coordinates, points))
-    z, x, y = _tile_key(*lines[0][2][0])
-    if any(_tile_key(*point) != (z, x, y) for _feature_id, _coordinates, points in lines for point in points):
-        raise ValueError("v0 compiler slice does not support lines spanning tiles")
-
     node_ids = {
         tuple(coordinates[endpoint][:2]): _stable_id(f"node:{coordinates[endpoint][0]!r},{coordinates[endpoint][1]!r}")
         for _feature_id, coordinates, _points in lines
@@ -50,22 +47,33 @@ def compile_geojson(source: Path, destination: Path) -> None:
                     _stable_id(f"edge:{feature_id}"),
                     node_ids[tuple(coordinates[0][:2])],
                     node_ids[tuple(coordinates[-1][:2])],
-                    [_quantize(point, z, x, y) for point in points],
                 ),
+                _split_by_tile(points),
                 row,
             )
             for (feature_id, coordinates, points), row in zip(lines, properties)
         ),
         key=lambda record: record[0][0],
     )
-    edges = [edge for edge, _row in ordered]
-    edge_properties = [row for _edge, row in ordered]
+    edges = [edge for edge, _pieces, _row in ordered]
+    edge_properties = [row for _edge, _pieces, row in ordered]
     if len({edge_id for edge_id, *_rest in edges}) != len(edges):
         raise ValueError("GeoJSON feature IDs must be unique")
 
-    decoded = [
-        (b"GEOM", z, x, y, _geometry_section([points for _edge_id, _source_id, _target_id, points in edges])),
-        (b"GRPH", 0, 0, 0, _graph_section(edges)),
+    tiles = sorted({tile for _edge, pieces, _row in ordered for tile, _points in pieces})
+    tile_indexes = {tile: index for index, tile in enumerate(tiles)}
+    tile_paths: dict[tuple[int, int, int], list[tuple[int, list[tuple[int, int]]]]] = {tile: [] for tile in tiles}
+    geometry_refs: list[list[tuple[int, int]]] = []
+    for edge_index, (_edge, pieces, _row) in enumerate(ordered):
+        refs = []
+        for tile, points in pieces:
+            paths = tile_paths[tile]
+            refs.append((tile_indexes[tile], len(paths)))
+            paths.append((edge_index, [_quantize(point, *tile) for point in points]))
+        geometry_refs.append(refs)
+
+    decoded = [(b"GEOM", *tile, _geometry_section(tile_paths[tile])) for tile in tiles] + [
+        (b"GRPH", 0, 0, 0, _graph_section(edges, geometry_refs)),
         (b"PROP", 0, 0, 0, _property_section(edge_properties)),
         (b"STCH", 0, 0, 0, struct.pack("<3I", 0, 12, 12)),
     ]
@@ -112,34 +120,74 @@ def validate_container(source: Path) -> None:
             raise ValueError("invalid section integrity")
 
 
-def _geometry_section(paths: list[list[tuple[int, int]]]) -> bytes:
-    path_headers = b"".join(
-        struct.pack("<4I", edge_index, sum(len(path) for path in paths[:edge_index]), len(path), 0)
-        for edge_index, path in enumerate(paths)
+def _split_by_tile(points: list[tuple[float, float]]) -> list[tuple[tuple[int, int, int], list[tuple[float, float]]]]:
+    """Cut a projected polyline at tile boundaries, in traversal order."""
+    pieces: list[tuple[tuple[int, int, int], list[tuple[float, float]]]] = []
+    for start_point, end_point in itertools.pairwise(points):
+        cuts = [0.0, *_boundary_crossings(start_point, end_point), 1.0]
+        for span_start, span_end in itertools.pairwise(cuts):
+            tile = _tile_key(*_interpolate(start_point, end_point, (span_start + span_end) / 2))
+            piece_start = start_point if span_start == 0.0 else _interpolate(start_point, end_point, span_start)
+            piece_end = end_point if span_end == 1.0 else _interpolate(start_point, end_point, span_end)
+            if pieces and pieces[-1][0] == tile:
+                pieces[-1][1].append(piece_end)
+            else:
+                pieces.append((tile, [piece_start, piece_end]))
+    return pieces
+
+
+def _boundary_crossings(start_point: tuple[float, float], end_point: tuple[float, float], z: int = 14) -> list[float]:
+    """Fractions of the segment at which it crosses a tile edge, ascending."""
+    width = 40075016.68557849 / (1 << z)
+    crossings = []
+    for axis in (0, 1):
+        span = end_point[axis] - start_point[axis]
+        if span == 0:
+            continue
+        low, high = sorted((start_point[axis], end_point[axis]))
+        for step in range(math.floor(low / width) + 1, math.ceil(high / width)):
+            fraction = (step * width - start_point[axis]) / span
+            if 0.0 < fraction < 1.0:
+                crossings.append(fraction)
+    return sorted(crossings)
+
+
+def _interpolate(start_point: tuple[float, float], end_point: tuple[float, float], fraction: float) -> tuple[float, float]:
+    return (
+        start_point[0] + (end_point[0] - start_point[0]) * fraction,
+        start_point[1] + (end_point[1] - start_point[1]) * fraction,
     )
-    vertices = b"".join(struct.pack("<HH", *point) for path in paths for point in path)
+
+
+def _geometry_section(paths: list[tuple[int, list[tuple[int, int]]]]) -> bytes:
+    first_vertices = [sum(len(path) for _edge_index, path in paths[:index]) for index in range(len(paths))]
+    path_headers = b"".join(
+        struct.pack("<4I", edge_index, first_vertex, len(path), 0)
+        for (edge_index, path), first_vertex in zip(paths, first_vertices)
+    )
+    vertices = b"".join(struct.pack("<HH", *point) for _edge_index, path in paths for point in path)
     mesh_vertices = b"".join(
-        struct.pack("<HHI", point[0], point[1], edge_index)
-        for edge_index, path in enumerate(paths)
-        for point in path
+        struct.pack("<HHI", point[0], point[1], edge_index) for edge_index, path in paths for point in path
     )
     header_size = 32
     paths_offset = header_size
     vertices_offset = paths_offset + len(path_headers)
     mesh_vertices_offset = vertices_offset + len(vertices)
     mesh_indices_offset = mesh_vertices_offset + len(mesh_vertices)
-    vertex_count = sum(len(path) for path in paths)
+    vertex_count = sum(len(path) for _edge_index, path in paths)
     header = struct.pack("<8I", len(paths), vertex_count, vertex_count, 0, paths_offset, vertices_offset, mesh_vertices_offset, mesh_indices_offset)
     return header + path_headers + vertices + mesh_vertices
 
 
-def _graph_section(edges: list[tuple[int, int, int, list[tuple[int, int]]]]) -> bytes:
-    node_ids = sorted({node_id for _edge_id, source_id, target_id, _points in edges for node_id in (source_id, target_id)})
+def _graph_section(edges: list[tuple[int, int, int]], geometry_refs: list[list[tuple[int, int]]]) -> bytes:
+    node_ids = sorted({node_id for _edge_id, source_id, target_id in edges for node_id in (source_id, target_id)})
     node_indices = {node_id: index for index, node_id in enumerate(node_ids)}
     adjacency: list[list[tuple[int, int]]] = [[] for _node_id in node_ids]
-    for edge_index, (_edge_id, source_id, target_id, _points) in enumerate(edges):
+    for edge_index, (_edge_id, source_id, target_id) in enumerate(edges):
         adjacency[node_indices[source_id]].append((edge_index, 1))
         adjacency[node_indices[target_id]].append((edge_index, -1))
+    ref_starts = [sum(len(refs) for refs in geometry_refs[:index]) for index in range(len(geometry_refs))]
+    ref_count = sum(len(refs) for refs in geometry_refs)
     header_size = 36
     nodes_offset = header_size
     edges_offset = nodes_offset + len(node_ids) * 16
@@ -147,19 +195,23 @@ def _graph_section(edges: list[tuple[int, int, int, list[tuple[int, int]]]]) -> 
     adjacency_offset = csr_offset + (len(node_ids) + 1) * 8
     adjacency_count = sum(len(entries) for entries in adjacency)
     refs_offset = adjacency_offset + adjacency_count * 8
-    header = struct.pack("<9I", len(node_ids), len(edges), adjacency_count, len(edges), nodes_offset, edges_offset, csr_offset, adjacency_offset, refs_offset)
+    header = struct.pack("<9I", len(node_ids), len(edges), adjacency_count, ref_count, nodes_offset, edges_offset, csr_offset, adjacency_offset, refs_offset)
     nodes = b"".join(struct.pack("<QII", node_id, 0, 0) for node_id in node_ids)
     edge_records = b"".join(
-        struct.pack("<QIIIIII", edge_id, node_indices[source_id], node_indices[target_id], edge_index, edge_index, 1, 0)
-        for edge_index, (edge_id, source_id, target_id, _points) in enumerate(edges)
+        struct.pack(
+            "<QIIIIII", edge_id, node_indices[source_id], node_indices[target_id], edge_index, ref_start, len(refs), 0
+        )
+        for edge_index, ((edge_id, source_id, target_id), ref_start, refs) in enumerate(zip(edges, ref_starts, geometry_refs))
     )
     offsets = [0]
     for entries in adjacency:
         offsets.append(offsets[-1] + len(entries))
     csr = struct.pack(f"<{len(offsets)}Q", *offsets)
     adjacency_records = b"".join(struct.pack("<Ib3x", edge_index, direction) for entries in adjacency for edge_index, direction in entries)
-    geometry_refs = b"".join(struct.pack("<IIb3x", 0, edge_index, 1) for edge_index in range(len(edges)))
-    return header + nodes + edge_records + csr + adjacency_records + geometry_refs
+    ref_records = b"".join(
+        struct.pack("<IIb3x", directory_index, path_index, 1) for refs in geometry_refs for directory_index, path_index in refs
+    )
+    return header + nodes + edge_records + csr + adjacency_records + ref_records
 
 
 def _property_section(rows: list[dict[str, object]]) -> bytes:
