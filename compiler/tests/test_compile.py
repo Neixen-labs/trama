@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import zstandard
 
+from trama_engine import container
 from trama_engine.compiler import _stable_id, compile_geojson
 
 _DIRECTORY_OFFSET = 64
@@ -93,8 +94,8 @@ def test_compile_geojson_writes_deterministic_v0_container(tmp_path: Path) -> No
     data = first.read_bytes()
     assert data == second.read_bytes()
     assert data[:8] == b"TRAMA\0\0\0"
-    assert struct.unpack_from("<HHH", data, 8) == (0, 1, 1)
-    assert struct.unpack_from("<HHH", data, 14) == (0, 1, 0)
+    assert struct.unpack_from("<HHH", data, 8) == container.FORMAT_VERSION
+    assert struct.unpack_from("<HHH", data, 14) == container.MINIMUM_READER_VERSION
     assert struct.unpack_from("<Q", data, 0x28)[0] == len(data)
     assert [kind for kind, _key, _payload in _sections(data)] == [b"GEOM", b"GRPH", b"PROP", b"STCH"]
 

@@ -1,6 +1,6 @@
 # TRAMA File Format Specification
 
-**Specification version:** 0.1.1
+**Specification version:** 0.1.2
 **Status:** Draft
 **Normative language:** The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in RFC 2119.
 
@@ -265,7 +265,9 @@ Every `GEOM`, `GRPH`, `PROP`, and `STCH` directory record is one independent zst
 
 ### GeoJSON
 
-Export creates `nodes` Point and `edges` LineString FeatureCollections. Coordinates transform from `EPSG:3857` to WGS 84. Stable IDs appear as decimal `properties["_trama_id"]` strings. Typed properties become feature properties; enum values become their declared labels. Import preserves IDs only when `_trama_id` is valid. It cannot preserve meshes, tile boundaries, CSR ordering, compression, or every nullable-type distinction.
+Export creates a `nodes` Point FeatureCollection and an `edges` LineString FeatureCollection, written as two documents because GeoJSON holds one collection each. Coordinates transform from `EPSG:3857` to WGS 84. Stable IDs appear as decimal `properties["_trama_id"]` strings. Typed properties become feature properties; enum values become their declared labels. Import preserves IDs only when `_trama_id` is valid; a malformed `_trama_id` is an error, because renumbering an entity in silence is worse than refusing it.
+
+Import cannot preserve meshes, tile boundaries, CSR ordering, compression, or every nullable-type distinction. Two further losses follow from tile-local quantization. Exported coordinates land within one quantization step of the source rather than on it, so a round trip is not bit-exact geometry. Node identity is not carried through GeoJSON at all: node position is derived from quantized geometry, so recompiling exported edges yields new node IDs. Topology survives, because endpoints shared in the source stay bit-identical after export.
 
 ### GeoPackage
 

@@ -49,3 +49,11 @@
 **Why:** A typed column is the format's contract, so the type has to be decided at compile time. Silently stringifying a mixed key, or widening everything to `f64`, would hide a modelling error in the source data and lose information the exporters must return.
 
 **Consequence:** Sources with inconsistent property typing must be cleaned before compiling. v0 infers no enum columns: repeated labels are stored as `string` indexes, which already deduplicates them through the string dictionary.
+
+## 2026-08-10 — GeoJSON export writes two documents and preserves edge identity only
+
+**Decision:** `trama export` writes `<name>.nodes.geojson` and `<name>.edges.geojson`. Every feature carries `properties["_trama_id"]`, and compiling an exported edge document takes that ID back rather than deriving a new one. A malformed `_trama_id` fails the compile.
+
+**Why:** GeoJSON holds one FeatureCollection per document, and nodes and edges are separate layers in every downstream tool. Round-tripping without honouring `_trama_id` would renumber entities that never changed, which defeats the point of stable IDs.
+
+**Consequence:** Node identity does not survive a GeoJSON round trip, because a node's position is only recoverable from quantized geometry. Topology does survive: endpoints shared in the source are byte-identical after export, so they re-snap to one node. Exported coordinates sit within one quantization step of the source, so the round trip is not bit-exact geometry.

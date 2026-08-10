@@ -12,15 +12,8 @@ from typing import NamedTuple
 
 import zstandard
 
-_MAGIC = b"TRAMA\0\0\0"
-_HEADER = struct.Struct("<8s3H3HIQIIQ16s")
-_DIRECTORY = struct.Struct("<4sIIIIQQQIHBB12s")
-_COLUMN = struct.Struct("<IBBHIII")
-_WORLD = 40075016.68557849
-_EXTENT = 65535
-_MAX_ZOOM = 14
-_F64, _I64, _STRING, _BOOL = 1, 2, 3, 4
-_EDGE_KIND = 2
+from trama_engine import container
+from trama_engine.container import BOOL, F64, I64, STRING
 
 
 class _Edge(NamedTuple):
@@ -58,17 +51,39 @@ def compile_geojson(source: Path, destination: Path) -> None:
 
     file_uuid = hashlib.sha256(b"".join(payload for *_, payload in decoded)).digest()[:16]
     compressor = zstandard.ZstdCompressor(level=3)
-    offset = _HEADER.size + len(decoded) * _DIRECTORY.size
+    offset = container.HEADER.size + len(decoded) * container.DIRECTORY.size
     records = []
     for kind, z, x, y, payload in decoded:
         compressed = compressor.compress(payload)
         records.append((kind, z, x, y, offset, compressed, payload))
         offset += len(compressed)
 
-    header = _HEADER.pack(_MAGIC, 0, 1, 1, 0, 1, 0, 64, 64, len(records), 0, offset, file_uuid)
+    header = container.HEADER.pack(
+        container.MAGIC,
+        *container.FORMAT_VERSION,
+        *container.MINIMUM_READER_VERSION,
+        container.HEADER.size,
+        container.HEADER.size,
+        len(records),
+        0,
+        offset,
+        file_uuid,
+    )
     directory = b"".join(
-        _DIRECTORY.pack(
-            kind, 1, z, x, y, section_offset, len(compressed), len(payload), _crc32c(payload), 1, 0, 0, b"\0" * 12
+        container.DIRECTORY.pack(
+            kind,
+            1,
+            z,
+            x,
+            y,
+            section_offset,
+            len(compressed),
+            len(payload),
+            container.crc32c(payload),
+            container.ZSTD,
+            0,
+            0,
+            b"\0" * 12,
         )
         for kind, z, x, y, section_offset, compressed, payload in records
     )
@@ -86,17 +101,24 @@ def _read_edges(document: dict) -> dict[int, _Edge]:
         if len(coordinates) < 2:
             raise ValueError("LineString requires at least two coordinates")
         keys = [_node_key(coordinate) for coordinate in coordinates]
+        properties = {key: value for key, value in (feature.get("properties") or {}).items() if value is not None}
         identity = feature.get("id")
-        # An id-less feature has no source identity, so derive one from its snapped geometry:
-        # that keeps ids stable when features are reordered in the source document.
-        source_identity = f"edge:{identity}" if identity is not None else "edge:geometry:" + ";".join(keys)
-        edge_id = _stable_id(source_identity)
+        if "_trama_id" in properties:
+            # An exported file carries its own identity back in; see SPEC section 8.
+            exported = properties.pop("_trama_id")
+            source_identity = f"_trama_id {exported!r}"
+            edge_id = _exported_id(exported)
+        else:
+            # An id-less feature has no source identity, so derive one from its snapped geometry:
+            # that keeps ids stable when features are reordered in the source document.
+            source_identity = f"edge:{identity}" if identity is not None else "edge:geometry:" + ";".join(keys)
+            edge_id = _stable_id(source_identity)
         if edge_id in edges:
             raise ValueError(f"duplicate edge identity: {source_identity}")
         edges[edge_id] = _Edge(
             (_stable_id(f"node:{keys[0]}"), _stable_id(f"node:{keys[-1]}")),
-            [_web_mercator(*coordinate[:2]) for coordinate in coordinates],
-            {key: value for key, value in (feature.get("properties") or {}).items() if value is not None},
+            [container.web_mercator(*coordinate[:2]) for coordinate in coordinates],
+            properties,
         )
     if not edges:
         raise ValueError("GeoJSON contains no LineString features")
@@ -110,7 +132,7 @@ def _geometry_section(tile: tuple[int, int, int], paths: list[tuple[int, list[tu
     first_vertex = 0
     for edge_index, points in paths:
         path_records += struct.pack("<4I", edge_index, first_vertex, len(points), 0)
-        vertices += b"".join(struct.pack("<HH", *_quantize(point, tile)) for point in points)
+        vertices += b"".join(struct.pack("<HH", *container.quantize(point, tile)) for point in points)
         first_vertex += len(points)
     paths_offset = header_size
     vertices_offset = paths_offset + len(path_records)
@@ -205,9 +227,9 @@ def _property_section(edge_ids: list[int], edges: dict[int, _Edge]) -> bytes:
             (key_id, value_type, len(present) < len(values), bytes(bitmap), _encode_values(value_type, present, string_ids))
         )
 
-    key_dictionary = _string_dictionary(keys)
-    string_dictionary = _string_dictionary(strings)
-    enum_dictionary = _string_dictionary([])
+    key_dictionary = container.pack_strings(keys)
+    string_dictionary = container.pack_strings(strings)
+    enum_dictionary = container.pack_strings([])
     header_size = 40
     key_dictionary_offset = header_size
     string_dictionary_offset = key_dictionary_offset + len(key_dictionary)
@@ -216,11 +238,11 @@ def _property_section(edge_ids: list[int], edges: dict[int, _Edge]) -> bytes:
 
     records = b""
     body = b""
-    offset = columns_offset + len(columns) * _COLUMN.size
+    offset = columns_offset + len(columns) * container.COLUMN.size
     for key_id, value_type, nullable, bitmap, values in columns:
         padding = -(offset + len(bitmap)) % 8
-        records += _COLUMN.pack(
-            key_id, _EDGE_KIND, value_type, 1 if nullable else 0, len(edge_ids), offset, offset + len(bitmap) + padding
+        records += container.COLUMN.pack(
+            key_id, container.EDGE_KIND, value_type, 1 if nullable else 0, len(edge_ids), offset, offset + len(bitmap) + padding
         )
         body += bitmap + b"\0" * padding + values
         offset += len(bitmap) + padding + len(values)
@@ -244,8 +266,8 @@ def _property_section(edge_ids: list[int], edges: dict[int, _Edge]) -> bytes:
 def _column_type(key: str, values: list[object]) -> int:
     """Pick one column type for a key, rejecting mixtures that would lose information."""
     kinds = {_value_kind(key, value) for value in values}
-    if kinds <= {_I64, _F64} and _F64 in kinds:
-        return _F64
+    if kinds <= {I64, F64} and F64 in kinds:
+        return F64
     if len(kinds) != 1:
         raise ValueError(f"property '{key}' mixes value types across features")
     return kinds.pop()
@@ -253,42 +275,44 @@ def _column_type(key: str, values: list[object]) -> int:
 
 def _value_kind(key: str, value: object) -> int:
     if isinstance(value, bool):
-        return _BOOL
+        return BOOL
     if isinstance(value, int):
         if not -(2**63) <= value < 2**63:
             raise ValueError(f"property '{key}' has an integer outside the i64 range")
-        return _I64
+        return I64
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError(f"property '{key}' has a non-finite number")
-        return _F64
+        return F64
     if isinstance(value, str):
-        return _STRING
+        return STRING
     raise ValueError(f"property '{key}' has an unsupported value type: {type(value).__name__}")
 
 
 def _encode_values(value_type: int, values: list[object], string_ids: dict[str, int]) -> bytes:
-    if value_type == _BOOL:
+    if value_type == BOOL:
         packed = bytearray((len(values) + 7) // 8)
         for index, value in enumerate(values):
             if value:
                 packed[index // 8] |= 1 << (index % 8)
         return bytes(packed)
-    if value_type == _STRING:
+    if value_type == STRING:
         return b"".join(struct.pack("<I", string_ids[value]) for value in values)
-    if value_type == _I64:
+    if value_type == I64:
         return b"".join(struct.pack("<q", value) for value in values)
     return b"".join(struct.pack("<d", float(value)) for value in values)
-
-
-def _string_dictionary(values: list[str]) -> bytes:
-    encoded = [value.encode() for value in values]
-    return struct.pack("<I", len(encoded)) + b"".join(struct.pack("<I", len(item)) + item for item in encoded)
 
 
 def _state_channel_section() -> bytes:
     """Empty STCH: GeoJSON declares no state channels; solvers do."""
     return struct.pack("<3I", 0, 12, 16) + struct.pack("<I", 0)
+
+
+def _exported_id(value: object) -> int:
+    """Take back an ID this compiler wrote. A corrupt one is an error, never a silent renumber."""
+    if not isinstance(value, str) or not value.isdigit() or not 0 <= int(value) < 2**64:
+        raise ValueError(f"_trama_id must be a decimal u64 string, got {value!r}")
+    return int(value)
 
 
 def _stable_id(value: str) -> int:
@@ -304,59 +328,15 @@ def _node_key(coordinate: list[float]) -> str:
     return ",".join(f"{round(float(value), 7) + 0.0:.7f}" for value in coordinate[:2])
 
 
-def _web_mercator(longitude: float, latitude: float) -> tuple[float, float]:
-    latitude = max(min(float(latitude), 85.05112878), -85.05112878)
-    x = float(longitude) * _WORLD / 360
-    y = math.log(math.tan((90 + latitude) * math.pi / 360)) / (math.pi / 180)
-    return x, y * _WORLD / 360
-
-
-def _tile_key(x_m: float, y_m: float, z: int) -> tuple[int, int, int]:
-    tiles = 1 << z
-    x = min(tiles - 1, max(0, int((x_m + _WORLD / 2) / _WORLD * tiles)))
-    y = min(tiles - 1, max(0, int((_WORLD / 2 - y_m) / _WORLD * tiles)))
-    return z, x, y
-
-
 def _fit_tile(points: list[tuple[float, float]]) -> tuple[int, int, int]:
     """Return the deepest tile that contains the whole line.
 
     ponytail: no tile clipping. Long lines drop to a coarse zoom instead of being
     split. Add real clipping when the engine needs level-of-detail selection.
     """
-    for z in range(_MAX_ZOOM, 0, -1):
-        key = _tile_key(*points[0], z)
-        if all(_tile_key(*point, z) == key for point in points[1:]):
+    for z in range(container.MAX_ZOOM, 0, -1):
+        key = container.tile_key(*points[0], z)
+        if all(container.tile_key(*point, z) == key for point in points[1:]):
             return key
     return 0, 0, 0
 
-
-def _quantize(point: tuple[float, float], tile: tuple[float, float, float]) -> tuple[int, int]:
-    z, x, y = tile
-    width = _WORLD / (1 << z)
-    min_x = -_WORLD / 2 + x * width
-    max_y = _WORLD / 2 - y * width
-    return (
-        max(0, min(_EXTENT, round((point[0] - min_x) / width * _EXTENT))),
-        max(0, min(_EXTENT, round((max_y - point[1]) / width * _EXTENT))),
-    )
-
-
-def _crc32c_table() -> list[int]:
-    table = []
-    for byte in range(256):
-        crc = byte
-        for _ in range(8):
-            crc = (crc >> 1) ^ (0x82F63B78 if crc & 1 else 0)
-        table.append(crc)
-    return table
-
-
-_CRC32C_TABLE = _crc32c_table()
-
-
-def _crc32c(data: bytes) -> int:
-    crc = 0xFFFFFFFF
-    for byte in data:
-        crc = _CRC32C_TABLE[(crc ^ byte) & 0xFF] ^ (crc >> 8)
-    return (~crc) & 0xFFFFFFFF
