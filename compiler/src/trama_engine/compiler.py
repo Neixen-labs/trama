@@ -64,6 +64,30 @@ def compile_geojson(source: Path, destination: Path) -> None:
     destination.write_bytes(header + directory + b"".join(compressed for *_, compressed, _payload in records))
 
 
+def validate_container(source: Path) -> None:
+    """Validate v0 container framing, compression, decoded lengths, and checksums."""
+    data = source.read_bytes()
+    if len(data) < _HEADER.size:
+        raise ValueError("container is shorter than its header")
+    magic, *_versions, header_bytes, directory_offset, section_count, _flags, file_bytes, _uuid = _HEADER.unpack_from(data)
+    if magic != _MAGIC or header_bytes != _HEADER.size or directory_offset != _HEADER.size or file_bytes != len(data):
+        raise ValueError("invalid container header")
+    directory_end = directory_offset + section_count * _DIRECTORY.size
+    if directory_end > len(data):
+        raise ValueError("container directory exceeds file size")
+    for index in range(section_count):
+        record = _DIRECTORY.unpack_from(data, directory_offset + index * _DIRECTORY.size)
+        _kind, _flags, _z, _x, _y, offset, stored_bytes, decoded_bytes, checksum, codec, _alignment, _reserved, _padding = record
+        if codec != 1 or offset < directory_end or offset + stored_bytes > len(data):
+            raise ValueError("invalid section record")
+        try:
+            decoded = zstandard.ZstdDecompressor().decompress(data[offset : offset + stored_bytes])
+        except zstandard.ZstdError as error:
+            raise ValueError("invalid zstd section") from error
+        if len(decoded) != decoded_bytes or _crc32c(decoded) != checksum:
+            raise ValueError("invalid section integrity")
+
+
 def _geometry_section(points: list[tuple[int, int]]) -> bytes:
     path_header = struct.pack("<4I", 0, 0, len(points), 0)
     vertices = b"".join(struct.pack("<HH", *point) for point in points)

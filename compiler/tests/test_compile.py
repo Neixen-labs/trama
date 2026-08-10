@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import zstandard
 
-from trama_engine.compiler import compile_geojson
+from trama_engine.compiler import compile_geojson, validate_container
 
 
 def test_compile_geojson_writes_deterministic_v0_container(tmp_path: Path) -> None:
@@ -91,3 +91,18 @@ def test_compile_geojson_sorts_nodes_by_stable_id(tmp_path: Path) -> None:
     nodes_offset = struct.unpack_from("<I", graph, 16)[0]
     node_ids = [struct.unpack_from("<Q", graph, nodes_offset + index * 16)[0] for index in range(2)]
     assert node_ids == sorted(node_ids)
+
+
+def test_validate_container_rejects_corrupted_section(tmp_path: Path) -> None:
+    source = tmp_path / "network.geojson"
+    source.write_text(
+        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[-3.704,40.416],[-3.703,40.417]]}}]}'
+    )
+    destination = tmp_path / "network.trama"
+    compile_geojson(source, destination)
+    damaged = bytearray(destination.read_bytes())
+    damaged[-1] ^= 1
+    destination.write_bytes(damaged)
+
+    with pytest.raises(ValueError, match="invalid section integrity"):
+        validate_container(destination)
