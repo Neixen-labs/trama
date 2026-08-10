@@ -14,9 +14,23 @@ export type CustomLayer = Readonly<{
   type: "custom";
   renderingMode: "2d";
   onAdd(map: HostMap, gl: WebGL2RenderingContext): void;
-  render(gl: WebGL2RenderingContext, matrix: Float32Array | number[]): void;
+  render(gl: WebGL2RenderingContext, input: RenderInput): void;
   onRemove(map: HostMap, gl: WebGL2RenderingContext): void;
 }>;
+
+/**
+ * What MapLibre 5 and 6 hand `render`. Only `getProjectionData` is used: it returns the matrix
+ * for a specific tile, which is the supported way to place tile-local geometry and the only one
+ * that also holds under globe projection.
+ */
+export type RenderInput = Readonly<{
+  getProjectionData(params: { tileID: { canonical: { x: number; y: number; z: number } } }): {
+    mainMatrix: Float32Array | number[];
+  };
+}>;
+
+/** Tile coordinate space MapLibre's tile matrices expect. Measured against a real map, not assumed. */
+const EXTENT = 8192;
 
 export type HostMap = Readonly<{
   getBounds(): { getWest(): number; getSouth(): number; getEast(): number; getNorth(): number };
@@ -36,23 +50,20 @@ export type TramaLayerOptions = Readonly<{
 }>;
 
 /**
- * Composes the map's world matrix with a tile's placement.
+ * The matrix placing one tile's geometry on screen.
  *
- * The renderer's vertices are tile-normalized `[0,1]`; MapLibre's matrix expects world-normalized
- * Mercator. Tile to world is only a scale and a translation, so this scales the first two columns
- * and folds the offset into the fourth rather than running a general 4x4 multiply.
+ * MapLibre's tile matrix expects coordinates in `[0, EXTENT]`; the renderer's vertices are
+ * tile-normalized `[0,1]`, so the first two columns are scaled by EXTENT.
  */
-export function tileMatrix(mapMatrix: Float32Array | number[], key: readonly [number, number, number]): Float32Array {
+export function tileMatrix(input: RenderInput, key: readonly [number, number, number]): Float32Array {
   const [z, x, y] = key;
-  const scale = 1 / 2 ** z;
+  const { mainMatrix } = input.getProjectionData({ tileID: { canonical: { x, y, z } } });
   const result = new Float32Array(16);
   for (let row = 0; row < 4; row += 1) {
-    const column0 = mapMatrix[row]!;
-    const column1 = mapMatrix[4 + row]!;
-    result[row] = column0 * scale;
-    result[4 + row] = column1 * scale;
-    result[8 + row] = mapMatrix[8 + row]!;
-    result[12 + row] = mapMatrix[12 + row]! + column0 * x * scale + column1 * y * scale;
+    result[row] = mainMatrix[row]! * EXTENT;
+    result[4 + row] = mainMatrix[4 + row]! * EXTENT;
+    result[8 + row] = mainMatrix[8 + row]!;
+    result[12 + row] = mainMatrix[12 + row]!;
   }
   return result;
 }
@@ -116,7 +127,7 @@ export function createTramaLayer(options: TramaLayerOptions): CustomLayer {
       host = map;
       renderer = createLineRenderer(gl);
     },
-    render(_gl, matrix) {
+    render(_gl, input) {
       if (renderer === null || host === null) return;
       const bounds = host.getBounds();
       const visible = visibleTiles(options.container.sections, {
@@ -133,7 +144,7 @@ export function createTramaLayer(options: TramaLayerOptions): CustomLayer {
         }
         renderer.draw(instances, {
           ...options.style,
-          matrix: tileMatrix(matrix, section.key),
+          matrix: tileMatrix(input, section.key),
           resolutionPixels: options.resolutionPixels(),
         });
       }
