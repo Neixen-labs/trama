@@ -5,7 +5,7 @@ from pathlib import Path
 
 import typer
 
-from trama_engine.compiler import compile_geojson
+from trama_engine.compiler import compile_geojson, validate_container
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -21,5 +21,15 @@ def compile(source: Path, destination: Path) -> None:
     try:
         compile_geojson(source, destination)
     except (OSError, TypeError, ValueError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+
+@app.command()
+def validate(source: Path) -> None:
+    """Validate a `.trama` container."""
+    try:
+        validate_container(source)
+    except (OSError, ValueError) as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(1) from error
