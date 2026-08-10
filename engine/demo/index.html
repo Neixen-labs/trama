@@ -54,7 +54,9 @@
         }
       };
 
-      const name = new URLSearchParams(location.search).get("file") ?? "network.trama";
+      // demo-grid.trama by default: network.trama is a three-segment test fixture and reads as
+      // a broken demo. ?file= loads anything else in fixtures/.
+      const name = new URLSearchParams(location.search).get("file") ?? "demo-grid.trama";
       const url = `/fixtures/${name}`;
 
       /** Counts what the page actually transfers, so the range loading is visible, not claimed. */
