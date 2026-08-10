@@ -1,6 +1,6 @@
 # TRAMA File Format Specification
 
-**Specification version:** 0.1.0
+**Specification version:** 0.1.1
 **Status:** Draft
 **Normative language:** The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in RFC 2119.
 
@@ -226,7 +226,7 @@ PropertyColumn[node_column_count + edge_column_count]
   u32 values_offset
 ```
 
-Each dictionary is `u32 count` followed by that many length-prefixed UTF-8 strings. Keys are globally unique. Columns are ordered by entity kind then `key_id`. A presence bitmap has one bit per entity; `1` means a value is present. Present values are dense and ordered by entity-array index. Strings are `u32` indexes into the string dictionary; enums are `u32` indexes into the enum dictionary; booleans are packed bits. `f64` values MUST be finite. Absence is distinct from `false`, `0`, and an empty string.
+Each dictionary is `u32 count` followed by that many length-prefixed UTF-8 strings. Keys are globally unique. Columns are ordered by entity kind then `key_id`. A presence bitmap has one bit per entity; `1` means a value is present. Entity index `i` occupies bit `i mod 8` of byte `i div 8`, counted from the least significant bit; packed booleans use that same order. Trailing bits of the final byte MUST be zero. Present values are dense and ordered by entity-array index. `values_offset` MUST be a multiple of eight so a reader can view fixed-width values in place. Strings are `u32` indexes into the string dictionary; enums are `u32` indexes into the enum dictionary; booleans are packed bits. `f64` values MUST be finite. Absence is distinct from `false`, `0`, and an empty string.
 
 ## 6. `STCH`: state-channel declarations
 

@@ -41,3 +41,11 @@
 **Why:** It keeps every edge to a single `GEOM` path and one `GeometryRef`, which the specification already permits, and it removes the clipping pipeline from the first useful compiler.
 
 **Consequence:** A long edge drops to a coarse zoom, so a tile set is not a level-of-detail pyramid and a renderer cannot select geometry by zoom alone. Real clipping is required before the engine implements LOD.
+
+## 2026-08-10 — Property types inferred per key, mixtures rejected
+
+**Decision:** Each GeoJSON property key becomes one typed `PROP` column. Booleans map to `bool`, integers to `i64`, numbers with any fractional value to `f64`, and text to `string`. A key seen as both integer and float promotes to `f64`. Any other mixture, a nested value, a non-finite number, or an out-of-range integer is a compile error. JSON `null` means absent, not a value.
+
+**Why:** A typed column is the format's contract, so the type has to be decided at compile time. Silently stringifying a mixed key, or widening everything to `f64`, would hide a modelling error in the source data and lose information the exporters must return.
+
+**Consequence:** Sources with inconsistent property typing must be cleaned before compiling. v0 infers no enum columns: repeated labels are stored as `string` indexes, which already deduplicates them through the string dictionary.
