@@ -5,11 +5,13 @@ on:
   pull_request:
     paths:
       - 'engine/**'
+      - 'fixtures/**'
       - '.github/workflows/engine-checks.yml'
   push:
     branches: [main]
     paths:
       - 'engine/**'
+      - 'fixtures/**'
       - '.github/workflows/engine-checks.yml'
 
 permissions:

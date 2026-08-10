@@ -5,11 +5,13 @@ on:
   pull_request:
     paths:
       - 'compiler/**'
+      - 'fixtures/**'
       - '.github/workflows/compiler-checks.yml'
   push:
     branches: [main]
     paths:
       - 'compiler/**'
+      - 'fixtures/**'
       - '.github/workflows/compiler-checks.yml'
 
 permissions:

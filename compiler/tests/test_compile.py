@@ -349,3 +349,14 @@ def test_compile_geojson_writes_no_mesh_for_lines(tmp_path: Path) -> None:
     assert (mesh_vertex_count, mesh_index_count) == (0, 0)
     assert mesh_vertices_offset == mesh_indices_offset == vertices_offset + vertex_count * 4 == len(geometry)
     assert path_count == 2
+
+
+def test_shared_fixture_matches_a_fresh_compile(tmp_path: Path) -> None:
+    fixtures = Path(__file__).resolve().parents[2] / "fixtures"
+    destination = tmp_path / "network.trama"
+
+    compile_geojson(fixtures / "network.geojson", destination)
+
+    assert destination.read_bytes() == (fixtures / "network.trama").read_bytes(), (
+        "regenerate fixtures/network.trama: the engine round-trip test reads it"
+    )

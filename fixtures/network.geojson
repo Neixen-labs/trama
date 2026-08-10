@@ -1,0 +1,23 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "trunk",
+      "properties": {"label": "trunk", "loss": 1.5, "rank": 3, "active": true},
+      "geometry": {"type": "LineString", "coordinates": [[-3.6700, 40.4160], [-3.6690, 40.4160]]}
+    },
+    {
+      "type": "Feature",
+      "id": "branch",
+      "properties": {"label": "branch", "loss": 2.5},
+      "geometry": {"type": "LineString", "coordinates": [[-3.6690, 40.4160], [-3.6685, 40.4165]]}
+    },
+    {
+      "type": "Feature",
+      "id": "spur",
+      "properties": {},
+      "geometry": {"type": "LineString", "coordinates": [[-3.6685, 40.4165], [-3.6680, 40.4170]]}
+    }
+  ]
+}
