@@ -17,3 +17,13 @@ def test_compile_command_creates_output(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert output.exists()
+
+
+def test_compile_command_reports_rejected_input(tmp_path: Path) -> None:
+    source = tmp_path / "network.geojson"
+    source.write_text('{"type":"FeatureCollection","features":[]}')
+
+    result = CliRunner().invoke(app, ["compile", str(source), str(tmp_path / "network.trama")])
+
+    assert result.exit_code == 1
+    assert "no LineString features" in result.output

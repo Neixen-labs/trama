@@ -8,27 +8,36 @@ import zstandard
 
 from trama_engine.compiler import compile_geojson
 
+_DIRECTORY_OFFSET = 64
+_DIRECTORY_SIZE = 64
+
+
+def _line(coordinates: list[list[float]], identity: str | None = None) -> dict:
+    feature = {"type": "Feature", "properties": {}, "geometry": {"type": "LineString", "coordinates": coordinates}}
+    if identity is not None:
+        feature["id"] = identity
+    return feature
+
+
+def _write(path: Path, *features: dict) -> Path:
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": list(features)}))
+    return path
+
+
+def _sections(data: bytes) -> list[tuple[bytes, tuple[int, int, int], bytes]]:
+    count = struct.unpack_from("<I", data, 0x20)[0]
+    sections = []
+    for index in range(count):
+        record = _DIRECTORY_OFFSET + index * _DIRECTORY_SIZE
+        kind = data[record : record + 4]
+        key = struct.unpack_from("<3I", data, record + 0x08)
+        offset, stored = struct.unpack_from("<QQ", data, record + 0x14)
+        sections.append((kind, key, zstandard.ZstdDecompressor().decompress(data[offset : offset + stored])))
+    return sections
+
 
 def test_compile_geojson_writes_deterministic_v0_container(tmp_path: Path) -> None:
-    source = tmp_path / "network.geojson"
-    source.write_text(
-        json.dumps(
-            {
-                "type": "FeatureCollection",
-                "features": [
-                    {
-                        "type": "Feature",
-                        "id": "edge-a",
-                        "properties": {},
-                        "geometry": {
-                            "type": "LineString",
-                            "coordinates": [[-3.704, 40.416], [-3.703, 40.417]],
-                        },
-                    }
-                ],
-            }
-        )
-    )
+    source = _write(tmp_path / "network.geojson", _line([[-3.704, 40.416], [-3.703, 40.417]], "edge-a"))
     first = tmp_path / "first.trama"
     second = tmp_path / "second.trama"
 
@@ -39,47 +48,84 @@ def test_compile_geojson_writes_deterministic_v0_container(tmp_path: Path) -> No
     assert data == second.read_bytes()
     assert data[:8] == b"TRAMA\0\0\0"
     assert struct.unpack_from("<HHH", data, 8) == (0, 1, 0)
-    assert struct.unpack_from("<I", data, 0x20)[0] == 4
-    directory_offset = struct.unpack_from("<Q", data, 0x18)[0]
-    section_types = [
-        data[directory_offset + index * 64 : directory_offset + index * 64 + 4]
-        for index in range(4)
-    ]
-    assert section_types == [b"GEOM", b"GRPH", b"PROP", b"STCH"]
+    assert struct.unpack_from("<Q", data, 0x28)[0] == len(data)
+    assert [kind for kind, _key, _payload in _sections(data)] == [b"GEOM", b"GRPH", b"PROP", b"STCH"]
+
+
+def test_compile_geojson_shares_a_node_between_touching_lines(tmp_path: Path) -> None:
+    source = _write(
+        tmp_path / "network.geojson",
+        _line([[-3.704, 40.416], [-3.7035, 40.4165]], "edge-a"),
+        _line([[-3.7035, 40.4165], [-3.703, 40.417]], "edge-b"),
+    )
+    destination = tmp_path / "network.trama"
+    compile_geojson(source, destination)
+
+    graph = next(payload for kind, _key, payload in _sections(destination.read_bytes()) if kind == b"GRPH")
+    node_count, edge_count, adjacency_count, _refs = struct.unpack_from("<4I", graph, 0)
+    assert (node_count, edge_count, adjacency_count) == (3, 2, 4)
+
+    nodes_offset, _edges_offset, csr_offset = struct.unpack_from("<3I", graph, 16)
+    node_ids = [struct.unpack_from("<Q", graph, nodes_offset + index * 16)[0] for index in range(node_count)]
+    assert node_ids == sorted(node_ids)
+
+    csr = [struct.unpack_from("<Q", graph, csr_offset + index * 8)[0] for index in range(node_count + 1)]
+    assert csr[0] == 0 and csr[-1] == adjacency_count
+    assert csr == sorted(csr)
+    # The shared endpoint is the only node carrying two adjacency entries.
+    assert sorted(csr[index + 1] - csr[index] for index in range(node_count)) == [1, 1, 2]
+
+
+def test_compile_geojson_drops_a_long_line_to_a_coarser_tile(tmp_path: Path) -> None:
+    source = _write(tmp_path / "network.geojson", _line([[0, 0], [1, 0]], "edge-long"))
+    destination = tmp_path / "network.trama"
+    compile_geojson(source, destination)
+
+    kind, (z, _x, _y), payload = _sections(destination.read_bytes())[0]
+    assert kind == b"GEOM"
+    assert z < 14
+    path_count, path_vertex_count, mesh_vertex_count, mesh_index_count = struct.unpack_from("<4I", payload, 0)
+    assert (path_count, path_vertex_count, mesh_vertex_count, mesh_index_count) == (1, 2, 0, 0)
+
+
+def test_compile_geojson_gives_an_id_less_feature_an_order_independent_id(tmp_path: Path) -> None:
+    forward = _write(tmp_path / "forward.geojson", _line([[0, 0], [0.001, 0]]), _line([[0.002, 0], [0.003, 0]]))
+    reversed_order = _write(
+        tmp_path / "reversed.geojson", _line([[0.002, 0], [0.003, 0]]), _line([[0, 0], [0.001, 0]])
+    )
+    first = tmp_path / "forward.trama"
+    second = tmp_path / "reversed.trama"
+
+    compile_geojson(forward, first)
+    compile_geojson(reversed_order, second)
+
+    assert first.read_bytes() == second.read_bytes()
 
 
 def test_compile_geojson_rejects_properties_until_prop_encoding_exists(tmp_path: Path) -> None:
     source = tmp_path / "network.geojson"
     source.write_text(
-        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"edge_weight":3},"geometry":{"type":"LineString","coordinates":[[0,0],[0.001,0.001]]}}]}'
+        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"edge_weight":3},'
+        '"geometry":{"type":"LineString","coordinates":[[0,0],[0.001,0.001]]}}]}'
     )
 
     with pytest.raises(ValueError, match="does not support properties"):
         compile_geojson(source, tmp_path / "network.trama")
 
 
-def test_compile_geojson_rejects_lines_that_span_tiles(tmp_path: Path) -> None:
-    source = tmp_path / "network.geojson"
-    source.write_text(
-        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[0,0],[1,0]]}}]}'
+def test_compile_geojson_rejects_duplicate_edge_identities(tmp_path: Path) -> None:
+    source = _write(
+        tmp_path / "network.geojson",
+        _line([[0, 0], [0.001, 0]], "edge-a"),
+        _line([[0.002, 0], [0.003, 0]], "edge-a"),
     )
 
-    with pytest.raises(ValueError, match="does not support lines spanning tiles"):
+    with pytest.raises(ValueError, match="duplicate edge identity"):
         compile_geojson(source, tmp_path / "network.trama")
 
 
-def test_compile_geojson_sorts_nodes_by_stable_id(tmp_path: Path) -> None:
-    source = tmp_path / "network.geojson"
-    source.write_text(
-        '{"type":"FeatureCollection","features":[{"type":"Feature","id":"edge-a","properties":{},"geometry":{"type":"LineString","coordinates":[[-3.704,40.416],[-3.703,40.417]]}}]}'
-    )
-    destination = tmp_path / "network.trama"
-    compile_geojson(source, destination)
+def test_compile_geojson_rejects_a_document_without_lines(tmp_path: Path) -> None:
+    source = _write(tmp_path / "network.geojson")
 
-    data = destination.read_bytes()
-    graph_offset = struct.unpack_from("<Q", data, 64 + 64 + 20)[0]
-    graph_size = struct.unpack_from("<Q", data, 64 + 64 + 36)[0]
-    graph = zstandard.ZstdDecompressor().decompress(data[graph_offset : graph_offset + graph_size])
-    nodes_offset = struct.unpack_from("<I", graph, 16)[0]
-    node_ids = [struct.unpack_from("<Q", graph, nodes_offset + index * 16)[0] for index in range(2)]
-    assert node_ids == sorted(node_ids)
+    with pytest.raises(ValueError, match="no LineString features"):
+        compile_geojson(source, tmp_path / "network.trama")
