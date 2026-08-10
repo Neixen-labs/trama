@@ -21,8 +21,14 @@ const DIRECTORY_BYTES = 64;
 const MAGIC = "TRAMA\0\0\0";
 
 export function parseContainer(bytes: ArrayBuffer): Container {
-  const view = new DataView(bytes);
-  if (bytes.byteLength < HEADER_BYTES || new TextDecoder().decode(bytes.slice(0, 8)) !== MAGIC) {
+  return parsePrefix(bytes, bytes.byteLength);
+}
+
+/** Reads the header and directory from a prefix. `fileBytes` is the authority on total length,
+ * so a range reader can bounds-check sections it has not fetched. */
+export function parsePrefix(prefix: ArrayBuffer, fileBytes: number): Container {
+  const view = new DataView(prefix);
+  if (prefix.byteLength < HEADER_BYTES || new TextDecoder().decode(prefix.slice(0, 8)) !== MAGIC) {
     throw new Error("invalid TRAMA header");
   }
   const version = tuple3(view, 8);
@@ -30,16 +36,23 @@ export function parseContainer(bytes: ArrayBuffer): Container {
   const headerBytes = view.getUint32(20, true);
   const directoryOffset = view.getBigUint64(24, true);
   const sectionCount = view.getUint32(32, true);
-  const fileBytes = view.getBigUint64(40, true);
-  if (headerBytes !== HEADER_BYTES || directoryOffset !== BigInt(HEADER_BYTES) || fileBytes !== BigInt(bytes.byteLength)) {
+  const declaredBytes = view.getBigUint64(40, true);
+  if (headerBytes !== HEADER_BYTES || directoryOffset !== BigInt(HEADER_BYTES) || declaredBytes !== BigInt(fileBytes)) {
     throw new Error("invalid TRAMA header");
   }
   const directoryEnd = HEADER_BYTES + sectionCount * DIRECTORY_BYTES;
-  if (directoryEnd > bytes.byteLength) throw new Error("directory exceeds file bounds");
+  if (directoryEnd > prefix.byteLength) throw new Error("directory exceeds file bounds");
 
-  const sections = Array.from({ length: sectionCount }, (_, index) => parseSection(view, HEADER_BYTES + index * DIRECTORY_BYTES, bytes.byteLength, directoryEnd));
+  const sections = Array.from({ length: sectionCount }, (_, index) => parseSection(view, HEADER_BYTES + index * DIRECTORY_BYTES, fileBytes, directoryEnd));
   return { version, minimumReaderVersion, sections };
 }
+
+/** Byte range a reader must fetch to hold the header and the whole directory. */
+export function directoryRange(sectionCount: number): readonly [number, number] {
+  return [0, HEADER_BYTES + sectionCount * DIRECTORY_BYTES - 1];
+}
+
+export const HEADER_RANGE: readonly [number, number] = [0, HEADER_BYTES - 1];
 
 function parseSection(view: DataView, offset: number, fileBytes: number, directoryEnd: number): Section {
   const type = new TextDecoder().decode(new Uint8Array(view.buffer, offset, 4));
