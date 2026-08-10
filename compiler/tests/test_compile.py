@@ -106,3 +106,22 @@ def test_validate_container_rejects_corrupted_section(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="invalid section integrity"):
         validate_container(destination)
+
+
+def test_compile_geojson_connects_multiple_lines_at_shared_endpoints(tmp_path: Path) -> None:
+    source = tmp_path / "network.geojson"
+    source.write_text(
+        '{"type":"FeatureCollection","features":['
+        '{"type":"Feature","id":"a","properties":{},"geometry":{"type":"LineString","coordinates":[[-3.704,40.416],[-3.703,40.417]]}},'
+        '{"type":"Feature","id":"b","properties":{},"geometry":{"type":"LineString","coordinates":[[-3.703,40.417],[-3.702,40.418]]}}]}'
+    )
+    destination = tmp_path / "network.trama"
+
+    compile_geojson(source, destination)
+
+    data = destination.read_bytes()
+    graph_record = 64 + 64
+    graph_offset = struct.unpack_from("<Q", data, graph_record + 20)[0]
+    graph_size = struct.unpack_from("<Q", data, graph_record + 36)[0]
+    graph = zstandard.ZstdDecompressor().decompress(data[graph_offset : graph_offset + graph_size])
+    assert struct.unpack_from("<3I", graph) == (3, 2, 4)

@@ -17,32 +17,49 @@ _DIRECTORY = struct.Struct("<4sIIIIQQQIHBB12s")
 
 
 def compile_geojson(source: Path, destination: Path) -> None:
-    """Compile one LineString GeoJSON feature into a deterministic TRAMA file."""
+    """Compile a same-tile GeoJSON LineString collection into a TRAMA file."""
     document = json.loads(source.read_text())
     features = document.get("features", [])
-    if len(features) != 1 or features[0].get("geometry", {}).get("type") != "LineString":
+    if not features or any(feature.get("geometry", {}).get("type") != "LineString" for feature in features):
         raise ValueError("v0 compiler slice requires one LineString feature")
-    feature = features[0]
-    properties = feature.get("properties") or {}
-    if not isinstance(properties, dict):
+    properties = [feature.get("properties") or {} for feature in features]
+    if any(not isinstance(value, dict) for value in properties):
         raise TypeError("GeoJSON properties must be an object")
-    coordinates = feature["geometry"].get("coordinates", [])
-    if len(coordinates) < 2:
-        raise ValueError("LineString requires at least two coordinates")
+    if len(features) > 1 and any(properties):
+        raise ValueError("v0 multi-feature compiler slice requires empty properties")
 
-    feature_id = str(features[0].get("id", "edge-0"))
-    points = [_web_mercator(*coordinate[:2]) for coordinate in coordinates]
-    z, x, y = _tile_key(*points[0])
-    if any(_tile_key(*point) != (z, x, y) for point in points[1:]):
+    lines = []
+    for index, feature in enumerate(features):
+        coordinates = feature["geometry"].get("coordinates", [])
+        if len(coordinates) < 2:
+            raise ValueError("LineString requires at least two coordinates")
+        points = [_web_mercator(*coordinate[:2]) for coordinate in coordinates]
+        lines.append((str(feature.get("id", f"edge-{index}")), coordinates, points))
+    z, x, y = _tile_key(*lines[0][2][0])
+    if any(_tile_key(*point) != (z, x, y) for _feature_id, _coordinates, points in lines for point in points):
         raise ValueError("v0 compiler slice does not support lines spanning tiles")
-    quantized = [_quantize(point, z, x, y) for point in points]
-    edge_id = _stable_id(f"edge:{feature_id}")
-    node_ids = (_stable_id(f"node:{feature_id}:0"), _stable_id(f"node:{feature_id}:1"))
+
+    node_ids = {
+        tuple(coordinates[endpoint][:2]): _stable_id(f"node:{coordinates[endpoint][0]!r},{coordinates[endpoint][1]!r}")
+        for _feature_id, coordinates, _points in lines
+        for endpoint in (0, -1)
+    }
+    edges = sorted(
+        (
+            _stable_id(f"edge:{feature_id}"),
+            node_ids[tuple(coordinates[0][:2])],
+            node_ids[tuple(coordinates[-1][:2])],
+            [_quantize(point, z, x, y) for point in points],
+        )
+        for feature_id, coordinates, points in lines
+    )
+    if len({edge_id for edge_id, *_rest in edges}) != len(edges):
+        raise ValueError("GeoJSON feature IDs must be unique")
 
     decoded = [
-        (b"GEOM", z, x, y, _geometry_section(quantized)),
-        (b"GRPH", 0, 0, 0, _graph_section(node_ids, edge_id)),
-        (b"PROP", 0, 0, 0, _property_section(properties)),
+        (b"GEOM", z, x, y, _geometry_section([points for _edge_id, _source_id, _target_id, points in edges])),
+        (b"GRPH", 0, 0, 0, _graph_section(edges)),
+        (b"PROP", 0, 0, 0, _property_section(properties[0])),
         (b"STCH", 0, 0, 0, struct.pack("<3I", 0, 12, 12)),
     ]
     file_uuid = hashlib.sha256(b"".join(payload for *_, payload in decoded)).digest()[:16]
@@ -88,39 +105,54 @@ def validate_container(source: Path) -> None:
             raise ValueError("invalid section integrity")
 
 
-def _geometry_section(points: list[tuple[int, int]]) -> bytes:
-    path_header = struct.pack("<4I", 0, 0, len(points), 0)
-    vertices = b"".join(struct.pack("<HH", *point) for point in points)
-    mesh_vertices = b"".join(struct.pack("<HHI", point[0], point[1], 0) for point in points)
+def _geometry_section(paths: list[list[tuple[int, int]]]) -> bytes:
+    path_headers = b"".join(
+        struct.pack("<4I", edge_index, sum(len(path) for path in paths[:edge_index]), len(path), 0)
+        for edge_index, path in enumerate(paths)
+    )
+    vertices = b"".join(struct.pack("<HH", *point) for path in paths for point in path)
+    mesh_vertices = b"".join(
+        struct.pack("<HHI", point[0], point[1], edge_index)
+        for edge_index, path in enumerate(paths)
+        for point in path
+    )
     header_size = 32
     paths_offset = header_size
-    vertices_offset = paths_offset + len(path_header)
+    vertices_offset = paths_offset + len(path_headers)
     mesh_vertices_offset = vertices_offset + len(vertices)
     mesh_indices_offset = mesh_vertices_offset + len(mesh_vertices)
-    header = struct.pack("<8I", 1, len(points), len(points), 0, paths_offset, vertices_offset, mesh_vertices_offset, mesh_indices_offset)
-    return header + path_header + vertices + mesh_vertices
+    vertex_count = sum(len(path) for path in paths)
+    header = struct.pack("<8I", len(paths), vertex_count, vertex_count, 0, paths_offset, vertices_offset, mesh_vertices_offset, mesh_indices_offset)
+    return header + path_headers + vertices + mesh_vertices
 
 
-def _graph_section(node_ids: tuple[int, int], edge_id: int) -> bytes:
-    source_id, target_id = node_ids
-    sorted_node_ids = sorted(node_ids)
-    source_index = sorted_node_ids.index(source_id)
-    target_index = sorted_node_ids.index(target_id)
+def _graph_section(edges: list[tuple[int, int, int, list[tuple[int, int]]]]) -> bytes:
+    node_ids = sorted({node_id for _edge_id, source_id, target_id, _points in edges for node_id in (source_id, target_id)})
+    node_indices = {node_id: index for index, node_id in enumerate(node_ids)}
+    adjacency: list[list[tuple[int, int]]] = [[] for _node_id in node_ids]
+    for edge_index, (_edge_id, source_id, target_id, _points) in enumerate(edges):
+        adjacency[node_indices[source_id]].append((edge_index, 1))
+        adjacency[node_indices[target_id]].append((edge_index, -1))
     header_size = 36
     nodes_offset = header_size
-    edges_offset = nodes_offset + 32
-    csr_offset = edges_offset + 32
-    adjacency_offset = csr_offset + 24
-    refs_offset = adjacency_offset + 16
-    header = struct.pack("<9I", 2, 1, 2, 1, nodes_offset, edges_offset, csr_offset, adjacency_offset, refs_offset)
-    nodes = struct.pack("<QIIQII", sorted_node_ids[0], 0, 0, sorted_node_ids[1], 0, 0)
-    edge = struct.pack("<QIIIIII", edge_id, source_index, target_index, 0, 0, 1, 0)
-    csr = struct.pack("<3Q", 0, 1, 2)
-    adjacency = b"".join(
-        struct.pack("<Ib3x", 0, 1 if node_id == source_id else -1) for node_id in sorted_node_ids
+    edges_offset = nodes_offset + len(node_ids) * 16
+    csr_offset = edges_offset + len(edges) * 32
+    adjacency_offset = csr_offset + (len(node_ids) + 1) * 8
+    adjacency_count = sum(len(entries) for entries in adjacency)
+    refs_offset = adjacency_offset + adjacency_count * 8
+    header = struct.pack("<9I", len(node_ids), len(edges), adjacency_count, len(edges), nodes_offset, edges_offset, csr_offset, adjacency_offset, refs_offset)
+    nodes = b"".join(struct.pack("<QII", node_id, 0, 0) for node_id in node_ids)
+    edge_records = b"".join(
+        struct.pack("<QIIIIII", edge_id, node_indices[source_id], node_indices[target_id], 0, edge_index, 1, 0)
+        for edge_index, (edge_id, source_id, target_id, _points) in enumerate(edges)
     )
-    geometry_ref = struct.pack("<IIb3x", 0, 0, 1)
-    return header + nodes + edge + csr + adjacency + geometry_ref
+    offsets = [0]
+    for entries in adjacency:
+        offsets.append(offsets[-1] + len(entries))
+    csr = struct.pack(f"<{len(offsets)}Q", *offsets)
+    adjacency_records = b"".join(struct.pack("<Ib3x", edge_index, direction) for entries in adjacency for edge_index, direction in entries)
+    geometry_refs = b"".join(struct.pack("<IIb3x", 0, edge_index, 1) for edge_index in range(len(edges)))
+    return header + nodes + edge_records + csr + adjacency_records + geometry_refs
 
 
 def _property_section(properties: dict[str, object]) -> bytes:
