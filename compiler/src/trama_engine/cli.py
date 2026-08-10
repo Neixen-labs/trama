@@ -6,6 +6,7 @@ from pathlib import Path
 import typer
 
 from trama_engine.compiler import compile_geojson, validate_container
+from trama_engine.exporter import export_geojson
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -30,6 +31,19 @@ def validate(source: Path) -> None:
     """Validate a `.trama` container."""
     try:
         validate_container(source)
+    except (OSError, ValueError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+
+@app.command()
+def export(source: Path, destination: Path, to: str = typer.Option("geojson", help="Export format.")) -> None:
+    """Export a `.trama` file into a directory of GeoJSON FeatureCollections."""
+    if to != "geojson":
+        typer.echo(f"unsupported export format {to!r}", err=True)
+        raise typer.Exit(1)
+    try:
+        export_geojson(source, destination)
     except (OSError, ValueError) as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(1) from error

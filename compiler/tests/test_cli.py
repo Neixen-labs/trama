@@ -41,3 +41,22 @@ def test_validate_command_accepts_compiled_container(tmp_path: Path) -> None:
     result = CliRunner().invoke(app, ["validate", str(container)])
 
     assert result.exit_code == 0, result.output
+
+
+def test_export_command_writes_both_collections(tmp_path: Path) -> None:
+    fixtures = Path(__file__).resolve().parents[2] / "fixtures"
+    destination = tmp_path / "out"
+
+    result = CliRunner().invoke(app, ["export", str(fixtures / "network.trama"), str(destination)])
+
+    assert result.exit_code == 0, result.output
+    assert (destination / "nodes.geojson").exists() and (destination / "edges.geojson").exists()
+
+
+def test_export_command_rejects_an_unknown_format(tmp_path: Path) -> None:
+    fixtures = Path(__file__).resolve().parents[2] / "fixtures"
+
+    result = CliRunner().invoke(app, ["export", str(fixtures / "network.trama"), str(tmp_path / "out"), "--to", "gpkg"])
+
+    assert result.exit_code == 1
+    assert "unsupported export format" in result.output
