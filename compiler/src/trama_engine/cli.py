@@ -6,8 +6,7 @@ from pathlib import Path
 
 import typer
 
-from trama_engine.compiler import compile_geojson
-from trama_engine.export import export_geojson
+from trama_engine.compiler import compile_file, export_file
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -16,6 +15,7 @@ class Target(str, Enum):
     """Export targets. `SPEC.md` section 8 also defines gpkg and mvt; neither exists yet."""
 
     geojson = "geojson"
+    epanet = "epanet"
 
 
 @app.callback()
@@ -25,20 +25,20 @@ def main() -> None:
 
 @app.command()
 def compile(source: Path, destination: Path) -> None:
-    """Compile GeoJSON LineString features to a `.trama` file."""
-    _run(compile_geojson, source, destination)
+    """Compile a `.geojson` or EPANET `.inp` file to a `.trama` file."""
+    _run(lambda: compile_file(source, destination))
 
 
 @app.command()
 def export(source: Path, destination: Path, to: Target = Target.geojson) -> None:
-    """Export a `.trama` file to `<destination>.nodes.geojson` and `<destination>.edges.geojson`."""
-    for path in _run(export_geojson, source, destination):
+    """Export a `.trama` file back to GeoJSON or EPANET."""
+    for path in _run(lambda: export_file(source, destination, to.value)) or ():
         typer.echo(path)
 
 
-def _run(action, source: Path, destination: Path):
+def _run(action):
     try:
-        return action(source, destination)
+        return action()
     except (OSError, ValueError) as error:
         typer.echo(f"error: {error}", err=True)
         raise typer.Exit(1) from error

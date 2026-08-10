@@ -7,7 +7,8 @@ import pytest
 import zstandard
 
 from trama_engine import container
-from trama_engine.compiler import _stable_id, compile_geojson
+from trama_engine.compiler import compile_file
+from trama_engine.model import stable_id
 
 _DIRECTORY_OFFSET = 64
 _DIRECTORY_SIZE = 64
@@ -41,7 +42,7 @@ def _edge_index(data: bytes, identity: str) -> int:
     edge_count = struct.unpack_from("<I", graph, 4)[0]
     edges_offset = struct.unpack_from("<I", graph, 20)[0]
     ids = [struct.unpack_from("<Q", graph, edges_offset + index * 32)[0] for index in range(edge_count)]
-    return ids.index(_stable_id(f"edge:{identity}"))
+    return ids.index(stable_id(f"edge:{identity}"))
 
 
 def _columns(payload: bytes) -> dict[str, tuple[int, bool, list[int], bytes]]:
@@ -88,8 +89,8 @@ def test_compile_geojson_writes_deterministic_v0_container(tmp_path: Path) -> No
     first = tmp_path / "first.trama"
     second = tmp_path / "second.trama"
 
-    compile_geojson(source, first)
-    compile_geojson(source, second)
+    compile_file(source, first)
+    compile_file(source, second)
 
     data = first.read_bytes()
     assert data == second.read_bytes()
@@ -107,7 +108,7 @@ def test_compile_geojson_shares_a_node_between_touching_lines(tmp_path: Path) ->
         _line([[-3.7035, 40.4165], [-3.703, 40.417]], "edge-b"),
     )
     destination = tmp_path / "network.trama"
-    compile_geojson(source, destination)
+    compile_file(source, destination)
 
     graph = next(payload for kind, _key, payload in _sections(destination.read_bytes()) if kind == b"GRPH")
     node_count, edge_count, adjacency_count, _refs = struct.unpack_from("<4I", graph, 0)
@@ -127,7 +128,7 @@ def test_compile_geojson_shares_a_node_between_touching_lines(tmp_path: Path) ->
 def test_compile_geojson_drops_a_long_line_to_a_coarser_tile(tmp_path: Path) -> None:
     source = _write(tmp_path / "network.geojson", _line([[0, 0], [1, 0]], "edge-long"))
     destination = tmp_path / "network.trama"
-    compile_geojson(source, destination)
+    compile_file(source, destination)
 
     kind, (z, _x, _y), payload = _sections(destination.read_bytes())[0]
     assert kind == b"GEOM"
@@ -144,8 +145,8 @@ def test_compile_geojson_gives_an_id_less_feature_an_order_independent_id(tmp_pa
     first = tmp_path / "forward.trama"
     second = tmp_path / "reversed.trama"
 
-    compile_geojson(forward, first)
-    compile_geojson(reversed_order, second)
+    compile_file(forward, first)
+    compile_file(reversed_order, second)
 
     assert first.read_bytes() == second.read_bytes()
 
@@ -157,7 +158,7 @@ def test_compile_geojson_encodes_one_typed_column_per_property_key(tmp_path: Pat
         _line([[0.001, 0], [0.002, 0]], "edge-b", material="pvc", diameter=1, closed=False),
     )
     destination = tmp_path / "network.trama"
-    compile_geojson(source, destination)
+    compile_file(source, destination)
 
     data = destination.read_bytes()
     payload = next(payload for kind, _key, payload in _sections(data) if kind == b"PROP")
@@ -196,7 +197,7 @@ def test_compile_geojson_treats_a_null_property_as_absent(tmp_path: Path) -> Non
         _line([[0.001, 0], [0.002, 0]], "edge-b", material="pvc"),
     )
     destination = tmp_path / "network.trama"
-    compile_geojson(source, destination)
+    compile_file(source, destination)
 
     data = destination.read_bytes()
     payload = next(payload for kind, _key, payload in _sections(data) if kind == b"PROP")
@@ -212,14 +213,14 @@ def test_compile_geojson_rejects_a_property_that_mixes_types(tmp_path: Path) -> 
     )
 
     with pytest.raises(ValueError, match="mixes value types"):
-        compile_geojson(source, tmp_path / "network.trama")
+        compile_file(source, tmp_path / "network.trama")
 
 
 def test_compile_geojson_rejects_a_nested_property_value(tmp_path: Path) -> None:
     source = _write(tmp_path / "network.geojson", _line([[0, 0], [0.001, 0]], "edge-a", tags=["a", "b"]))
 
     with pytest.raises(ValueError, match="unsupported value type: list"):
-        compile_geojson(source, tmp_path / "network.trama")
+        compile_file(source, tmp_path / "network.trama")
 
 
 def test_compile_geojson_rejects_duplicate_edge_identities(tmp_path: Path) -> None:
@@ -230,11 +231,11 @@ def test_compile_geojson_rejects_duplicate_edge_identities(tmp_path: Path) -> No
     )
 
     with pytest.raises(ValueError, match="duplicate edge identity"):
-        compile_geojson(source, tmp_path / "network.trama")
+        compile_file(source, tmp_path / "network.trama")
 
 
 def test_compile_geojson_rejects_a_document_without_lines(tmp_path: Path) -> None:
     source = _write(tmp_path / "network.geojson")
 
     with pytest.raises(ValueError, match="no LineString features"):
-        compile_geojson(source, tmp_path / "network.trama")
+        compile_file(source, tmp_path / "network.trama")

@@ -1,0 +1,45 @@
+; A small georeferenced EPANET network used to exercise the compiler.
+; Coordinates are WGS 84 degrees, which is what the v0 reader requires.
+
+[TITLE]
+TRAMA compiler test network
+
+[JUNCTIONS]
+;ID	Elev	Demand	Pattern
+ J1	100	50	P1
+ J2	95	30
+
+[RESERVOIRS]
+;ID	Head	Pattern
+ R1	120
+
+[TANKS]
+;ID	Elev	InitLvl	MinLvl	MaxLvl	Diam	MinVol	VolCurve
+ T1	110	5	0	10	15	0
+
+[PIPES]
+;ID	Node1	Node2	Length	Diam	Rough	MinorLoss	Status
+ P1	R1	J1	1000	300	100	0	Open
+ P2	J1	J2	800	250	100	0	Open
+ P3	J2	T1	600	200	100	0	Open
+
+[PUMPS]
+;ID	Node1	Node2	Parameters
+ PU1	J1	J2	HEAD C1
+
+[VALVES]
+;ID	Node1	Node2	Diam	Type	Setting	MinorLoss
+ V1	J2	T1	200	PRV	50	0
+
+[COORDINATES]
+;Node	X-Coord	Y-Coord
+ J1	-3.704	40.416
+ J2	-3.703	40.417
+ R1	-3.705	40.415
+ T1	-3.702	40.418
+
+[VERTICES]
+;Link	X-Coord	Y-Coord
+ P2	-3.7035	40.4165
+
+[END]

@@ -5,8 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from trama_engine.compiler import compile_geojson
-from trama_engine.export import export_geojson
+from trama_engine.compiler import compile_file, export_file
 from trama_engine.reader import read_network, read_sections
 
 _NETWORK = {
@@ -32,7 +31,7 @@ def _compile(tmp_path: Path, document: dict = _NETWORK) -> Path:
     source = tmp_path / "network.geojson"
     source.write_text(json.dumps(document))
     destination = tmp_path / "network.trama"
-    compile_geojson(source, destination)
+    compile_file(source, destination)
     return destination
 
 
@@ -41,7 +40,7 @@ def _features(path: Path) -> list[dict]:
 
 
 def test_export_writes_a_node_and_an_edge_collection(tmp_path: Path) -> None:
-    nodes_path, edges_path = export_geojson(_compile(tmp_path), tmp_path / "out")
+    nodes_path, edges_path = export_file(_compile(tmp_path), tmp_path / "out", "geojson")
 
     assert nodes_path.name == "out.nodes.geojson"
     assert edges_path.name == "out.edges.geojson"
@@ -56,7 +55,7 @@ def test_export_writes_a_node_and_an_edge_collection(tmp_path: Path) -> None:
 
 
 def test_export_returns_properties_with_their_types_intact(tmp_path: Path) -> None:
-    _nodes_path, edges_path = export_geojson(_compile(tmp_path), tmp_path / "out")
+    _nodes_path, edges_path = export_file(_compile(tmp_path), tmp_path / "out", "geojson")
 
     by_material = {feature["properties"]["material"]: feature["properties"] for feature in _features(edges_path)}
     assert by_material["steel"] == {
@@ -72,7 +71,7 @@ def test_export_returns_properties_with_their_types_intact(tmp_path: Path) -> No
 
 
 def test_export_coordinates_land_within_one_quantization_step(tmp_path: Path) -> None:
-    _nodes_path, edges_path = export_geojson(_compile(tmp_path), tmp_path / "out")
+    _nodes_path, edges_path = export_file(_compile(tmp_path), tmp_path / "out", "geojson")
 
     exported = {
         len(feature["geometry"]["coordinates"]): feature["geometry"]["coordinates"]
@@ -85,9 +84,9 @@ def test_export_coordinates_land_within_one_quantization_step(tmp_path: Path) ->
 
 def test_round_trip_preserves_edge_identity_topology_and_properties(tmp_path: Path) -> None:
     first = _compile(tmp_path)
-    _nodes_path, edges_path = export_geojson(first, tmp_path / "out")
+    _nodes_path, edges_path = export_file(first, tmp_path / "out", "geojson")
     second = tmp_path / "again.trama"
-    compile_geojson(edges_path, second)
+    compile_file(edges_path, second)
 
     before = read_network(first)
     after = read_network(second)
@@ -95,19 +94,19 @@ def test_round_trip_preserves_edge_identity_topology_and_properties(tmp_path: Pa
     assert [edge.properties for edge in before.edges] == [edge.properties for edge in after.edges]
     # Node IDs derive from quantized position, so they change and the arrays reorder. What has to
     # survive is the topology: one consistent renaming of node indexes must explain every edge.
-    assert len(before.node_ids) == len(after.node_ids)
+    assert len(before.nodes) == len(after.nodes)
     renaming: dict[int, int] = {}
     for edge_before, edge_after in zip(before.edges, after.edges):
         for old, new in ((edge_before.source, edge_after.source), (edge_before.target, edge_after.target)):
             assert renaming.setdefault(old, new) == new
-    assert len(set(renaming.values())) == len(renaming) == len(before.node_ids)
+    assert len(set(renaming.values())) == len(renaming) == len(before.nodes)
 
 
 def test_round_trip_is_stable_after_the_first_export(tmp_path: Path) -> None:
-    _nodes_path, edges_path = export_geojson(_compile(tmp_path), tmp_path / "out")
+    _nodes_path, edges_path = export_file(_compile(tmp_path), tmp_path / "out", "geojson")
     second = tmp_path / "again.trama"
-    compile_geojson(edges_path, second)
-    _again_nodes, again_edges = export_geojson(second, tmp_path / "again")
+    compile_file(edges_path, second)
+    _again_nodes, again_edges = export_file(second, tmp_path / "again", "geojson")
 
     assert again_edges.read_text() == edges_path.read_text()
 
@@ -120,7 +119,7 @@ def test_compile_rejects_a_malformed_trama_id(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="_trama_id must be a decimal u64 string"):
-        compile_geojson(source, tmp_path / "broken.trama")
+        compile_file(source, tmp_path / "broken.trama")
 
 
 def test_reader_rejects_a_corrupted_section(tmp_path: Path) -> None:

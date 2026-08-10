@@ -57,3 +57,13 @@
 **Why:** GeoJSON holds one FeatureCollection per document, and nodes and edges are separate layers in every downstream tool. Round-tripping without honouring `_trama_id` would renumber entities that never changed, which defeats the point of stable IDs.
 
 **Consequence:** Node identity does not survive a GeoJSON round trip, because a node's position is only recoverable from quantized geometry. Topology does survive: endpoints shared in the source are byte-identical after export, so they re-snap to one node. Exported coordinates sit within one quantization step of the source, so the round trip is not bit-exact geometry.
+
+## 2026-08-10 — EPANET input carries the graph, not the whole model
+
+**Decision:** The `.inp` reader maps `[JUNCTIONS]`, `[RESERVOIRS]`, `[TANKS]`, `[PIPES]`, `[PUMPS]`, `[VALVES]`, `[COORDINATES]`, and `[VERTICES]` into nodes, edges, and named typed properties. Every entity keeps its EPANET ID in a `name` property and its kind in a `type` property. Node coordinates are also stored as exact `x` and `y` properties. `[COORDINATES]` MUST be WGS 84 degrees; anything else is rejected rather than guessed at.
+
+**Why:** The container models a graph with typed properties, and that is all EPANET topology needs. Storing the exact coordinates as properties is what the specification already allows for engineering values, and it makes node positions survive a round trip that quantized render geometry could not.
+
+**Consequence:** `[PATTERNS]`, `[CURVES]`, `[CONTROLS]`, `[OPTIONS]`, `[TIMES]`, `[REPORT]`, and the other simulation sections are not represented, so `trama export --to epanet` cannot bring them back. A `.inp` round trip preserves identity, topology, and per-entity properties, but produces a topology-only model. Link vertices still pass through quantization, so an intermediate vertex returns within about one quantization step. The exported file has not been validated against the EPANET solver itself, only against this compiler.
+
+**Open:** carrying the untouched simulation sections through would need a new container section for source material, which is a specification change, not a compiler change.
