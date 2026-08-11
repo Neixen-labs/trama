@@ -54,6 +54,7 @@
       import { decompress } from "fzstd";
 
       import { openContainer, httpRangeReader, fetchSection } from "/engine/dist/range.js";
+      import { cachedInOpfs, forget } from "/engine/dist/opfs.js";
       import { createTramaLayer } from "/engine/dist/maplibre.js";
       import { parseGeometry, parseGraph } from "/engine/dist/sections.js";
       import { parseStateChannels, StateRing } from "/engine/dist/state.js";
@@ -87,13 +88,16 @@
 
       /** Counts what the page actually transfers, so the range loading is visible, not claimed. */
       let transferred = 0;
+      // `?fresh=1` empties the cache first, which is how the second load can be shown to be free.
+      if (query.get("fresh") !== null) await forget(url);
       const read = (() => {
-        const inner = httpRangeReader(url);
-        return async (start, end) => {
-          const bytes = await inner(start, end);
+        const counted = async (start, end) => {
+          const bytes = await httpRangeReader(url)(start, end);
           transferred += bytes.byteLength;
           return bytes;
         };
+        // Cached outside the counter, so `transferred` reports the network and not the disk.
+        return cachedInOpfs(counted, { key: url });
       })();
 
       try {

@@ -25,7 +25,7 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 | `core/trama-routing` (Rust) | Fastest paths over the graph, costed by a speed column or by distance, honouring one-way edges, written into a state channel as a vehicle's progress. The second domain, and the evidence the core is not shaped around water. | VRP |
 | `core/trama-example` (Rust) | Reference solver over HTTP + Server-Sent Events, to keep the contract under a real implementation. | — |
 | `core/trama-wasm` (Rust) | The compiler in a browser, byte-identical to the command line: GeoJSON, EPANET `.inp` and OpenStreetMap extracts, plus the routing solver. 319 kB brotli. | — |
-| `engine/` — `@trama/core` (TypeScript) | Range reader for header, directory, and sections, each checked against its CRC-32C; instanced WebGL2 line renderer with screen-constant width; MapLibre custom layer; state ring buffer feeding an R32F texture; SSE client for solver deltas; fly-through camera that tours the graph | WebGPU, OPFS offline cache |
+| `engine/` — `@trama/core` (TypeScript) | Range reader for header, directory, and sections, each checked against its CRC-32C; instanced WebGL2 line renderer with screen-constant width; MapLibre custom layer; state ring buffer feeding an R32F texture; SSE client for solver deltas; fly-through camera that tours the graph; OPFS cache so a container read once needs no network again | WebGPU |
 | `site/` | Landing page at [trama.build](https://trama.build), and a playground that compiles a network in the browser and solves it: EPANET over WASI, or a shortest path between points picked on the map | Offline: nothing is cached, so the page still needs the network to load |
 
 ### Measured
