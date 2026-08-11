@@ -64,6 +64,11 @@
 
       <dl id="stats"></dl>
 
+      <div class="row" id="fly-row" hidden>
+        <button id="fly" type="button">sobrevolar la red</button>
+        <output id="odometer" style="color: var(--dim); min-width: 6em; text-align: right">—</output>
+      </div>
+
       <div class="row" id="time-row" hidden>
         <select id="engine-choice">
           <option value="epanet">EPANET</option>
@@ -89,6 +94,7 @@
       import { Map as MapLibre } from "maplibre-gl";
       import { decompress } from "fzstd";
       import { parseContainer } from "./vendor/engine/container.js";
+      import { buildRoute, sampleRoute, startNode, walk, zoomFor } from "./vendor/engine/flythrough.js";
       import { createTramaLayer } from "./vendor/engine/maplibre.js";
       import { parseGeometry, parseGraph, readSection } from "./vendor/engine/sections.js";
       import { parseStateChannels, StateRing } from "./vendor/engine/state.js";
@@ -164,10 +170,16 @@
         const read = async (start, end) => container.subarray(start, end + 1);
         const parsed = parseContainer(container.buffer.slice(container.byteOffset, container.byteOffset + container.length));
         parsedContainer = parsed;
-        const tiles = parsed.sections.filter((section) => section.type === "GEOM");
-        if (tiles.length === 0) throw new Error("este contenedor no tiene geometría");
+        // Keyed by directory index, which is how a GeometryRef addresses a tile. Parsed once:
+        // framing the map and flying over it both want every tile.
+        const geometry = new Map();
+        parsed.sections.forEach((section, index) => {
+          if (section.type !== "GEOM") return;
+          geometry.set(index, { key: section.key, tile: parseGeometry(readSection(bufferOf(container), section, inflate)) });
+        });
+        if (geometry.size === 0) throw new Error("este contenedor no tiene geometría");
 
-        const bounds = boundsOf(tiles, parsed, container, inflate);
+        const bounds = boundsOf(geometry);
         if (map !== null) map.remove();
         map = new MapLibre({
           container: "map",
@@ -177,6 +189,11 @@
         });
 
         const graph = parseGraph(readSection(bufferOf(container), parsed.sections.find((s) => s.type === "GRPH"), inflate));
+        // The flight path: one connected walk from an endpoint, chained into a measurable polyline.
+        stopFlight();
+        route = buildRoute(graph, walk(graph, startNode(graph), 5000), geometry);
+        document.querySelector("#fly-row").hidden = route.length === 0;
+        document.querySelector("#odometer").textContent = metres(route.length);
         const channels = parseStateChannels(readSection(bufferOf(container), parsed.sections.find((s) => s.type === "STCH"), inflate));
         const channel = channels.find((candidate) => candidate.entityKind === 2);
         // A solver's own clock decides the ring: EPANET reports hourly over a day, the pulse
@@ -219,17 +236,59 @@
           map.addLayer(layer);
         });
         document.querySelector("#time-row").hidden = state === null;
-        return { tiles: tiles.length, nodes: graph.nodes.length, edges: graph.edges.length };
+        return { tiles: geometry.size, nodes: graph.nodes.length, edges: graph.edges.length };
       }
+
+      // --- the fly-through ---
+      let route = null;
+      let flight = null;
+
+      /**
+       * The camera rides the route at a constant speed, aiming two seconds ahead of itself so it
+       * leans into a corner instead of snapping at it — which is what makes a polyline fly like a
+       * spline without fitting one.
+       *
+       * The flight lasts the same wall time whatever the network measures, so the zoom has to come
+       * from the route: an `.inp` carrying arbitrary units compiles to a network metres across,
+       * and a municipal one to tens of kilometres.
+       */
+      const FLIGHT_SECONDS = 60;
+
+      function stopFlight() {
+        if (flight === null) return;
+        cancelAnimationFrame(flight.frame);
+        flight = null;
+        document.querySelector("#fly").textContent = "sobrevolar la red";
+      }
+
+      function startFlight() {
+        const speed = route.length / FLIGHT_SECONDS;
+        const zoom = zoomFor(route, map.getCanvas().clientWidth);
+        const odometer = document.querySelector("#odometer");
+        document.querySelector("#fly").textContent = "detener";
+
+        const step = (now) => {
+          const travelled = ((now - flight.started) / 1000) * speed;
+          if (travelled >= route.length) return stopFlight();
+          const view = sampleRoute(route, travelled, speed * 2);
+          map.jumpTo({ center: view.center, bearing: view.bearing, zoom, pitch: 60 });
+          odometer.textContent = `${metres(travelled)} / ${metres(route.length)}`;
+          flight.frame = requestAnimationFrame(step);
+        };
+        flight = { started: performance.now(), frame: requestAnimationFrame(step) };
+      }
+
+      /** Networks here span metres to tens of kilometres, so the unit follows the number. */
+      const metres = (value) => (value >= 1000 ? `${(value / 1000).toFixed(2)} km` : `${value.toFixed(0)} m`);
 
       const bufferOf = (bytes) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length);
 
       /** Frames the geometry rather than the tiles that hold it: a z14 tile is 2.4 km wide. */
-      function boundsOf(tiles, parsed, container, inflate) {
+      function boundsOf(geometry) {
         const points = [];
-        for (const section of tiles) {
-          const [z, x, y] = section.key;
-          for (const path of parseGeometry(readSection(bufferOf(container), section, inflate)).paths) {
+        for (const { key, tile } of geometry.values()) {
+          const [z, x, y] = key;
+          for (const path of tile.paths) {
             for (let at = 0; at + 1 < path.vertices.length; at += 2) {
               points.push(lonLat(z, x + path.vertices[at] / 65535, y + path.vertices[at + 1] / 65535));
             }
@@ -290,6 +349,11 @@
           await load(name, await (await fetch(`examples/${name}`)).text());
         });
       }
+
+      document.querySelector("#fly").addEventListener("click", () => {
+        if (flight !== null) stopFlight();
+        else if (route !== null && route.length > 0 && map !== null) startFlight();
+      });
 
       const scrub = document.querySelector("#scrub");
       const clock = document.querySelector("#clock");
