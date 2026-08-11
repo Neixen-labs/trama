@@ -58,12 +58,12 @@
       </div>
 
       <div class="row">
-        <button class="ghost" data-example="net3.inp">Ejemplo: Net3</button>
-        <button class="ghost" data-example="madrid.osm.json">Ejemplo: calles de Madrid</button>
-        <button class="ghost" data-example="network.geojson">Ejemplo: GeoJSON</button>
+        <button class="ghost" data-example="net3.inp" disabled>Ejemplo: Net3</button>
+        <button class="ghost" data-example="madrid.osm.json" disabled>Ejemplo: calles de Madrid</button>
+        <button class="ghost" data-example="network.geojson" disabled>Ejemplo: GeoJSON</button>
       </div>
 
-      <dl id="stats"></dl>
+      <dl id="stats"><dt>cargando</dt><dd>el compilador y los solvers</dd></dl>
 
       <div class="row" id="fly-row" hidden>
         <button id="fly" type="button">sobrevolar la red</button>
@@ -510,6 +510,8 @@
         map?.triggerRepaint();
       });
 
+      // Everything above ran after the module resolved, so the page is only usable now.
+      for (const button of document.querySelectorAll("[data-example]")) button.disabled = false;
       show([["listo", "suelta un archivo o prueba un ejemplo"]]);
     </script>
   </body>
