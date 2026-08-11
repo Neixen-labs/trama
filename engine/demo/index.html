@@ -19,12 +19,22 @@
       dt { color: #8b98a9; }
       dd { margin: 0; }
       .error { color: #ff9a9a; }
+      #time { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+      #time button { font: inherit; color: #cfe9ff; background: #17324a; border: 1px solid #2b5a72; border-radius: 5px; padding: 2px 10px; cursor: pointer; }
+      #time button[disabled] { opacity: .5; cursor: default; }
+      #scrub { flex: 1; accent-color: #7fd1ff; }
+      #clock { min-width: 4.5em; text-align: right; color: #8b98a9; }
     </style>
   </head>
   <body>
     <div id="panel">
       <h1>TRAMA</h1>
       <dl id="stats"></dl>
+      <div id="time">
+        <button id="solve" type="button">solve</button>
+        <input id="scrub" type="range" min="0" max="600" step="1" value="0" disabled />
+        <output id="clock">—</output>
+      </div>
     </div>
     <div id="map"></div>
 
@@ -43,8 +53,11 @@
       import { Map } from "maplibre-gl";
       import { decompress } from "fzstd";
 
-      import { openContainer, httpRangeReader } from "/engine/dist/range.js";
+      import { openContainer, httpRangeReader, fetchSection } from "/engine/dist/range.js";
       import { createTramaLayer } from "/engine/dist/maplibre.js";
+      import { parseGraph } from "/engine/dist/sections.js";
+      import { parseStateChannels, StateRing } from "/engine/dist/state.js";
+      import { solveDeltas } from "/engine/dist/solver.js";
 
       const stats = document.querySelector("#stats");
       const show = (rows) => {
@@ -84,20 +97,92 @@
         });
 
         window.__map = map; // exposed for debugging from the console
-        map.on("load", () => {
-          map.addLayer(
-            createTramaLayer({
-              id: "trama-network",
-              container,
-              read,
-              decompress: (stored) => decompress(stored),
-              style: { widthPixels: 2.5, color: [0.49, 0.82, 1, 1] },
-              resolutionPixels: () => [
-                map.getCanvas().width,
-                map.getCanvas().height,
-              ],
-            }),
-          );
+
+        const addLayer = (state) => {
+          const created = createTramaLayer({
+            id: "trama-network",
+            container,
+            read,
+            decompress: (stored) => decompress(stored),
+            style: { widthPixels: 2.5, color: [0.49, 0.82, 1, 1] },
+            resolutionPixels: () => [map.getCanvas().width, map.getCanvas().height],
+            state,
+          });
+          map.addLayer(created);
+          return created;
+        };
+
+        map.on("load", () => addLayer(undefined));
+
+        const SOLVER = "http://127.0.0.1:8801/solve";
+        const CHANNEL_NAME = "flow";
+        const scrub = document.querySelector("#scrub");
+        const clock = document.querySelector("#clock");
+        const solveButton = document.querySelector("#solve");
+        let solverStatus = "not run";
+        let layer = null;
+
+        // GRPH and STCH stay unfetched until state is wanted: drawing geometry never needs them.
+        async function buildRing() {
+          const find = (type) => container.sections.find((section) => section.type === type);
+          const inflate = (stored) => decompress(stored);
+          const graph = parseGraph(await fetchSection(read, find("GRPH"), inflate));
+          const channels = parseStateChannels(await fetchSection(read, find("STCH"), inflate));
+          const channel = channels.find((candidate) => candidate.name === CHANNEL_NAME);
+          if (channel === undefined) throw new Error(`this container declares no ${CHANNEL_NAME} channel`);
+          const ring = new StateRing({
+            channels,
+            nodeIds: graph.nodes.map((node) => node.id),
+            edgeIds: graph.edges.map((edge) => edge.id),
+            slots: 16,
+            slotSeconds: 60,
+          });
+          return { ring, channel };
+        }
+
+        solveButton.addEventListener("click", async () => {
+          solveButton.disabled = true;
+          try {
+            solverStatus = "loading graph";
+            report();
+            const { ring, channel } = await buildRing();
+            const state = {
+              ring,
+              channelId: channel.channelId,
+              // Ramps from 0 rather than the declared minimum: this solver writes non-negative
+              // magnitudes, and mapping the whole declared range would paint rest at mid-ramp.
+              range: [0, channel.declaredMax],
+              highColor: [1, 0.72, 0.2, 1],
+              timeSeconds: () => Number(scrub.value),
+            };
+            map.removeLayer("trama-network");
+            layer = addLayer(state);
+
+            solverStatus = "solving";
+            report();
+            let applied = 0;
+            for await (const payload of solveDeltas(SOLVER, {
+              tramaUrl: new URL(url, location.href).href,
+              params: { channel: CHANNEL_NAME },
+              t0Seconds: 0,
+              t1Seconds: Number(scrub.max),
+            })) {
+              applied += ring.apply(payload);
+            }
+            layer.refreshState();
+            scrub.disabled = false;
+            solverStatus = `${applied} deltas`;
+          } catch (error) {
+            solverStatus = `<span class="error">${error.message}</span>`;
+          }
+          solveButton.disabled = false;
+          report();
+        });
+
+        scrub.addEventListener("input", () => {
+          clock.textContent = `${scrub.value} s`;
+          map.triggerRepaint();
+          report();
         });
 
         const report = () =>
@@ -107,6 +192,7 @@
             ["tiles", tiles.length],
             ["zoom", map.getZoom().toFixed(2)],
             ["transferred", `${transferred} B`],
+            ["solver", solverStatus],
           ]);
         report();
         map.on("render", report);

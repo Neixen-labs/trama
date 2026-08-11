@@ -4,6 +4,8 @@ import { createLineRenderer, type LineRenderer, type LineStyle } from "./line-re
 import { buildLineInstances, type LineInstances } from "./lines.js";
 import { fetchSection, type RangeReader } from "./range.js";
 import { parseGeometry, type Decompress } from "./sections.js";
+import { createStateTexture, type StateTexture } from "./state-texture.js";
+import type { StateRing } from "./state.js";
 
 /**
  * MapLibre's custom-layer surface, declared structurally so `@trama/core` needs no
@@ -16,6 +18,18 @@ export type CustomLayer = Readonly<{
   onAdd(map: HostMap, gl: WebGL2RenderingContext): void;
   render(gl: WebGL2RenderingContext, input: RenderInput): void;
   onRemove(map: HostMap, gl: WebGL2RenderingContext): void;
+  /** Re-uploads the ring after deltas have been applied to it. */
+  refreshState(): void;
+}>;
+
+/** Colours the network by a state channel. Omit it and the network draws in the flat colour. */
+export type LayerState = Readonly<{
+  ring: StateRing;
+  channelId: number;
+  range: readonly [number, number];
+  highColor: readonly [number, number, number, number];
+  /** The scrub position, read every frame. */
+  timeSeconds: () => number;
 }>;
 
 /**
@@ -47,6 +61,7 @@ export type TramaLayerOptions = Readonly<{
   style: LayerStyle;
   /** Drawing-buffer size in pixels; the width uniform is in pixels, so the layer must be told. */
   resolutionPixels: () => readonly [number, number];
+  state?: LayerState;
 }>;
 
 /**
@@ -104,6 +119,16 @@ export function createTramaLayer(options: TramaLayerOptions): CustomLayer {
   const requested = new Set<Section>();
   let renderer: LineRenderer | null = null;
   let host: HostMap | null = null;
+  let stateTexture: StateTexture | null = null;
+
+  /** A slot holding a different time than the one asked for is a miss, so the flat colour wins. */
+  const currentState = () => {
+    const state = options.state;
+    if (state === undefined || stateTexture === null) return undefined;
+    const rows = state.ring.sampleRows(state.timeSeconds(), state.channelId);
+    if (rows === null) return undefined;
+    return { texture: stateTexture.texture, rows, range: state.range, highColor: state.highColor };
+  };
 
   const request = (section: Section) => {
     if (requested.has(section)) return;
@@ -126,6 +151,11 @@ export function createTramaLayer(options: TramaLayerOptions): CustomLayer {
     onAdd(map, gl) {
       host = map;
       renderer = createLineRenderer(gl);
+      if (options.state !== undefined) stateTexture = createStateTexture(gl, options.state.ring);
+    },
+    refreshState() {
+      if (options.state !== undefined) stateTexture?.update(options.state.ring);
+      host?.triggerRepaint();
     },
     render(_gl, input) {
       if (renderer === null || host === null) return;
@@ -146,10 +176,13 @@ export function createTramaLayer(options: TramaLayerOptions): CustomLayer {
           ...options.style,
           matrix: tileMatrix(input, section.key),
           resolutionPixels: options.resolutionPixels(),
+          state: currentState(),
         });
       }
     },
     onRemove() {
+      stateTexture?.dispose();
+      stateTexture = null;
       renderer?.dispose();
       renderer = null;
       host = null;
