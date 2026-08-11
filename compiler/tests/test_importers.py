@@ -2,6 +2,7 @@
 """The compiler routes unknown suffixes to an installed importer and knows no format itself."""
 
 import json
+import struct
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -31,7 +32,11 @@ class FakeImporter:
     def load(self, source: Path, options: Mapping[str, str]) -> Import:
         if "source-crs" not in options:
             raise ValueError("a .fake file declares no coordinate reference system; pass -o source-crs=...")
-        return Import(features=[LINE], extras=[Extra("fake-solver", "text/plain", source.read_bytes())])
+        return Import(
+            features=[LINE],
+            extras=[Extra("fake-solver", "text/plain", source.read_bytes())],
+            channels=[{"name": "pressure", "entity_kind": "node", "unit": "m"}],
+        )
 
 
 @pytest.fixture
@@ -93,3 +98,42 @@ def test_a_malformed_option_is_rejected_before_anything_is_written(tmp_path: Pat
     assert result.exit_code == 1
     assert "key=value" in result.output
     assert not destination.exists()
+
+
+def _channel_names(container: Path) -> list[str]:
+    payload = next(p for kind, _key, p in read_sections(container.read_bytes()) if kind == b"STCH")
+    count, strings_offset, _records_offset = struct.unpack_from("<3I", payload)
+    names = []
+    at = strings_offset + 4
+    for _index in range(struct.unpack_from("<I", payload, strings_offset)[0]):
+        length = struct.unpack_from("<I", payload, at)[0]
+        names.append(payload[at + 4 : at + 4 + length].decode())
+        at += 4 + length
+    return names[: count * 2 : 2]
+
+
+def test_an_importer_declares_what_its_format_can_be_solved_for(tmp_path: Path, installed: None) -> None:
+    source = tmp_path / "network.fake"
+    source.write_text("whatever")
+    destination = tmp_path / "network.trama"
+
+    result = runner.invoke(app, ["compile", str(source), str(destination), "-o", "source-crs=EPSG:25830"])
+
+    assert result.exit_code == 0, result.output
+    assert _channel_names(destination) == ["pressure"]
+
+
+def test_an_explicit_channels_file_wins_over_the_importer(tmp_path: Path, installed: None) -> None:
+    source = tmp_path / "network.fake"
+    source.write_text("whatever")
+    channels = tmp_path / "channels.json"
+    channels.write_text(json.dumps([{"name": "head", "entity_kind": "node", "unit": "m"}]))
+    destination = tmp_path / "network.trama"
+
+    result = runner.invoke(
+        app,
+        ["compile", str(source), str(destination), "-o", "source-crs=EPSG:25830", "--channels", str(channels)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _channel_names(destination) == ["head"]

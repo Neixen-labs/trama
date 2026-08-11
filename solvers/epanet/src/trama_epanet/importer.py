@@ -36,6 +36,11 @@ LINK_FIELDS = {
     "VALVES": ["#diameter", "valve-type", "setting", "#minor-loss"],
 }
 KINDS = {"JUNCTIONS": "junction", "RESERVOIRS": "reservoir", "TANKS": "tank", "PIPES": "pipe", "PUMPS": "pump", "VALVES": "valve"}
+# `[OPTIONS] Units` sets the whole file's unit system, and EPANET reports pressure in psi for
+# the US flow units and in metres for the SI ones. A channel declaration that named the wrong
+# one would be a lie the file tells every solver that reads it.
+US_FLOW_UNITS = {"cfs", "gpm", "mgd", "imgd", "afd"}
+DEFAULT_FLOW_UNITS = "gpm"  # EPANET's own default when [OPTIONS] says nothing
 
 
 class EpanetImporter:
@@ -64,7 +69,11 @@ class EpanetImporter:
             for name, source_node, target_node, properties in _links(document)
         ]
         remainder = inp.serialize(document.without(EXPRESSED))
-        return Import(features=features, extras=[Extra(OWNER, MEDIA_TYPE, remainder.encode())])
+        return Import(
+            features=features,
+            extras=[Extra(OWNER, MEDIA_TYPE, remainder.encode())],
+            channels=channels(document),
+        )
 
 
 def _nodes(document: inp.Document) -> list[tuple[str, dict[str, Any]]]:
@@ -135,3 +144,15 @@ def _position(name: str, positions: dict[str, tuple[float, float]]) -> tuple[flo
     if name not in positions:
         raise ValueError(f"node {name!r} has no entry in [COORDINATES], so it cannot be placed on a map")
     return positions[name]
+
+
+def channels(document: inp.Document) -> list[dict[str, Any]]:
+    """What a container built from this file may be solved for, in the file's own units."""
+    flow_units = next(
+        (row[-1].lower() for row in document.rows("OPTIONS") if row[0].lower() == "units"),
+        DEFAULT_FLOW_UNITS,
+    )
+    return [
+        {"name": "pressure", "entity_kind": "node", "unit": "psi" if flow_units in US_FLOW_UNITS else "m"},
+        {"name": "flow", "entity_kind": "edge", "unit": flow_units},
+    ]

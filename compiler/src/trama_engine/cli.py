@@ -34,7 +34,8 @@ def compile(
             compile_geojson(source, destination, declared)
         else:
             imported = _import(source, options)
-            compile_features(imported.features, destination, declared, imported.extras)
+            # An explicit --channels wins: the caller may know more than the format does.
+            compile_features(imported.features, destination, declared or imported.channels, imported.extras)
     except (OSError, TypeError, ValueError, KeyError) as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(1) from error
