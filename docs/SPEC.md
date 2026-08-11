@@ -207,6 +207,25 @@ GeometryRef[geometry_ref_count]
 
 `CsrOffset[0]` MUST be zero, `CsrOffset[node_count]` MUST equal `adjacency_count`, and offsets MUST be monotonic. A directed edge has one source-node entry; an undirected edge has both endpoint entries with opposite direction. Each edge references one or more geometry paths in traversal order. Every referenced directory record MUST be `GEOM` and each path's `edge_index` MUST equal the referencing edge index.
 
+### 4.1 Node identity derived from position
+
+A source that names its nodes decides identity by itself. When a writer has no such name and must decide whether two edge endpoints meet, it MUST compare them on the section 3.1 quantization grid, and MUST NOT compare raw coordinates for equality.
+
+The grid cell of a projected point is:
+
+```text
+extent = 65535
+qx, qy = section 3.1 quantization within the tile containing the point
+cell_x = tile_x * extent + qx
+cell_y = tile_y * extent + qy
+```
+
+Two endpoints are the same node when their cells are equal. Section 3.1 samples both tile edges, so `qx = extent` in one tile names the position `qx = 0` names in the next: a point on a tile boundary yields one cell whichever tile it is assigned to.
+
+Identity is therefore fixed at the precision the file stores and no finer — about 4 cm at the equator at `z14`, and a shorter ground distance towards the poles. Two nodes closer than one cell become one node. A source needing finer topology than the geometry it ships MUST name its nodes.
+
+Exact equality is not an acceptable substitute. Shared vertices written by different tools, or round-tripped through different precisions, routinely differ in their last digits; joining on those bits splits one node into two and disconnects the graph while its geometry still draws correctly.
+
 ## 5. `PROP`: typed properties
 
 `PROP` has a global UTF-8 key dictionary and typed nullable columns. It carries no domain semantics.
