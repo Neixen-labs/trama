@@ -7,9 +7,10 @@ import hashlib
 import itertools
 import json
 import math
+import re
 import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import zstandard
 
@@ -18,16 +19,36 @@ _HEADER = struct.Struct("<8s3H3HIQIIQ16s")
 _DIRECTORY = struct.Struct("<4sIIIIQQQIHBB12s")
 _ID_KEY = "_trama_id"
 _EXTENT = 65535
+_OWNER = re.compile(r"[a-z0-9-]+")
+_EXTRA_HEADER = struct.Struct("<7I")
+
+
+class Extra(NamedTuple):
+    """An opaque record the core carries for someone else, per SPEC 7.
+
+    The compiler never looks inside `payload`. Its whole job here is to make sure the record
+    is additive: written optional, keyed at no tile, and removable without changing the rest.
+    """
+
+    owner: str
+    media_type: str
+    payload: bytes
 # Deterministic and not format-significant (SPEC 8). 19 costs ~1.7 s on a 50k-edge network
 # and saves 8% of the file, which is paid back on every download.
 _COMPRESSION_LEVEL = 19
 
 
-def compile_geojson(source: Path, destination: Path, channels: list[dict[str, Any]] | None = None) -> None:
+def compile_geojson(
+    source: Path,
+    destination: Path,
+    channels: list[dict[str, Any]] | None = None,
+    extras: list[Extra] | None = None,
+) -> None:
     """Compile GeoJSON into a TRAMA file, one GEOM record per tile.
 
     `source` is a FeatureCollection, or a directory holding the `edges.geojson` and
     `nodes.geojson` an export wrote. A feature carrying `_trama_id` keeps that identity.
+    `extras` are opaque records to carry along for their owners, per SPEC 7.
     """
     features = [feature for path in _sources(source) for feature in json.loads(path.read_text()).get("features", [])]
     lines = [feature for feature in features if feature.get("geometry", {}).get("type") == "LineString"]
@@ -87,27 +108,30 @@ def compile_geojson(source: Path, destination: Path, channels: list[dict[str, An
             paths.append((edge_index, [_quantize(point, *tile) for point in points]))
         geometry_refs.append(refs)
 
-    decoded = [(b"GEOM", *tile, _geometry_section(tile_paths[tile])) for tile in tiles] + [
-        (b"GRPH", 0, 0, 0, _graph_section(edges, geometry_refs)),
-        (b"PROP", 0, 0, 0, _property_section(edge_properties)),
+    # Required sections carry record_flags bit 0; XTRA never does, which is what lets a reader
+    # that has never heard of its owner skip it instead of rejecting the file (SPEC 7).
+    decoded = [(b"GEOM", 1, *tile, _geometry_section(tile_paths[tile])) for tile in tiles] + [
+        (b"GRPH", 1, 0, 0, 0, _graph_section(edges, geometry_refs)),
+        (b"PROP", 1, 0, 0, 0, _property_section(edge_properties)),
         # SPEC 6: strings_offset must address a u32 count, so an empty table still needs those 4 bytes.
-        (b"STCH", 0, 0, 0, _state_channel_section(channels or [])),
+        (b"STCH", 1, 0, 0, 0, _state_channel_section(channels or [])),
+        *((b"XTRA", 0, 0, 0, 0, payload) for payload in _extra_sections(extras or [])),
     ]
     file_uuid = hashlib.sha256(b"".join(payload for *_, payload in decoded)).digest()[:16]
-    stored = [(kind, z, x, y, payload, zstandard.ZstdCompressor(level=_COMPRESSION_LEVEL).compress(payload)) for kind, z, x, y, payload in decoded]
+    stored = [(kind, flags, z, x, y, payload, zstandard.ZstdCompressor(level=_COMPRESSION_LEVEL).compress(payload)) for kind, flags, z, x, y, payload in decoded]
     directory_bytes = len(stored) * _DIRECTORY.size
     offset = _HEADER.size + directory_bytes
     records = []
-    for kind, z, x, y, payload, compressed in stored:
-        records.append((kind, z, x, y, offset, compressed, payload))
+    for kind, flags, z, x, y, payload, compressed in stored:
+        records.append((kind, flags, z, x, y, offset, compressed, payload))
         offset += len(compressed)
 
     header = _HEADER.pack(_MAGIC, 0, 1, 0, 0, 1, 0, 64, 64, len(records), 0, offset, file_uuid)
     directory = b"".join(
         _DIRECTORY.pack(
-            kind, 1, z, x, y, section_offset, len(compressed), len(payload), _crc32c(payload), 1, 0, 0, b"\0" * 12
+            kind, flags, z, x, y, section_offset, len(compressed), len(payload), _crc32c(payload), 1, 0, 0, b"\0" * 12
         )
-        for kind, z, x, y, section_offset, compressed, payload in records
+        for kind, flags, z, x, y, section_offset, compressed, payload in records
     )
     destination.write_bytes(header + directory + b"".join(compressed for *_, compressed, _payload in records))
 
@@ -128,9 +152,10 @@ def read_sections(data: bytes) -> list[tuple[bytes, tuple[int, int, int], bytes]
     if directory_end > len(data):
         raise ValueError("container directory exceeds file size")
     sections = []
+    owners: set[tuple[str, str]] = set()
     for index in range(section_count):
         record = _DIRECTORY.unpack_from(data, directory_offset + index * _DIRECTORY.size)
-        kind, _flags, z, x, y, offset, stored_bytes, decoded_bytes, checksum, codec, _alignment, _reserved, _padding = record
+        kind, flags, z, x, y, offset, stored_bytes, decoded_bytes, checksum, codec, _alignment, _reserved, _padding = record
         if codec != 1 or offset < directory_end or offset + stored_bytes > len(data):
             raise ValueError("invalid section record")
         try:
@@ -139,6 +164,8 @@ def read_sections(data: bytes) -> list[tuple[bytes, tuple[int, int, int], bytes]
             raise ValueError("invalid zstd section") from error
         if len(decoded) != decoded_bytes or _crc32c(decoded) != checksum:
             raise ValueError("invalid section integrity")
+        if kind == b"XTRA":
+            _validate_extra(decoded, flags, (z, x, y), owners)
         sections.append((kind, (z, x, y), decoded))
     return sections
 
@@ -348,6 +375,47 @@ def _state_channel_section(channels: list[dict[str, Any]]) -> bytes:
     header_size = 12
     string_table = _string_dictionary(strings)
     return struct.pack("<3I", len(records), header_size, header_size + len(string_table)) + string_table + b"".join(records)
+
+
+def _extra_sections(extras: list[Extra]) -> list[bytes]:
+    """Encode SPEC 7 records, sorted so the same inputs produce the same file."""
+    ordered = sorted(extras, key=lambda extra: (extra.owner, extra.media_type))
+    for previous, current in itertools.pairwise(ordered):
+        if (previous.owner, previous.media_type) == (current.owner, current.media_type):
+            raise ValueError(f"two XTRA records share an owner and media type: {current.owner!r}, {current.media_type!r}")
+    payloads = []
+    for extra in ordered:
+        if not _OWNER.fullmatch(extra.owner):
+            raise ValueError(f"XTRA owner must be a solver id of lowercase letters, digits and '-', got {extra.owner!r}")
+        if not extra.media_type:
+            raise ValueError(f"XTRA record owned by {extra.owner!r} declares no media type")
+        owner, media_type = extra.owner.encode(), extra.media_type.encode()
+        owner_offset = _EXTRA_HEADER.size
+        media_offset = owner_offset + len(owner)
+        payload_offset = media_offset + len(media_type)
+        header = _EXTRA_HEADER.pack(
+            owner_offset, len(owner), media_offset, len(media_type), payload_offset, len(extra.payload), 0
+        )
+        payloads.append(header + owner + media_type + extra.payload)
+    return payloads
+
+
+def _validate_extra(payload: bytes, flags: int, key: tuple[int, int, int], seen: set[tuple[str, str]]) -> None:
+    """Check what a reader relies on but cannot recover if a writer got it wrong (SPEC 7)."""
+    if flags & 1:
+        raise ValueError("an XTRA record must be optional, so an older reader can skip it")
+    if key != (0, 0, 0):
+        raise ValueError("an XTRA record is not tile-scoped, so its tile key must be zero")
+    if len(payload) < _EXTRA_HEADER.size:
+        raise ValueError("XTRA record is shorter than its header")
+    owner_offset, owner_bytes, media_offset, media_bytes, body_offset, body_bytes, extra_flags = _EXTRA_HEADER.unpack_from(payload)
+    spans = ((owner_offset, owner_bytes), (media_offset, media_bytes), (body_offset, body_bytes))
+    if extra_flags or any(offset < _EXTRA_HEADER.size or offset + length > len(payload) for offset, length in spans):
+        raise ValueError("invalid XTRA record header")
+    identity = (payload[owner_offset : owner_offset + owner_bytes].decode(), payload[media_offset : media_offset + media_bytes].decode())
+    if identity in seen:
+        raise ValueError(f"two XTRA records share an owner and media type: {identity[0]!r}, {identity[1]!r}")
+    seen.add(identity)
 
 
 def _string_dictionary(values: list[str]) -> bytes:
