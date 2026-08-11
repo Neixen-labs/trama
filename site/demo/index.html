@@ -510,6 +510,10 @@
         map?.triggerRepaint();
       });
 
+      // Registered last: a worker that precaches 3 MB should not compete with the first load.
+      // Absent on file:// and on any browser without it, where the page simply needs a network.
+      navigator.serviceWorker?.register("./sw.js").catch(() => {});
+
       // Everything above ran after the module resolved, so the page is only usable now.
       for (const button of document.querySelectorAll("[data-example]")) button.disabled = false;
       show([["listo", "suelta un archivo o prueba un ejemplo"]]);
