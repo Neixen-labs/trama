@@ -1,6 +1,6 @@
 # TRAMA Solver Contract
 
-**Contract version:** 0.1.0
+**Contract version:** 0.2.0
 **Status:** Draft
 **Normative language:** The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in RFC 2119.
 
@@ -39,7 +39,9 @@ unit = "1"
 [[outputs]]
 channel = "node_score"
 entity_kind = "node"
-unit = "1"
+# A solver whose unit follows its input names every unit it can produce, and the host picks
+# the one the container declares.
+units = ["1", "m"]
 
 [params]
 schema = {"type" = "object", "properties" = {"iterations" = {"type" = "integer", "minimum" = 1, "default" = 100}}, "additionalProperties" = false}
@@ -53,10 +55,18 @@ schema = {"type" = "object", "properties" = {"iterations" = {"type" = "integer",
 - `contract_versions`: non-empty supported contract-version list.
 - `runtimes`: one or both of `wasm` and `server`.
 - `inputs`: required graph entity kinds and property keys. Property keys are strings defined in `PROP`; they do not imply a core domain model.
-- `outputs`: one or more channels that the solver may write. Each output MUST match an `STCH` declaration by name, entity kind, and unit.
+- `outputs`: one or more channels that the solver may write. Each output MUST match an `STCH` declaration by name and entity kind, and MUST declare its unit with exactly one of `unit` or `units`. See 2.1.
 - `params.schema`: an inline JSON Schema 2020-12 object. The caller validates parameters before execution.
 
 A manifest MUST NOT claim filesystem, network, GPU, or clock access. Those capabilities are denied by default.
+
+### 2.1 An output's unit
+
+An output declares either `unit`, a single string, or `units`, a non-empty array of strings. Declaring both, or neither, is a malformed manifest.
+
+`units` exists because a solver's output unit is not always the solver's to choose. EPANET reports pressure in psi and flow in gpm for a file whose `[OPTIONS]` names US flow units, and in metres and litres per second for one that names SI — the same solver, the same code path, a unit decided by the input. A manifest that had to commit to one would be honest for half its inputs.
+
+The array is the set of units the solver can produce, not a preference order. The host picks the one the container declares and MUST reject a container declaring anything outside the set, before execution. That is the property worth keeping: a wildcard would admit every container and catch a solver writing psi into a channel declared in metres only in the results, where it looks like a modelling error rather than a mismatched contract.
 
 ## 3. Input validation
 
@@ -65,7 +75,7 @@ Before execution, the host MUST:
 1. validate the manifest syntax and contract version;
 2. validate caller parameters against `params.schema`;
 3. confirm each required property exists for its declared entity kind;
-4. resolve every output channel name to exactly one `STCH` declaration;
+4. resolve every output channel name to exactly one `STCH` declaration, whose unit MUST equal the output's `unit` or belong to its `units`;
 5. pass only the required graph/property view to a sandboxed solver when practical.
 
 A solver MUST treat missing, null, non-finite, and out-of-range input values as a validation error unless its manifest and parameter schema explicitly define a fallback. A solver MUST NOT write a delta for an entity ID or channel outside the input contract.
@@ -194,3 +204,5 @@ Solvers MAY be non-deterministic only when their manifest documents the source o
 The contract follows semantic versioning. A major version may change ABI signatures, manifest meaning, or delta bytes. A minor version may add optional fields and capabilities. A patch version clarifies behavior without changing the ABI or wire format.
 
 A solver MUST declare every supported contract version. A host MAY ignore unknown optional manifest fields but MUST reject unknown required fields and all incompatible major versions.
+
+`units` was added in 0.2.0. It is an alternative spelling of an existing requirement rather than a new capability, so a 0.1.0 manifest remains valid and a solver that has no need of it should keep using `unit`. A 0.1.0 host encountering `units` sees an output with no `unit` and MUST reject the manifest, which is the correct outcome: it cannot perform the check the field asks for.
