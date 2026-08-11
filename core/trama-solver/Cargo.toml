@@ -1,0 +1,10 @@
+[package]
+name = "trama-solver"
+description = "The solver contract: packed deltas, channel resolution, and the server runtime."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+trama-format = { path = "../trama-format" }
+serde_json.workspace = true

@@ -9,4 +9,6 @@ license.workspace = true
 trama-format = { path = "../trama-format" }
 serde_json.workspace = true
 proj4rs = "0.1"
+trama-solver = { path = "../trama-solver" }
 crs-definitions = { version = "0.5.0", default-features = false, features = ["proj4"] }
+epanet-sys = { version = "2.3.0", features = ["static-link"] }

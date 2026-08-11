@@ -7,3 +7,4 @@
 pub mod exporter;
 pub mod importer;
 pub mod inp;
+pub mod solver;
