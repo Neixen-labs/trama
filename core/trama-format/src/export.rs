@@ -44,11 +44,16 @@ pub fn export(data: &[u8]) -> Result<Export, String> {
         let coordinates = edge_coordinates(references, &geometry)?;
         positions.insert(edge.source, coordinates[0]);
         positions.insert(edge.target, coordinates[coordinates.len() - 1]);
-        edge_features.push(feature(
+        let mut exported = feature(
             json!({"type": "LineString", "coordinates": coordinates.iter().map(|(x, y)| json!([x, y])).collect::<Vec<Value>>()}),
             edge.id,
             edge_rows.get(edge.property_row as usize),
-        ));
+        );
+        // SPEC 9: written only when set, so a file with no directed edge round-trips unchanged.
+        if edge.directed {
+            exported["properties"]["_trama_directed"] = Value::Bool(true);
+        }
+        edge_features.push(exported);
     }
 
     let node_features: Vec<Value> = parsed
