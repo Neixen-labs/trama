@@ -18,6 +18,38 @@ use crate::exporter::export_inp;
 /// Coordinates never reach the hydraulics, so the projection used to rebuild the `.inp` is
 /// free. Web Mercator is the one the geometry is already stored in.
 const WORKING_CRS: &str = "EPSG:3857";
+/// The toolkit's API, declared here rather than taken from `epanet-sys`'s bindgen output.
+///
+/// It is fourteen stable functions of EPANET 2.3, and generating them cost more than writing
+/// them: bindgen produces constants and no functions when it parses these headers for a WASI
+/// target, and the browser build needs that target. `epanet-sys` still builds and links the C.
+mod toolkit {
+    use std::ffi::{c_char, c_int, c_long};
+
+    // Nothing here names a `epanet_sys` item, and an unreferenced crate takes its link
+    // directives with it. This keeps libepanet2 on the link line.
+    use epanet_sys as _;
+
+    pub type Project = *mut std::ffi::c_void;
+
+    unsafe extern "C" {
+        pub fn EN_createproject(project: *mut Project) -> c_int;
+        pub fn EN_deleteproject(project: Project) -> c_int;
+        pub fn EN_open(project: Project, input: *const c_char, report: *const c_char, output: *const c_char) -> c_int;
+        pub fn EN_close(project: Project) -> c_int;
+        pub fn EN_openH(project: Project) -> c_int;
+        pub fn EN_initH(project: Project, flag: c_int) -> c_int;
+        pub fn EN_runH(project: Project, now: *mut c_long) -> c_int;
+        pub fn EN_nextH(project: Project, step: *mut c_long) -> c_int;
+        pub fn EN_closeH(project: Project) -> c_int;
+        pub fn EN_getcount(project: Project, object: c_int, count: *mut c_int) -> c_int;
+        pub fn EN_getnodeid(project: Project, index: c_int, id: *mut c_char) -> c_int;
+        pub fn EN_getlinkid(project: Project, index: c_int, id: *mut c_char) -> c_int;
+        pub fn EN_getnodevalue(project: Project, index: c_int, property: c_int, value: *mut f64) -> c_int;
+        pub fn EN_getlinkvalue(project: Project, index: c_int, property: c_int, value: *mut f64) -> c_int;
+    }
+}
+
 const PRESSURE: c_int = 11;
 const FLOW: c_int = 8;
 const NODE_COUNT: c_int = 0;
@@ -60,7 +92,10 @@ pub fn solve(
     let flow = declared(container, flow_channel, 2)?;
     let (nodes, links) = entity_ids(container)?;
 
-    let workspace = std::env::temp_dir().join(format!("trama-epanet-{}", std::process::id()));
+    // A counter rather than a process id: WASI has no processes, and asking for one traps.
+    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let serial = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let workspace = scratch().join(format!("trama-epanet-{serial}"));
     std::fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
     let network = workspace.join("network.inp");
     std::fs::write(&network, export_inp(container, WORKING_CRS)?).map_err(|error| error.to_string())?;
@@ -68,6 +103,21 @@ pub fn solve(
         simulate(&network, &workspace.join("report.rpt"), &nodes, &links, pressure, flow, t0_seconds, t1_seconds);
     let _ = std::fs::remove_dir_all(&workspace);
     result
+}
+
+/// Where the rebuilt `.inp` is written before the toolkit opens it.
+///
+/// `std::env::temp_dir` panics on WASI rather than returning anything, so the browser build
+/// names the directory its host preopened instead.
+fn scratch() -> std::path::PathBuf {
+    #[cfg(target_os = "wasi")]
+    {
+        std::path::PathBuf::from("/tmp")
+    }
+    #[cfg(not(target_os = "wasi"))]
+    {
+        std::env::temp_dir()
+    }
 }
 
 /// EPANET names mapped to stable `u64` identities, nodes first and links second.
@@ -117,19 +167,19 @@ fn simulate(
     let mut records = Vec::new();
 
     unsafe {
-        let mut project: epanet_sys::EN_Project = std::ptr::null_mut();
-        check(epanet_sys::EN_createproject(&mut project))?;
+        let mut project: toolkit::Project = std::ptr::null_mut();
+        check(toolkit::EN_createproject(&mut project))?;
         let outcome = (|| -> Result<(), String> {
-            check(epanet_sys::EN_open(project, network.as_ptr(), report.as_ptr(), empty.as_ptr()))?;
-            check(epanet_sys::EN_openH(project))?;
-            check(epanet_sys::EN_initH(project, SAVE))?;
+            check(toolkit::EN_open(project, network.as_ptr(), report.as_ptr(), empty.as_ptr()))?;
+            check(toolkit::EN_openH(project))?;
+            check(toolkit::EN_initH(project, SAVE))?;
             let mut node_count: c_int = 0;
             let mut link_count: c_int = 0;
-            check(epanet_sys::EN_getcount(project, NODE_COUNT, &mut node_count))?;
-            check(epanet_sys::EN_getcount(project, LINK_COUNT, &mut link_count))?;
+            check(toolkit::EN_getcount(project, NODE_COUNT, &mut node_count))?;
+            check(toolkit::EN_getcount(project, LINK_COUNT, &mut link_count))?;
             loop {
                 let mut now: c_long = 0;
-                check(epanet_sys::EN_runH(project, &mut now))?;
+                check(toolkit::EN_runH(project, &mut now))?;
                 let seconds = now as f32;
                 if seconds >= t0_seconds && seconds <= t1_seconds {
                     for index in 1..=node_count {
@@ -154,15 +204,15 @@ fn simulate(
                     }
                 }
                 let mut step: c_long = 0;
-                check(epanet_sys::EN_nextH(project, &mut step))?;
+                check(toolkit::EN_nextH(project, &mut step))?;
                 if step == 0 {
                     break;
                 }
             }
-            check(epanet_sys::EN_closeH(project))
+            check(toolkit::EN_closeH(project))
         })();
-        epanet_sys::EN_close(project);
-        epanet_sys::EN_deleteproject(project);
+        toolkit::EN_close(project);
+        toolkit::EN_deleteproject(project);
         outcome?;
     }
     Ok(records)
@@ -176,13 +226,13 @@ fn check(code: c_int) -> Result<(), String> {
     Ok(())
 }
 
-unsafe fn identifier(project: epanet_sys::EN_Project, index: c_int, node: bool) -> Result<String, String> {
+unsafe fn identifier(project: toolkit::Project, index: c_int, node: bool) -> Result<String, String> {
     let mut buffer = [0 as c_char; 32];
     let code = unsafe {
         if node {
-            epanet_sys::EN_getnodeid(project, index, buffer.as_mut_ptr())
+            toolkit::EN_getnodeid(project, index, buffer.as_mut_ptr())
         } else {
-            epanet_sys::EN_getlinkid(project, index, buffer.as_mut_ptr())
+            toolkit::EN_getlinkid(project, index, buffer.as_mut_ptr())
         }
     };
     check(code)?;
@@ -190,13 +240,13 @@ unsafe fn identifier(project: epanet_sys::EN_Project, index: c_int, node: bool) 
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-unsafe fn value(project: epanet_sys::EN_Project, index: c_int, property: c_int, node: bool) -> Result<f32, String> {
+unsafe fn value(project: toolkit::Project, index: c_int, property: c_int, node: bool) -> Result<f32, String> {
     let mut value = 0.0f64;
     let code = unsafe {
         if node {
-            epanet_sys::EN_getnodevalue(project, index, property, &mut value)
+            toolkit::EN_getnodevalue(project, index, property, &mut value)
         } else {
-            epanet_sys::EN_getlinkvalue(project, index, property, &mut value)
+            toolkit::EN_getlinkvalue(project, index, property, &mut value)
         }
     };
     check(code)?;

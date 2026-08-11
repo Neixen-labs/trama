@@ -65,15 +65,19 @@
       <dl id="stats"></dl>
 
       <div class="row" id="time-row" hidden>
+        <select id="engine-choice">
+          <option value="epanet">EPANET</option>
+          <option value="example">pulso de demostración</option>
+        </select>
         <button id="solve" type="button">simular</button>
         <input id="scrub" type="range" min="0" max="600" step="60" value="0" disabled />
         <output id="clock" style="color: var(--dim); min-width: 4em; text-align: right">—</output>
       </div>
 
       <p class="note" id="note">
-        La simulación de este playground es un solver de demostración que difunde un pulso por la topología: sirve para
-        ver el tiempo moverse, no para calcular tu red. EPANET necesita un solver local, porque es C con una API de
-        ficheros y el navegador no le da ni libc ni sistema de archivos.
+        EPANET se ejecuta aquí mismo, compilado a WebAssembly sobre WASI, que es lo que le da el sistema de archivos
+        que su API necesita. Solo funciona con redes importadas de un <code>.inp</code>; para un GeoJSON queda el pulso
+        de demostración, que difunde sobre la topología y sirve para ver el tiempo moverse, no para calcular nada.
       </p>
     </div>
     <div id="map"></div>
@@ -82,7 +86,7 @@
       { "imports": { "fzstd": "./vendor/fzstd.mjs", "maplibre-gl": "./vendor/maplibre-gl.mjs" } }
     </script>
     <script type="module">
-      import { Map } from "maplibre-gl";
+      import { Map as MapLibre } from "maplibre-gl";
       import { decompress } from "fzstd";
       import { parseContainer } from "./vendor/engine/container.js";
       import { createTramaLayer } from "./vendor/engine/maplibre.js";
@@ -108,21 +112,64 @@
         return { container, elapsed: performance.now() - started };
       }
 
+      /**
+       * EPANET, through WASI. It is C with a file-based API, so it gets a filesystem: the
+       * container goes in as a file, the deltas come out as one. Nothing here is a shim around
+       * that shape — it is the shape the toolkit already had.
+       */
+      async function solveWithEpanet(container, seconds) {
+        const { WASI, File, OpenFile, PreopenDirectory, ConsoleStdout } = await import("./vendor/wasi/index.js");
+        const output = new File(new Uint8Array());
+        const messages = [];
+        // EPANET writes scratch files beside its input, so the filesystem needs somewhere to
+        // put them; /tmp is where the solver looks.
+        const { Directory } = await import("./vendor/wasi/index.js");
+        const directory = new PreopenDirectory("/", new Map([
+          ["network.trama", new File(container)],
+          ["deltas.bin", output],
+          ["tmp", new Directory(new Map())],
+        ]));
+        const wasi = new WASI(
+          ["trama-epanet-wasi", "/network.trama", "/deltas.bin", String(seconds)],
+          [],
+          [
+            new OpenFile(new File(new Uint8Array())),
+            ConsoleStdout.lineBuffered((line) => messages.push(line)),
+            ConsoleStdout.lineBuffered((line) => messages.push(line)),
+            directory,
+          ],
+        );
+        const module = await WebAssembly.compileStreaming(fetch("vendor/trama-epanet-wasi.wasm"));
+        const instance = await WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport });
+        let code = 0;
+        try {
+          code = wasi.start(instance);
+        } catch (trap) {
+          // A Rust panic reaches WebAssembly as a trap; the reason is on stderr, which is why
+          // stderr is captured rather than discarded.
+          throw new Error(messages.join(" ") || trap.message);
+        }
+        if (code !== 0) throw new Error(messages.join(" ") || `el solver terminó con código ${code}`);
+        return output.data;
+      }
+
       // --- the map ---
       let map = null;
       let state = null;
       let layer = null;
+      let makeState = () => null;
 
       async function display(name, container) {
         const inflate = (stored) => decompress(stored);
         const read = async (start, end) => container.subarray(start, end + 1);
         const parsed = parseContainer(container.buffer.slice(container.byteOffset, container.byteOffset + container.length));
+        parsedContainer = parsed;
         const tiles = parsed.sections.filter((section) => section.type === "GEOM");
         if (tiles.length === 0) throw new Error("este contenedor no tiene geometría");
 
         const bounds = boundsOf(tiles, parsed, container, inflate);
         if (map !== null) map.remove();
-        map = new Map({
+        map = new MapLibre({
           container: "map",
           style: { version: 8, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#0b0f14" } }] },
           bounds,
@@ -132,13 +179,32 @@
         const graph = parseGraph(readSection(bufferOf(container), parsed.sections.find((s) => s.type === "GRPH"), inflate));
         const channels = parseStateChannels(readSection(bufferOf(container), parsed.sections.find((s) => s.type === "STCH"), inflate));
         const channel = channels.find((candidate) => candidate.entityKind === 2);
-        state = channel === undefined ? null : {
-          ring: new StateRing({ channels, nodeIds: graph.nodes.map((n) => n.id), edgeIds: graph.edges.map((e) => e.id), slots: 12, slotSeconds: 60 }),
-          channelId: channel.channelId,
-          range: [0, channel.rangePresent ? channel.declaredMax : 1],
-          highColor: [1, 0.72, 0.2, 1],
-          timeSeconds: () => Number(document.querySelector("#scrub").value),
+        // A solver's own clock decides the ring: EPANET reports hourly over a day, the pulse
+        // every minute, and a ring sized for one holds a single instant of the other.
+        const clockOf = (choice) => (choice === "epanet" ? { step: 3600, window: 86400 } : { step: 60, window: 600 });
+        makeState = (choice) => {
+          if (channel === undefined) return null;
+          const clock = clockOf(choice);
+          const scrub = document.querySelector("#scrub");
+          scrub.max = String(clock.window);
+          scrub.step = String(clock.step);
+          scrub.value = "0";
+          return {
+            ring: new StateRing({
+              channels,
+              nodeIds: graph.nodes.map((n) => n.id),
+              edgeIds: graph.edges.map((e) => e.id),
+              slots: Math.min(64, Math.ceil(clock.window / clock.step) + 1),
+              slotSeconds: clock.step,
+            }),
+            channelId: channel.channelId,
+            // EPANET's flow is signed; the pulse is not. Both read best from zero upward.
+            range: [0, channel.rangePresent ? channel.declaredMax : 1],
+            highColor: [1, 0.72, 0.2, 1],
+            timeSeconds: () => Number(document.querySelector("#scrub").value),
+          };
         };
+        state = makeState(document.querySelector("#engine-choice").value);
 
         map.on("load", () => {
           layer = createTramaLayer({
@@ -182,6 +248,7 @@
 
       // --- wiring ---
       let container = null;
+      let parsedContainer = null;
 
       async function load(name, text) {
         try {
@@ -226,10 +293,27 @@
 
       const scrub = document.querySelector("#scrub");
       const clock = document.querySelector("#clock");
-      document.querySelector("#solve").addEventListener("click", () => {
+      document.querySelector("#solve").addEventListener("click", async () => {
         if (container === null || state === null) return;
+        const solve = document.querySelector("#solve");
+        solve.disabled = true;
         try {
-          const deltas = wasm.solve(container, Number(scrub.max));
+          const choice = document.querySelector("#engine-choice").value;
+          state = makeState(choice);
+          map.removeLayer("trama-network");
+          layer = createTramaLayer({
+            id: "trama-network",
+            container: parsedContainer,
+            read: async (start, end) => container.subarray(start, end + 1),
+            decompress: (stored) => decompress(stored),
+            style: { widthPixels: 2.5, color: [0.49, 0.82, 1, 1] },
+            resolutionPixels: () => [map.getCanvas().width, map.getCanvas().height],
+            state,
+          });
+          map.addLayer(layer);
+          const deltas = choice === "epanet"
+            ? await solveWithEpanet(container, Number(scrub.max))
+            : wasm.solve(container, Number(scrub.max));
           const applied = state.ring.apply(deltas);
           // The ring is CPU-side until this: the texture is what the shader reads.
           layer?.refreshState();
@@ -241,6 +325,7 @@
         } catch (error) {
           show([["error", `<span class="error">${error.message}</span>`]]);
         }
+        solve.disabled = false;
       });
       scrub.addEventListener("input", () => {
         clock.textContent = `${scrub.value} s`;

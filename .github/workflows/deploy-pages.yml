@@ -31,6 +31,14 @@ jobs:
       # zstd is C, so the wasm build needs a clang carrying the WebAssembly backend.
       - run: sudo apt-get update && sudo apt-get install -y clang
       - run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+      - name: Fetch the WASI SDK
+        # EPANET is C with a file-based API: WASI is what gives it a libc and a filesystem in
+        # a browser. Without this the playground still ships, minus the hydraulic solver.
+        run: |
+          curl -sL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz \
+            | tar xz -C "${RUNNER_TEMP}"
+          echo "WASI_SDK=${RUNNER_TEMP}/wasi-sdk-33.0-x86_64-linux" >> "$GITHUB_ENV"
+      - run: rustup target add wasm32-wasip1
       - name: Build the playground
         run: ./site/demo/build.sh
       - uses: cloudflare/wrangler-action@v3

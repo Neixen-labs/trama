@@ -24,3 +24,8 @@ required-features = ["solver"]
 [features]
 default = ["solver"]
 solver = ["dep:epanet-sys", "dep:trama-solver"]
+
+[[bin]]
+name = "trama-epanet-wasi"
+path = "src/bin/wasi.rs"
+required-features = ["solver"]
