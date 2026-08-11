@@ -689,7 +689,10 @@ name = "trama-wasm"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "trama-epanet",
+ "trama-example",
  "trama-format",
+ "wasm-bindgen",
 ]
 
 [[package]]
