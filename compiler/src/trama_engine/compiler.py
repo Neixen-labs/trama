@@ -532,7 +532,7 @@ def _quantize(point: tuple[float, float], z: int, x: int, y: int) -> tuple[int, 
 
 
 def _node_cell(point: tuple[float, float]) -> tuple[int, int]:
-    """The identity cell of a projected point: SPEC 4.1, the geometry grid made global.
+    """The identity cell of a projected point: SPEC 4.2, the geometry grid made global.
 
     Quantization samples both tile edges, so `_EXTENT` in one tile addresses the position `0`
     addresses in the next, and a node on a tile boundary lands in one cell either way.

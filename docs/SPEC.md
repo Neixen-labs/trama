@@ -1,6 +1,6 @@
 # TRAMA File Format Specification
 
-**Specification version:** 0.2.0
+**Specification version:** 0.3.0
 **Status:** Draft
 **Normative language:** The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in RFC 2119.
 
@@ -177,20 +177,22 @@ GraphHeader
   u32 csr_offsets_offset
   u32 adjacency_offset
   u32 geometry_refs_offset
+  u32 node_ids_offset
+  u32 edge_ids_offset
 
 Node[node_count]
-  u64 id
   u32 property_row
   u32 flags                    # zero in v0
 
 Edge[edge_count]
-  u64 id
   u32 source_node_index
   u32 target_node_index
   u32 property_row
   u32 geometry_ref_start
   u32 geometry_ref_count
   u32 flags                    # bit 0: directed
+
+NodeId, EdgeId                 # one delta block each, see 4.1
 
 u64 CsrOffset[node_count + 1]
 
@@ -206,9 +208,19 @@ GeometryRef[geometry_ref_count]
   u8[3] reserved
 ```
 
-`CsrOffset[0]` MUST be zero, `CsrOffset[node_count]` MUST equal `adjacency_count`, and offsets MUST be monotonic. A directed edge has one source-node entry; an undirected edge has both endpoint entries with opposite direction. Each edge references one or more geometry paths in traversal order. Every referenced directory record MUST be `GEOM` and each path's `edge_index` MUST equal the referencing edge index.
+An `id` field no longer appears in either record; section 4.1 says where identity lives. `CsrOffset[0]` MUST be zero, `CsrOffset[node_count]` MUST equal `adjacency_count`, and offsets MUST be monotonic. A directed edge has one source-node entry; an undirected edge has both endpoint entries with opposite direction. Each edge references one or more geometry paths in traversal order. Every referenced directory record MUST be `GEOM` and each path's `edge_index` MUST equal the referencing edge index.
 
-### 4.1 Node identity derived from position
+### 4.1 Identity is stored as ascending deltas
+
+Identities do not live in the fixed-stride records. Each array's ids are a block of unsigned LEB128 varints: the first is the smallest id, and every later one is the gap to its predecessor. A block holds exactly `node_count` or `edge_count` values, and a reader decodes it once, in order, to recover the `i`th entity's id.
+
+The ordering this relies on is already required — both arrays are sorted by ascending id — and the ordering is what makes it work. An id is the first 8 bytes of a SHA-256, so a raw array is incompressible by construction: measured on a 49,612-edge network, 597 kB of ids compress to 597 kB. Sorted, their gaps average `2^64 / n`, which is roughly six bytes rather than eight, and the same 597 kB stores in 509 kB.
+
+An unsigned varint encodes seven bits per byte, low group first, with the high bit set on every byte but the last. Gaps are strictly positive, since ids are unique and ascending; a zero gap after the first value is a malformed section. A reader MUST reject a block whose values run past its bounds or whose count disagrees with the header.
+
+This costs random access: the id of one entity cannot be read without decoding the block up to it. Nothing in the format needs that — a reader that wants ids wants all of them, to build the map from id to index — and the alternative was failing the size budget with eight bytes of incompressible hash per entity.
+
+### 4.2 Node identity derived from position
 
 A source that names its nodes decides identity by itself. When a writer has no such name and must decide whether two edge endpoints meet, it MUST compare them on the section 3.1 quantization grid, and MUST NOT compare raw coordinates for equality.
 
@@ -336,7 +348,7 @@ Export creates `nodes` and `edges` feature layers in `EPSG:3857`, with `trama_id
 Import and export of EPANET `.inp` are defined by `docs/EPANET_BOUNDARY.md` and implemented in `solvers/epanet/`, not in the core. The core's obligations are these:
 
 - Junctions, reservoirs, and tanks become nodes; pipes, pumps, and valves become edges. Per-entity scalars become `PROP` columns under opaque string keys, and the entity's EPANET name is one of them, since the rest of the file refers to entities by name.
-- An `.inp` declares no coordinate reference system, so an importer MUST require the caller to state one and MUST NOT infer it from the coordinate ranges. Section 4.1 explains why an inferred spatial answer is the wrong kind of wrong: it is invisible in a rendered map.
+- An `.inp` declares no coordinate reference system, so an importer MUST require the caller to state one and MUST NOT infer it from the coordinate ranges. Section 4.2 explains why an inferred spatial answer is the wrong kind of wrong: it is invisible in a rendered map.
 - Everything with no entity to hang on — patterns, curves, controls, rules, options, times — goes in an `XTRA` record owned by `epanet`, under the rules of section 7. Units belong there too: `PROP` columns carry no unit, and EPANET's are set file-wide by `[OPTIONS] UNITS`.
 
 A round trip `.inp → .trama → .inp` is verified by simulation, not by bytes: both files run through the same EPANET binary MUST agree on every node pressure and link flow, within solver tolerance, at every reported timestep. Comments, section order, and whitespace are not information about the network, and byte comparison would fail on all three while missing a dropped pattern.
