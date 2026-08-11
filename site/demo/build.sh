@@ -40,5 +40,7 @@ fi
 echo "examples"
 cp "$root/core/trama-epanet/tests/networks/Net3.inp" "$here/examples/net3.inp"
 cp "$root/fixtures/network.geojson" "$here/examples/network.geojson"
+# OpenStreetMap data, © OpenStreetMap contributors, ODbL. See fixtures/README.md.
+cp "$root/fixtures/madrid.osm.json" "$here/examples/madrid.osm.json"
 
 printf 'ready: %s of compiler\n' "$(du -h "$vendor/trama_wasm_bg.wasm" | cut -f1)"

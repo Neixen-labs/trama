@@ -49,7 +49,7 @@
       <label id="drop">
         <input id="file" type="file" accept=".geojson,.json,.inp" hidden />
         <strong>Arrastra un archivo o pulsa aquí</strong>
-        <span>GeoJSON de líneas, o un <code>.inp</code> de EPANET</span>
+        <span>GeoJSON de líneas, un <code>.inp</code> de EPANET, o un <code>.osm.json</code> de Overpass</span>
       </label>
 
       <div class="row" id="crs-row" hidden>
@@ -59,6 +59,7 @@
 
       <div class="row">
         <button class="ghost" data-example="net3.inp">Ejemplo: Net3</button>
+        <button class="ghost" data-example="madrid.osm.json">Ejemplo: calles de Madrid</button>
         <button class="ghost" data-example="network.geojson">Ejemplo: GeoJSON</button>
       </div>
 
@@ -69,9 +70,15 @@
         <output id="odometer" style="color: var(--dim); min-width: 6em; text-align: right">—</output>
       </div>
 
+      <div class="row" id="route-row" hidden>
+        <output id="waypoint-count" style="color: var(--dim); font-size: 12.5px; flex: 1">pulsa sobre la red</output>
+        <button class="ghost" id="clear-waypoints" type="button">limpiar puntos</button>
+      </div>
+
       <div class="row" id="time-row" hidden>
         <select id="engine-choice">
           <option value="epanet">EPANET</option>
+          <option value="routing">ruta más corta</option>
           <option value="example">pulso de demostración</option>
         </select>
         <button id="solve" type="button">simular</button>
@@ -83,6 +90,12 @@
         EPANET se ejecuta aquí mismo, compilado a WebAssembly sobre WASI, que es lo que le da el sistema de archivos
         que su API necesita. Solo funciona con redes importadas de un <code>.inp</code>; para un GeoJSON queda el pulso
         de demostración, que difunde sobre la topología y sirve para ver el tiempo moverse, no para calcular nada.
+        La ruta más corta necesita una red de calles: elige dos puntos o más sobre el mapa y respeta los sentidos
+        únicos, así que la vuelta rara vez coincide con la ida.
+      </p>
+      <p class="note">
+        El ejemplo de Madrid son datos de <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>,
+        © colaboradores de OpenStreetMap, bajo <a href="https://opendatacommons.org/licenses/odbl/">ODbL</a>.
       </p>
     </div>
     <div id="map"></div>
@@ -91,10 +104,10 @@
       { "imports": { "fzstd": "./vendor/fzstd.mjs", "maplibre-gl": "./vendor/maplibre-gl.mjs" } }
     </script>
     <script type="module">
-      import { Map as MapLibre } from "maplibre-gl";
+      import { Map as MapLibre, Marker } from "maplibre-gl";
       import { decompress } from "fzstd";
       import { parseContainer } from "./vendor/engine/container.js";
-      import { buildRoute, sampleRoute, startNode, walk, zoomFor } from "./vendor/engine/flythrough.js";
+      import { buildRoute, edgePolyline, sampleRoute, startNode, toLonLat, walk, zoomFor } from "./vendor/engine/flythrough.js";
       import { createTramaLayer } from "./vendor/engine/maplibre.js";
       import { parseGeometry, parseGraph, readSection } from "./vendor/engine/sections.js";
       import { parseStateChannels, StateRing } from "./vendor/engine/state.js";
@@ -112,9 +125,12 @@
 
       function compile(name, text) {
         const started = performance.now();
-        const container = name.toLowerCase().endsWith(".inp")
+        const lower = name.toLowerCase();
+        const container = lower.endsWith(".inp")
           ? wasm.compile_inp(text, document.querySelector("#crs").value.trim())
-          : wasm.compile_geojson(text);
+          : lower.endsWith(".osm.json")
+            ? wasm.compile_osm(text)
+            : wasm.compile_geojson(text);
         return { container, elapsed: performance.now() - started };
       }
 
@@ -194,11 +210,24 @@
         route = buildRoute(graph, walk(graph, startNode(graph), 5000), geometry);
         document.querySelector("#fly-row").hidden = route.length === 0;
         document.querySelector("#odometer").textContent = metres(route.length);
+        // Where each node sits, read off the ends of the edges that meet there — the same
+        // derivation the exporter does, and the only way a map click can name a node.
+        nodePositions = new Array(graph.nodes.length);
+        graph.edges.forEach((edge, edgeIndex) => {
+          const points = edgePolyline(graph, { edgeIndex, direction: 1 }, geometry);
+          if (points.length === 0) return;
+          nodePositions[edge.sourceNodeIndex] ??= toLonLat(points[0]);
+          nodePositions[edge.targetNodeIndex] ??= toLonLat(points[points.length - 1]);
+        });
+        routableGraph = graph;
+        clearWaypoints();
+
         const channels = parseStateChannels(readSection(bufferOf(container), parsed.sections.find((s) => s.type === "STCH"), inflate));
         const channel = channels.find((candidate) => candidate.entityKind === 2);
         // A solver's own clock decides the ring: EPANET reports hourly over a day, the pulse
         // every minute, and a ring sized for one holds a single instant of the other.
-        const clockOf = (choice) => (choice === "epanet" ? { step: 3600, window: 86400 } : { step: 60, window: 600 });
+        const clockOf = (choice) =>
+          choice === "epanet" ? { step: 3600, window: 86400 } : { step: 60, window: choice === "routing" ? 1800 : 600 };
         makeState = (choice) => {
           if (channel === undefined) return null;
           const clock = clockOf(choice);
@@ -223,6 +252,9 @@
         };
         state = makeState(document.querySelector("#engine-choice").value);
 
+        map.on("click", (moment) => {
+          if (document.querySelector("#engine-choice").value === "routing") addWaypoint(moment.lngLat);
+        });
         map.on("load", () => {
           layer = createTramaLayer({
             id: "trama-network",
@@ -237,6 +269,68 @@
         });
         document.querySelector("#time-row").hidden = state === null;
         return { tiles: geometry.size, nodes: graph.nodes.length, edges: graph.edges.length };
+      }
+
+      // --- routing ---
+      let routableGraph = null;
+      let nodePositions = [];
+      let waypoints = [];
+      let markers = [];
+
+      function clearWaypoints() {
+        waypoints = [];
+        for (const marker of markers) marker.remove();
+        markers = [];
+        updateWaypointCount();
+      }
+
+      function updateWaypointCount() {
+        const row = document.querySelector("#route-row");
+        row.hidden = document.querySelector("#engine-choice").value !== "routing";
+        document.querySelector("#waypoint-count").textContent =
+          waypoints.length === 0 ? "pulsa sobre la red" : `${waypoints.length} puntos`;
+      }
+
+      /**
+       * When the last edge of the route is first reached, read off the deltas themselves.
+       *
+       * The solver reports progress against a clock the caller chose, so only the stream knows
+       * when the journey actually ends. Each record is the 18 bytes SPEC's contract defines.
+       */
+      function arrivalOf(deltas, step) {
+        const view = new DataView(deltas.buffer, deltas.byteOffset, deltas.byteLength);
+        const firstReached = new Map();
+        for (let at = 0; at + 18 <= deltas.byteLength; at += 18) {
+          if (view.getFloat32(at + 14, true) !== 1) continue;
+          const id = view.getBigUint64(at, true);
+          const t = view.getFloat32(at + 10, true);
+          if (!firstReached.has(id) || t < firstReached.get(id)) firstReached.set(id, t);
+        }
+        const arrival = Math.max(0, ...firstReached.values());
+        return Math.max(step, Math.ceil(arrival / step) * step);
+      }
+
+      /** The node nearest a click, so a waypoint is a place rather than an index to look up. */
+      function nearestNode(lngLat) {
+        let best = -1;
+        let shortest = Infinity;
+        nodePositions.forEach((position, index) => {
+          if (position === undefined) return;
+          const distance = (position[0] - lngLat.lng) ** 2 + (position[1] - lngLat.lat) ** 2;
+          if (distance < shortest) {
+            shortest = distance;
+            best = index;
+          }
+        });
+        return best;
+      }
+
+      function addWaypoint(lngLat) {
+        const node = nearestNode(lngLat);
+        if (node < 0) return;
+        waypoints.push(node);
+        markers.push(new Marker({ color: "#ffb833" }).setLngLat(nodePositions[node]).addTo(map));
+        updateWaypointCount();
       }
 
       // --- the fly-through ---
@@ -350,6 +444,9 @@
         });
       }
 
+      document.querySelector("#clear-waypoints").addEventListener("click", clearWaypoints);
+      document.querySelector("#engine-choice").addEventListener("change", updateWaypointCount);
+
       document.querySelector("#fly").addEventListener("click", () => {
         if (flight !== null) stopFlight();
         else if (route !== null && route.length > 0 && map !== null) startFlight();
@@ -359,6 +456,11 @@
       const clock = document.querySelector("#clock");
       document.querySelector("#solve").addEventListener("click", async () => {
         if (container === null || state === null) return;
+        const choiceNow = document.querySelector("#engine-choice").value;
+        if (choiceNow === "routing" && waypoints.length < 2) {
+          show([["error", '<span class="error">elige al menos dos puntos sobre la red</span>']]);
+          return;
+        }
         const solve = document.querySelector("#solve");
         solve.disabled = true;
         try {
@@ -377,14 +479,24 @@
           map.addLayer(layer);
           const deltas = choice === "epanet"
             ? await solveWithEpanet(container, Number(scrub.max))
-            : wasm.solve(container, Number(scrub.max));
+            : choice === "routing"
+              // 8 m/s is a plausible city speed; the flag here is that it is a constant, since
+              // the solver costs by length and nothing yet reads a speed limit off the graph.
+              ? wasm.solve_route(container, Uint32Array.from(waypoints), 8, Number(scrub.max))
+              : wasm.solve(container, Number(scrub.max));
           const applied = state.ring.apply(deltas);
           // The ring is CPU-side until this: the texture is what the shader reads.
           layer?.refreshState();
+          // A route is over long before the window is: at 8 m/s half an hour covers 14 km and
+          // these streets are two. Without this the whole journey happens in the first inch of
+          // the slider and dragging it does nothing visible.
+          if (choice === "routing") scrub.max = String(arrivalOf(deltas, Number(scrub.step)));
           scrub.disabled = false;
+          scrub.value = "0";
           clock.textContent = `${scrub.value} s`;
+          // The previous run's error goes with it, or a success keeps reporting a failure.
           show([...document.querySelectorAll("#stats dt")].map((dt) => [dt.textContent, dt.nextElementSibling.innerHTML])
-            .filter(([term]) => term !== "simulación")
+            .filter(([term]) => term !== "simulación" && term !== "error")
             .concat([["simulación", `${applied} deltas`]]));
         } catch (error) {
           show([["error", `<span class="error">${error.message}</span>`]]);
