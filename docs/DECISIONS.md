@@ -42,6 +42,14 @@
 
 **Consequence:** The engine's solver client is written against a stream, which is the harder of the two shapes; a WASM runtime can hand it the same bytes without changing it. Nothing yet proves the sandboxed path, and no solver is isolated from the host — an HTTP solver is trusted code at the other end of a socket. The event framing is now load-bearing and belongs in `docs/SOLVER_CONTRACT.md`, not in the example's source.
 
+## 2026-08-11 — Graph identities are stored as ascending deltas
+
+**Decision:** `Node` and `Edge` records no longer carry a `u64 id`. Each array's identities become a block of unsigned LEB128 varints holding the first id and then the gap to each predecessor, addressed from two new header offsets (SPEC 4.1). The specification moves to 0.3.0.
+
+**Why:** The phase 3 size criterion is under 20% of the equivalent GeoJSON and the compiler sat at 20.4%. `GRPH` is 71% of a file, and its identities are the part no compressor can help with: an id is the first 8 bytes of a SHA-256, so on a 49,612-edge network 597 kB of ids compress to exactly 597 kB. The format already requires both arrays sorted by ascending id, and sorted values have gaps around `2^64 / n` — six bytes rather than eight. Measured: 597 kB stores as 509 kB, 88 kB off the file, 4.5% of its total size.
+
+**Consequence:** An id can no longer be read at a fixed offset; recovering the `i`th requires decoding the block up to it. Nothing needs that — a reader that wants ids wants all of them, to build the map from id to index — but a future reader that streams one entity would have to change. Record layouts changed incompatibly, so this is not a file a 0.2.0 reader can open, and every existing container must be recompiled. The saving is bounded and known: it is the only incompressible mass in the format, and there is no second one to find later.
+
 ## 2026-08-11 — Domain leftovers ride in an opaque section the core cannot read
 
 **Decision:** Add the optional `XTRA` section kind (SPEC 7): bytes with a declared owner and media type, which the core stores, compresses, checksums, and range-serves but has no code to parse. EPANET's patterns, curves, controls, rules, options, and unit system travel there. The `.inp` parser lives in `solvers/epanet/` behind an importer interface the compiler discovers, and an importer must be told the coordinate reference system rather than infer one.
@@ -52,7 +60,7 @@
 
 ## 2026-08-11 — Node identity comes from the geometry grid
 
-**Decision:** When a source does not name its nodes, a writer derives node identity from the section 3.1 quantization cell, expressed globally as `tile * extent + q`, instead of comparing coordinates for equality. Recorded in SPEC 4.1.
+**Decision:** When a source does not name its nodes, a writer derives node identity from the section 3.1 quantization cell, expressed globally as `tile * extent + q`, instead of comparing coordinates for equality. Recorded in SPEC 4.2.
 
 **Why:** Identity by exact float equality means two features share a node only when their coordinates are bit-identical. Shared vertices written by different tools, or round-tripped through different precisions, routinely differ in their last digits, and the result is a graph torn into fragments whose geometry still draws perfectly — the failure is invisible to rendering and only surfaces when a solver traverses topology. The alternative, snapping within a tolerance, is what GIS tools do, but it puts a dataset-dependent number in the middle of topology: too large and it silently merges genuinely distinct nodes. The grid needs no tuning because it is the precision the file already stores.
 

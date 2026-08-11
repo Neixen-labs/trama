@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LicenseRef-BSL-1.1
-"""Node identity comes from the geometry grid, per SPEC 4.1."""
+"""Node identity comes from the geometry grid, per SPEC 4.2."""
 
 import json
 import math
@@ -62,7 +62,7 @@ def test_endpoints_a_metre_apart_stay_two_nodes(tmp_path: Path) -> None:
 
 def test_a_node_on_a_tile_boundary_joins_across_the_boundary(tmp_path: Path) -> None:
     # Each edge quantizes this endpoint inside a different tile, one as qx = 65535 and the
-    # other as qx = 0. SPEC 4.1 makes those one cell.
+    # other as qx = 0. SPEC 4.2 makes those one cell.
     meeting = [TILE_BOUNDARY_LONGITUDE, 40.416]
 
     container = _compile(tmp_path, [[TILE_BOUNDARY_LONGITUDE - 0.01, 40.415], meeting], [meeting, [TILE_BOUNDARY_LONGITUDE + 0.01, 40.417]])
