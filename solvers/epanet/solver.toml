@@ -2,7 +2,7 @@
 id = "epanet"
 version = "0.1.0"
 license = "LicenseRef-BSL-1.1"
-contract_versions = ["0.1.0"]
+contract_versions = ["0.1.0", "0.2.0"]
 runtimes = ["server"]
 
 [inputs]
@@ -12,15 +12,18 @@ edges = true
 node_properties = ["epanet:name", "epanet:kind"]
 edge_properties = ["epanet:name", "epanet:kind"]
 
+# Contract 2.1: the unit is the input file's to choose, not this solver's. `[OPTIONS] Units`
+# decides whether EPANET reports psi and gallons or metres and litres, so both outputs name
+# every unit they can produce and the host matches the one the container declares.
 [[outputs]]
 channel = "pressure"
 entity_kind = "node"
-unit = "psi"
+units = ["psi", "m"]
 
 [[outputs]]
 channel = "flow"
 entity_kind = "edge"
-unit = "gpm"
+units = ["cfs", "gpm", "mgd", "imgd", "afd", "lps", "lpm", "mld", "cmh", "cmd"]
 
 [params]
 schema = {"type" = "object", "properties" = {"pressure_channel" = {"type" = "string", "default" = "pressure"}, "flow_channel" = {"type" = "string", "default" = "flow"}}, "additionalProperties" = false}
