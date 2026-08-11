@@ -78,7 +78,7 @@
       <div class="row" id="time-row" hidden>
         <select id="engine-choice">
           <option value="epanet">EPANET</option>
-          <option value="routing">ruta más corta</option>
+          <option value="routing">ruta más rápida</option>
           <option value="example">pulso de demostración</option>
         </select>
         <button id="solve" type="button">simular</button>
@@ -90,8 +90,9 @@
         EPANET se ejecuta aquí mismo, compilado a WebAssembly sobre WASI, que es lo que le da el sistema de archivos
         que su API necesita. Solo funciona con redes importadas de un <code>.inp</code>; para un GeoJSON queda el pulso
         de demostración, que difunde sobre la topología y sirve para ver el tiempo moverse, no para calcular nada.
-        La ruta más corta necesita una red de calles: elige dos puntos o más sobre el mapa y respeta los sentidos
-        únicos, así que la vuelta rara vez coincide con la ida.
+        La ruta más rápida necesita una red de calles: elige dos puntos o más sobre el mapa. Mide en tiempo, no en
+        distancia, leyendo el límite de velocidad de cada calle, y respeta los sentidos únicos, así que la vuelta
+        rara vez coincide con la ida.
       </p>
       <p class="note">
         El ejemplo de Madrid son datos de <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>,
@@ -480,9 +481,10 @@
           const deltas = choice === "epanet"
             ? await solveWithEpanet(container, Number(scrub.max))
             : choice === "routing"
-              // 8 m/s is a plausible city speed; the flag here is that it is a constant, since
-              // the solver costs by length and nothing yet reads a speed limit off the graph.
-              ? wasm.solve_route(container, Uint32Array.from(waypoints), 8, Number(scrub.max))
+              // The road importer wrote a speed for every edge, so the search minimises time and
+              // a longer fast street can beat a short slow one. The 8 m/s is only the fallback,
+              // for a network compiled without that column.
+              ? wasm.solve_route(container, Uint32Array.from(waypoints), 8, "roads:speed_ms", Number(scrub.max))
               : wasm.solve(container, Number(scrub.max));
           const applied = state.ring.apply(deltas);
           // The ring is CPU-side until this: the texture is what the shader reads.

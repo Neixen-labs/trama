@@ -169,7 +169,18 @@ fn parse_geometry(payload: &[u8]) -> Result<Vec<Vec<(u16, u16)>>, String> {
         .collect()
 }
 
-type Rows = Vec<BTreeMap<String, Value>>;
+pub type Rows = Vec<BTreeMap<String, Value>>;
+
+/// Every edge property row, addressed by an edge's `property_row`.
+///
+/// A solver costing a traversal by something the source measured — a speed limit, a diameter —
+/// needs the columns, and only the exporter could read them. Typed values, no domain meaning:
+/// what a key means belongs to whoever wrote it.
+pub fn edge_properties(data: &[u8]) -> Result<Rows, String> {
+    let sections = read_sections(data)?;
+    let properties = sections.iter().find(|s| &s.kind == b"PROP").ok_or("container is missing a PROP section")?;
+    Ok(parse_properties(&properties.payload)?.1)
+}
 
 fn parse_properties(payload: &[u8]) -> Result<(Rows, Rows), String> {
     let u32_at = |at: usize| u32::from_le_bytes(payload[at..at + 4].try_into().unwrap());
