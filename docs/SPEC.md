@@ -1,6 +1,6 @@
 # TRAMA File Format Specification
 
-**Specification version:** 0.3.0
+**Specification version:** 0.3.1
 **Status:** Draft
 **Normative language:** The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in RFC 2119.
 
@@ -112,6 +112,8 @@ extent = 65535
 qx = round((x - tile_min_x) / (tile_max_x - tile_min_x) * extent)
 qy = round((tile_max_y - y) / (tile_max_y - tile_min_y) * extent)
 ```
+
+`round` is round-half-to-even: a value exactly halfway between two integers MUST take the even one, as IEEE 754 does by default. Most languages disagree here — `f64::round`, C's `round` and `Math.round` all move away from the tie rather than towards the even neighbour — so a writer on those MUST say so explicitly. A vertex landing on a half-step is rare, but section 4.2 derives node identity from the quantized cell, so two writers rounding differently would give the same input different stable IDs.
 
 Values are clamped to `[0, 65535]`; the inverse formula MUST be used for export. Quantized geometry is not an authoritative survey or engineering-coordinate store.
 
@@ -332,6 +334,8 @@ References point one way. A payload MAY identify entities by their stable `u64` 
 ## 8. Compression and integrity
 
 Every `GEOM`, `GRPH`, `PROP`, and `STCH` directory record is one independent zstd frame. v0 permits no other codec, no mixed codecs, and no cross-record dictionary. Writers SHOULD use deterministic zstd settings. Compression level is not format-significant. A reader MUST reject malformed frames, decoded-size mismatches, checksum mismatches, and invalid references.
+
+Each frame MUST declare its decompressed size in its own header, and that size MUST equal the directory's `uncompressed_bytes`. The directory already carries the authoritative length, so a frame disagreeing with it is corrupt either way; requiring the field costs a writer nothing and lets a reader reject a truncated frame before allocating for it. Streaming compression APIs omit the field by default, so a writer MUST use a one-shot call or pledge the size before writing.
 
 ## 9. Export and import mapping
 
