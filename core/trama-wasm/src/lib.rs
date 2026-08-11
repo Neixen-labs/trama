@@ -24,6 +24,31 @@ pub fn compile_inp(source: &str, crs: &str) -> Result<Vec<u8>, JsError> {
         .map_err(|error| JsError::new(&error))
 }
 
+/// Compile an OpenStreetMap extract, as Overpass writes it for `out geom;`.
+///
+/// The road importer declares the channel a router writes, so a container built here is
+/// solvable without the caller knowing what `on_route` is.
+#[wasm_bindgen]
+pub fn compile_osm(source: &str) -> Result<Vec<u8>, JsError> {
+    let imported = trama_roads::import(source).map_err(|error| JsError::new(&error))?;
+    trama_format::compile(&imported.features, &imported.channels, &imported.extras)
+        .map_err(|error| JsError::new(&error))
+}
+
+/// Route through `waypoints`, given as node indices, and return the packed deltas.
+///
+/// Unlike EPANET, this solver is Rust with no filesystem in its API, so it needs no WASI: the
+/// same code the server runs compiles straight into this module.
+#[wasm_bindgen]
+pub fn solve_route(container: &[u8], waypoints: &[u32], speed: f32, t1_seconds: f32) -> Result<Vec<u8>, JsError> {
+    let parameters = trama_routing::Parameters {
+        waypoints: waypoints.iter().map(|index| *index as usize).collect(),
+        speed_metres_per_second: speed,
+        ..Default::default()
+    };
+    trama_routing::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))
+}
+
 /// Run the example solver over a container and return its packed deltas.
 #[wasm_bindgen]
 pub fn solve(container: &[u8], t1_seconds: f32) -> Result<Vec<u8>, JsError> {

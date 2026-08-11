@@ -12,5 +12,7 @@ crate-type = ["cdylib", "rlib"]
 trama-format = { path = "../trama-format" }
 trama-epanet = { path = "../trama-epanet", default-features = false }
 trama-example = { path = "../trama-example" }
+trama-roads = { path = "../trama-roads" }
+trama-routing = { path = "../trama-routing" }
 serde_json.workspace = true
 wasm-bindgen = "0.2"

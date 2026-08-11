@@ -710,6 +710,8 @@ dependencies = [
  "trama-epanet",
  "trama-example",
  "trama-format",
+ "trama-roads",
+ "trama-routing",
  "wasm-bindgen",
 ]
 
