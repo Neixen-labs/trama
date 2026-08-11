@@ -677,6 +677,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trama-routing"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "trama-format",
+ "trama-solver",
+]
+
+[[package]]
 name = "trama-solver"
 version = "0.1.0"
 dependencies = [

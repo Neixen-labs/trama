@@ -1,0 +1,15 @@
+[package]
+name = "trama-routing"
+description = "Shortest paths over a network, written into a state channel as a vehicle's progress."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "trama-solver-routing"
+path = "src/main.rs"
+
+[dependencies]
+trama-format = { path = "../trama-format" }
+trama-solver = { path = "../trama-solver" }
+serde_json.workspace = true

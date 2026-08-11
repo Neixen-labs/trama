@@ -21,6 +21,7 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 | `core/trama-format` (Rust) | The container: writer, reader, GeoJSON export. Byte-identical output for identical input, typed node and edge properties, declared state channels, and opaque records it carries without reading. | polygons, GeoPackage export |
 | `core/trama-cli` (Rust) | `trama compile`, `validate`, `export --to geojson|inp`, and the grid generator behind the benchmarks. | CSV points |
 | `core/trama-epanet` (Rust) | `.inp` import and export, and a solver that runs the EPANET 2.3 toolkit and streams pressure and flow, natively or in the browser through WASI. Round trip verified by simulation on Net1 and Net3. | — |
+| `core/trama-routing` (Rust) | Shortest paths over the graph, honouring one-way edges, written into a state channel as a vehicle's progress. The second domain, and the evidence the core is not shaped around water. | travel time from a property, VRP |
 | `core/trama-example` (Rust) | Reference solver over HTTP + Server-Sent Events, to keep the contract under a real implementation. | — |
 | `core/trama-wasm` (Rust) | The compiler in a browser: 121 kB brotli, and byte-identical to the command line. | it compiles GeoJSON only; `.inp` import needs the EPANET crate too |
 | `engine/` — `@trama/core` (TypeScript) | Range reader for header, directory, and sections, each checked against its CRC-32C; instanced WebGL2 line renderer with screen-constant width; MapLibre custom layer; state ring buffer feeding an R32F texture; SSE client for solver deltas; fly-through camera that tours the graph | WebGPU, OPFS offline cache |
@@ -66,7 +67,17 @@ cd engine && npm run demo                    # http://localhost:8790/
 cd core && ./target/release/trama-solver-example
 ```
 
-To drive it with EPANET instead, run that solver and point the page at it:
+Routing is the second domain, and it needs a container declaring the channel it writes. A one-way edge is a feature carrying `"_trama_directed": true`:
+
+```bash
+echo '[{"name":"on_route","entity_kind":"edge","unit":"1","min":0,"max":1}]' > channels.json
+./target/release/trama compile roads.geojson roads.trama --channels channels.json
+./target/release/trama-solver-routing          # http://127.0.0.1:8803/solve
+```
+
+`params` takes `waypoints`, the node indices to visit in order. They are positions in the graph's node array, which is sorted by stable ID rather than by input order, so a client reads them from the graph instead of guessing.
+
+To drive the demo with EPANET instead, run that solver and point the page at it:
 
 ```bash
 cd core && ./target/release/trama-solver-epanet
