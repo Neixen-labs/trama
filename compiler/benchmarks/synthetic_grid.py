@@ -28,9 +28,9 @@ def write_grid(
     origin: tuple[float, float] = ORIGIN,
 ) -> int:
     """A side x side node grid wired horizontally and vertically, like a distribution network."""
-    # Every endpoint comes from the same expression: `longitude + spacing` and
-    # `origin + (column + 1) * spacing` differ in the last bit, and the compiler joins nodes by
-    # exact coordinate equality, so the second form would silently split the grid apart.
+    # One expression for every endpoint, so a grid of `side * side` nodes is exactly that.
+    # The compiler no longer needs it to be — SPEC 4.1 joins on the quantization grid — but a
+    # benchmark should measure the network it claims to, not one the compiler had to repair.
     def point(row: int, column: int) -> tuple[float, float]:
         return (origin[0] + column * spacing, origin[1] + row * spacing)
 
