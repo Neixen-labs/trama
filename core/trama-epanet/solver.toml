@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# The manifest docs/SOLVER_CONTRACT.md section 2 requires of every solver package.
+id = "epanet"
+version = "0.1.0"
+license = "LicenseRef-BSL-1.1"
+contract_versions = ["0.1.0", "0.2.0"]
+# Server only under contract section 5.2. This crate does have a WASI build, which the playground
+# runs, but WASI is a different shape from the WASM ABI section 5.2 defines: a command with a
+# virtual filesystem rather than the exported `init`/`step`/`run`.
+runtimes = ["server"]
+
+[inputs]
+nodes = true
+edges = true
+# The hydraulic scalars travel as opaque `epanet:` keys, and the toolkit reads the whole network
+# rather than named columns, so nothing is required by name here.
+edge_properties = []
+node_properties = []
+
+# Both units, because the unit is the input's to choose: `[OPTIONS] Units` sets it file-wide, and
+# the same code path reports psi for a US flow unit and metres for an SI one. Contract 2.1 exists
+# for this case.
+[[outputs]]
+channel = "pressure"
+entity_kind = "node"
+units = ["psi", "m"]
+
+[[outputs]]
+channel = "flow"
+entity_kind = "edge"
+units = ["cfs", "gpm", "mgd", "imgd", "afd", "lps", "lpm", "mld", "cmh", "cmd"]
+
+[params]
+schema = { "type" = "object", "additionalProperties" = false, "properties" = { "pressure_channel" = { "type" = "string", "default" = "pressure" }, "flow_channel" = { "type" = "string", "default" = "flow" } } }

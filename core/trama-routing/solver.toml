@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# The manifest docs/SOLVER_CONTRACT.md section 2 requires of every solver package.
+id = "shortest-path"
+version = "0.1.0"
+license = "LicenseRef-BSL-1.1"
+contract_versions = ["0.1.0", "0.2.0"]
+# Server only, as with every solver here: the WASM ABI of contract section 5.2 is unimplemented.
+# The browser reaches this crate through `trama-wasm`, which is a host embedding it.
+runtimes = ["server"]
+
+[inputs]
+nodes = true
+edges = true
+# None required: cost falls back to geometric length, which every container carries. A caller
+# naming `speed_property` is asking for a column this manifest cannot know the name of.
+edge_properties = []
+node_properties = []
+
+[[outputs]]
+channel = "on_route"
+entity_kind = "edge"
+# 1 once the vehicle has passed, 0 before. A progress reading, not a quantity.
+unit = "1"
+
+[params]
+schema = { "type" = "object", "additionalProperties" = false, "required" = ["waypoints"], "properties" = { "channel" = { "type" = "string", "default" = "on_route" }, "waypoints" = { "type" = "array", "minItems" = 2, "items" = { "type" = "integer", "minimum" = 0 } }, "speed_metres_per_second" = { "type" = "number", "exclusiveMinimum" = 0, "default" = 13.9 }, "speed_property" = { "type" = "string" }, "step_seconds" = { "type" = "number", "exclusiveMinimum" = 0, "default" = 60 } } }
