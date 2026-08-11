@@ -51,6 +51,20 @@ def compile_geojson(
     `extras` are opaque records to carry along for their owners, per SPEC 7.
     """
     features = [feature for path in _sources(source) for feature in json.loads(path.read_text()).get("features", [])]
+    compile_features(features, destination, channels, extras)
+
+
+def compile_features(
+    features: list[dict[str, Any]],
+    destination: Path,
+    channels: list[dict[str, Any]] | None = None,
+    extras: list[Extra] | None = None,
+) -> None:
+    """Compile GeoJSON features already in memory, whoever produced them.
+
+    This is the entry point an importer reaches: the compiler knows GeoJSON geometry and
+    typed properties, and stays unable to name the format the features came from.
+    """
     lines = [feature for feature in features if feature.get("geometry", {}).get("type") == "LineString"]
     points = [feature for feature in features if feature.get("geometry", {}).get("type") == "Point"]
     if not lines or len(lines) + len(points) != len(features):
@@ -102,10 +116,10 @@ def compile_geojson(
     geometry_refs: list[list[tuple[int, int]]] = []
     for edge_index, (_edge, pieces, _row) in enumerate(ordered):
         refs = []
-        for tile, points in pieces:
+        for tile, piece in pieces:
             paths = tile_paths[tile]
             refs.append((tile_indexes[tile], len(paths)))
-            paths.append((edge_index, [_quantize(point, *tile) for point in points]))
+            paths.append((edge_index, [_quantize(point, *tile) for point in piece]))
         geometry_refs.append(refs)
 
     # Required sections carry record_flags bit 0; XTRA never does, which is what lets a reader
