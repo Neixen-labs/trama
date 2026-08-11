@@ -1,0 +1,11 @@
+[package]
+name = "trama-format"
+description = "The TRAMA v0 container: writer, reader, and GeoJSON export."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+sha2.workspace = true
+zstd.workspace = true

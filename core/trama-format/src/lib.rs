@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: LicenseRef-BSL-1.1
+//! The TRAMA v0 container.
+//!
+//! Ported from the Python compiler and kept byte-identical to it while both exist. Every
+//! ordering, rounding and string form here matches that implementation on purpose; where the
+//! two could disagree, the tests compare their bytes rather than trusting either.
+
+mod export;
+mod read;
+mod write;
+
+pub use export::{export, Export};
+pub use read::{parse_graph, read_sections, Edge, GeometryReference, Graph, Node, Section};
+pub use write::{compile, Extra};
+
+/// CRC-32C (Castagnoli), the checksum every section carries.
+pub(crate) fn crc32c(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for byte in data {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ if crc & 1 != 0 { 0x82F6_3B78 } else { 0 };
+        }
+    }
+    !crc
+}
