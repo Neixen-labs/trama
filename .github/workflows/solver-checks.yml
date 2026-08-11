@@ -22,9 +22,13 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        solver: [example-diffusion, epanet]
     defaults:
       run:
-        working-directory: solvers/example-diffusion
+        working-directory: solvers/${{ matrix.solver }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
