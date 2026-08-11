@@ -1,6 +1,6 @@
 # TRAMA File Format Specification
 
-**Specification version:** 0.3.1
+**Specification version:** 0.4.0
 **Status:** Draft
 **Normative language:** The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in RFC 2119.
 
@@ -342,6 +342,12 @@ Each frame MUST declare its decompressed size in its own header, and that size M
 ### GeoJSON
 
 Export creates `nodes` Point and `edges` LineString FeatureCollections. Coordinates transform from `EPSG:3857` to WGS 84. Stable IDs appear as decimal `properties["_trama_id"]` strings. Typed properties become feature properties; enum values become their declared labels. Import preserves IDs only when `_trama_id` is valid. It cannot preserve meshes, tile boundaries, CSR ordering, compression, or every nullable-type distinction.
+
+An edge is directed when `properties["_trama_directed"]` is the JSON boolean `true`, which sets `Edge.flags` bit 0 and gives the edge one CSR entry instead of two, as section 4 requires. Any other value, and the key's absence, mean undirected; a writer MUST reject a non-boolean. Export writes the key only for directed edges, so a file with none round-trips byte for byte.
+
+Direction is the stored vertex order, source to target. An edge has no way to express a sign, and section 4 gives it none: a source declaring the reverse direction MUST reverse the LineString. This is what keeps the core free of the domain — an input format that says a street runs against its own geometry is describing a road, and translating that into a vertex order is the producer's job, not the format's.
+
+`_trama_id` and `_trama_directed` are the reserved keys. Neither becomes a `PROP` column, so a round trip does not grow a property the source never had, and a producer MUST NOT use either name for its own data.
 
 ### GeoPackage
 
