@@ -32,11 +32,33 @@ export type GeometryPath = Readonly<{ edgeIndex: number; vertices: Uint16Array }
 
 export type GeometryTile = Readonly<{ paths: readonly GeometryPath[]; meshVertexCount: number; meshIndexCount: number }>;
 
-const NODE_BYTES = 16;
-const EDGE_BYTES = 32;
+const NODE_BYTES = 8;
+const EDGE_BYTES = 24;
 const ADJACENCY_BYTES = 8;
 const GEOMETRY_REF_BYTES = 12;
 const PATH_BYTES = 16;
+
+/** Unsigned LEB128 gaps between ascending ids (SPEC 4.1), as `count` `bigint`s. */
+function identities(payload: Uint8Array, view: DataView, offset: number, count: number): BigUint64Array {
+  const values = new BigUint64Array(count);
+  let value = 0n;
+  let at = offset;
+  for (let index = 0; index < count; index += 1) {
+    let gap = 0n;
+    let shift = 0n;
+    for (;;) {
+      if (at >= payload.byteLength) throw new Error("identity block runs past the section");
+      const group = view.getUint8(at);
+      at += 1;
+      gap |= BigInt(group & 0x7f) << shift;
+      shift += 7n;
+      if ((group & 0x80) === 0) break;
+    }
+    value += gap;
+    values[index] = BigInt.asUintN(64, value);
+  }
+  return values;
+}
 
 /** Decompresses one section and rejects it unless its length and CRC-32C match the directory. */
 export function readSection(file: ArrayBuffer, section: Section, decompress: Decompress): Uint8Array {
@@ -53,11 +75,17 @@ export function parseGraph(payload: Uint8Array): Graph {
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   const [nodeCount, edgeCount, adjacencyCount, geometryRefCount] = header(view, 4, 0);
   const [nodesOffset, edgesOffset, csrOffset, adjacencyOffset, refsOffset] = header(view, 5, 16);
+  const [nodeIdsOffset, edgeIdsOffset] = header(view, 2, 36);
   bound(payload, nodesOffset, nodeCount, NODE_BYTES);
   bound(payload, edgesOffset, edgeCount, EDGE_BYTES);
   bound(payload, csrOffset, nodeCount + 1, 8);
   bound(payload, adjacencyOffset, adjacencyCount, ADJACENCY_BYTES);
   bound(payload, refsOffset, geometryRefCount, GEOMETRY_REF_BYTES);
+
+  // SPEC 4.1: identity is a block of ascending gaps, decoded once in order. Reading the id of
+  // one entity would mean decoding every id before it, and nothing here wants only one.
+  const nodeIds = identities(payload, view, nodeIdsOffset, nodeCount);
+  const edgeIds = identities(payload, view, edgeIdsOffset, edgeCount);
 
   const csrOffsets = new BigUint64Array(nodeCount + 1);
   for (let index = 0; index <= nodeCount; index += 1) csrOffsets[index] = view.getBigUint64(csrOffset + index * 8, true);
@@ -72,18 +100,18 @@ export function parseGraph(payload: Uint8Array): Graph {
     csrOffsets,
     nodes: build(nodeCount, (index) => {
       const at = nodesOffset + index * NODE_BYTES;
-      return { id: view.getBigUint64(at, true), propertyRow: view.getUint32(at + 8, true) };
+      return { id: nodeIds[index]!, propertyRow: view.getUint32(at, true) };
     }),
     edges: build(edgeCount, (index) => {
       const at = edgesOffset + index * EDGE_BYTES;
       const edge = {
-        id: view.getBigUint64(at, true),
-        sourceNodeIndex: view.getUint32(at + 8, true),
-        targetNodeIndex: view.getUint32(at + 12, true),
-        propertyRow: view.getUint32(at + 16, true),
-        geometryRefStart: view.getUint32(at + 20, true),
-        geometryRefCount: view.getUint32(at + 24, true),
-        directed: (view.getUint32(at + 28, true) & 1) !== 0,
+        id: edgeIds[index]!,
+        sourceNodeIndex: view.getUint32(at, true),
+        targetNodeIndex: view.getUint32(at + 4, true),
+        propertyRow: view.getUint32(at + 8, true),
+        geometryRefStart: view.getUint32(at + 12, true),
+        geometryRefCount: view.getUint32(at + 16, true),
+        directed: (view.getUint32(at + 20, true) & 1) !== 0,
       };
       if (edge.sourceNodeIndex >= nodeCount || edge.targetNodeIndex >= nodeCount) {
         throw new Error("edge references a missing node");

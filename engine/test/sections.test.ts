@@ -5,23 +5,29 @@ import test from "node:test";
 import type { Section } from "../src/container.js";
 import { crc32c, parseGeometry, parseGraph, readSection } from "../src/sections.js";
 
+/**
+ * Two nodes, one edge, hand-assembled. Written out byte by byte rather than through the
+ * compiler on purpose: a reader tested against its own writer agrees with itself.
+ *
+ * header 44 | nodes 44 | edges 60 | csr 84 | adjacency 108 | refs 124 | node ids 136 | edge id 138
+ */
 function graphPayload(): Uint8Array {
-  const payload = new Uint8Array(152);
+  const payload = new Uint8Array(139);
   const view = new DataView(payload.buffer);
-  [2, 1, 2, 1, 36, 68, 100, 124, 140].forEach((value, index) => view.setUint32(index * 4, value, true));
-  view.setBigUint64(36, 10n, true);
-  view.setBigUint64(52, 20n, true);
-  view.setUint32(60, 1, true);
-  view.setBigUint64(68, 99n, true);
-  [0, 1, 0, 0, 1, 0].forEach((value, index) => view.setUint32(76 + index * 4, value, true));
-  [0n, 1n, 2n].forEach((value, index) => view.setBigUint64(100 + index * 8, value, true));
+  [2, 1, 2, 1, 44, 60, 84, 108, 124, 136, 138].forEach((value, index) => view.setUint32(index * 4, value, true));
+  view.setUint32(52, 1, true); // node 1 property row
+  [0, 1, 0, 0, 1, 0].forEach((value, index) => view.setUint32(60 + index * 4, value, true));
+  [0n, 1n, 2n].forEach((value, index) => view.setBigUint64(84 + index * 8, value, true));
+  view.setUint32(108, 0, true);
+  view.setInt8(112, 1);
+  view.setUint32(116, 0, true);
+  view.setInt8(120, -1);
   view.setUint32(124, 0, true);
-  view.setInt8(128, 1);
-  view.setUint32(132, 0, true);
-  view.setInt8(136, -1);
-  view.setUint32(140, 0, true);
-  view.setUint32(144, 0, true);
-  view.setInt8(148, 1);
+  view.setUint32(128, 0, true);
+  view.setInt8(132, 1);
+  // SPEC 4.1: ids 10 and 20 are the gaps 10 and 10; the edge's 99 fits one varint byte.
+  payload.set([10, 10], 136);
+  payload.set([99], 138);
   return payload;
 }
 
@@ -104,14 +110,14 @@ test("parses nodes, edges, CSR and geometry refs", () => {
 
 test("rejects a CSR whose last offset disagrees with the adjacency count", () => {
   const payload = graphPayload();
-  new DataView(payload.buffer).setBigUint64(116, 3n, true);
+  new DataView(payload.buffer).setBigUint64(100, 3n, true);
 
   assert.throws(() => parseGraph(payload), /invalid CSR bounds/);
 });
 
 test("rejects an edge pointing at a missing node", () => {
   const payload = graphPayload();
-  new DataView(payload.buffer).setUint32(80, 7, true);
+  new DataView(payload.buffer).setUint32(64, 7, true); // the edge's target node index
 
   assert.throws(() => parseGraph(payload), /edge references a missing node/);
 });
