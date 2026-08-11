@@ -19,14 +19,16 @@ and `wasm-bindgen`, which `WASM_BINDGEN=` can point at.
 | Compile GeoJSON | yes |
 | Compile EPANET `.inp` | yes, with the coordinate reference system stated |
 | Solve with the example solver | yes |
-| Solve with EPANET | **no** |
+| Solve with EPANET | yes, over WASI |
 
-EPANET is C with a file-based API, and `wasm32-unknown-unknown` gives it neither libc nor a
-filesystem. Running it in a browser needs WASI and a virtual filesystem, which is a project of
-its own; until then a real hydraulic result comes from `trama-solver-epanet` running locally.
+EPANET is C with a file-based API, so it reaches the browser through WASI rather than
+wasm-bindgen — a separate module, given a virtual filesystem holding its input and output.
+`WASI_SDK` must point at an unpacked [wasi-sdk](https://github.com/WebAssembly/wasi-sdk/releases);
+without it `build.sh` ships the playground without the hydraulic solver rather than failing.
 
-The page says so in its own words rather than letting a visitor assume the pulse it draws is
-their network's hydraulics.
+Three things WASI does not have, each met where it appeared: `mkstemp`, which EPANET wants and
+the shim supplies in six lines; `std::process::id`, which traps; and `std::env::temp_dir`,
+which panics rather than returning a path, so the solver names `/tmp` directly on that target.
 
 ## The glue
 

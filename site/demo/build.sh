@@ -14,6 +14,7 @@ cp "$root"/engine/dist/*.js "$vendor/engine/"
 cp "$root"/engine/node_modules/maplibre-gl/dist/*.mjs "$vendor/"  # maplibre-gl.mjs pulls a shared chunk beside it
 cp "$root/engine/node_modules/maplibre-gl/dist/maplibre-gl.css" "$vendor/maplibre-gl.css"
 cp "$root/engine/node_modules/fzstd/esm/index.mjs" "$vendor/fzstd.mjs"
+cp -r "$root/engine/node_modules/@bjorn3/browser_wasi_shim/dist" "$vendor/wasi"
 
 echo "compiler"
 # zstd is C, so this needs a clang carrying the WebAssembly backend: Linux ships one, macOS
@@ -25,6 +26,16 @@ clang="${CC:-$(command -v /usr/local/opt/llvm/bin/clang || command -v clang)}"
 # hand-rolled C ABI would have meant reimplementing that runtime.
 "${WASM_BINDGEN:-wasm-bindgen}" --target web --no-typescript \
   --out-dir "$vendor" "$root/core/target/wasm32-unknown-unknown/release/trama_wasm.wasm"
+
+# EPANET is C with a file-based API, so it reaches the browser through WASI rather than
+# wasm-bindgen: a separate module, with a virtual filesystem for its input and output.
+if [ -n "${WASI_SDK:-}" ]; then
+  echo "epanet"
+  (cd "$root/core" && ./wasi/build.sh)
+  cp "$root/core/target/wasm32-wasip1/release/trama-epanet-wasi.wasm" "$vendor/"
+else
+  echo "epanet: skipped, set WASI_SDK to include the hydraulic solver"
+fi
 
 echo "examples"
 cp "$root/core/trama-epanet/tests/networks/Net3.inp" "$here/examples/net3.inp"
