@@ -12,7 +12,7 @@ use trama_format::{Import, Importer, parse_options, read_sections};
 /// Formats the core does not know are read by the crates that own them. The seam is the same
 /// one a plugin would use; linking them here only decides which are present in this binary.
 fn importers() -> Vec<Box<dyn Importer>> {
-    vec![Box::new(trama_epanet::importer::EpanetImporter)]
+    vec![Box::new(trama_epanet::importer::EpanetImporter), Box::new(trama_roads::RoadImporter)]
 }
 
 const NATIVE_SUFFIXES: [&str; 2] = [".geojson", ".json"];
@@ -33,6 +33,9 @@ enum Command {
         /// JSON list of state channels to declare.
         #[arg(long)]
         channels: Option<PathBuf>,
+        /// Read the source with this importer instead of deciding by suffix.
+        #[arg(long)]
+        importer: Option<String>,
         /// key=value passed to the importer.
         #[arg(long = "option", short = 'o')]
         options: Vec<String>,
@@ -63,13 +66,13 @@ fn main() -> ExitCode {
 
 fn run(arguments: Arguments) -> Result<(), String> {
     match arguments.command {
-        Command::Compile { source, destination, channels, options } => {
+        Command::Compile { source, destination, channels, importer, options } => {
             let declared: Vec<Value> = match &channels {
                 Some(path) => serde_json::from_str(&read(path)?).map_err(|error| error.to_string())?,
                 None => Vec::new(),
             };
             let options = parse_options(&options)?;
-            let imported = load(&source, &options)?;
+            let imported = load(&source, importer.as_deref(), &options)?;
             // An explicit --channels wins: the caller may know more than the format does.
             let channels = if declared.is_empty() { &imported.channels } else { &declared };
             let bytes = trama_format::compile(&imported.features, channels, &imported.extras)?;
@@ -98,7 +101,18 @@ fn run(arguments: Arguments) -> Result<(), String> {
     }
 }
 
-fn load(source: &Path, options: &BTreeMap<String, String>) -> Result<Import, String> {
+fn load(source: &Path, named: Option<&str>, options: &BTreeMap<String, String>) -> Result<Import, String> {
+    // An explicit --importer wins over the suffix, because a suffix cannot always decide: an
+    // OpenStreetMap extract is `.json`, which already means "compile this as it stands".
+    if let Some(name) = named {
+        let installed = importers();
+        let ids: Vec<&str> = installed.iter().map(|importer| importer.id()).collect();
+        return installed
+            .iter()
+            .find(|importer| importer.id() == name)
+            .ok_or_else(|| format!("no installed importer is named '{name}'; installed: {}", ids.join(", ")))?
+            .load(source, options);
+    }
     let suffix = source
         .extension()
         .map(|extension| format!(".{}", extension.to_string_lossy().to_lowercase()))

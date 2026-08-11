@@ -21,6 +21,7 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 | `core/trama-format` (Rust) | The container: writer, reader, GeoJSON export. Byte-identical output for identical input, typed node and edge properties, declared state channels, and opaque records it carries without reading. | polygons, GeoPackage export |
 | `core/trama-cli` (Rust) | `trama compile`, `validate`, `export --to geojson|inp`, and the grid generator behind the benchmarks. | CSV points |
 | `core/trama-epanet` (Rust) | `.inp` import and export, and a solver that runs the EPANET 2.3 toolkit and streams pressure and flow, natively or in the browser through WASI. Round trip verified by simulation on Net1 and Net3. | — |
+| `core/trama-roads` (Rust) | Reads an OpenStreetMap extract: translates every spelling of `oneway`, splits ways at the junctions they cross, and declares the channel a router writes. | travel time, turn restrictions |
 | `core/trama-routing` (Rust) | Shortest paths over the graph, honouring one-way edges, written into a state channel as a vehicle's progress. The second domain, and the evidence the core is not shaped around water. | travel time from a property, VRP |
 | `core/trama-example` (Rust) | Reference solver over HTTP + Server-Sent Events, to keep the contract under a real implementation. | — |
 | `core/trama-wasm` (Rust) | The compiler in a browser: 121 kB brotli, and byte-identical to the command line. | it compiles GeoJSON only; `.inp` import needs the EPANET crate too |
@@ -67,13 +68,17 @@ cd engine && npm run demo                    # http://localhost:8790/
 cd core && ./target/release/trama-solver-example
 ```
 
-Routing is the second domain, and it needs a container declaring the channel it writes. A one-way edge is a feature carrying `"_trama_directed": true`:
+Routing is the second domain. A road network comes from an OpenStreetMap extract, which Overpass writes as `.json` — a suffix the compiler already claims, so the importer is asked for by name:
 
 ```bash
-echo '[{"name":"on_route","entity_kind":"edge","unit":"1","min":0,"max":1}]' > channels.json
-./target/release/trama compile roads.geojson roads.trama --channels channels.json
+curl -s -X POST https://overpass-api.de/api/interpreter --data-urlencode \
+  'data=[out:json][timeout:80];way["highway"~"^(residential|primary|secondary|tertiary)$"](40.4100,-3.7120,40.4230,-3.6950);out geom;' \
+  -o madrid.json
+./target/release/trama compile madrid.json madrid.trama --importer roads
 ./target/release/trama-solver-routing          # http://127.0.0.1:8803/solve
 ```
+
+`out geom;` matters: the importer needs each way's node references to split it where other ways cross it, and without that a crossing never becomes a junction. The importer declares the `on_route` channel itself, so no `--channels` is needed.
 
 `params` takes `waypoints`, the node indices to visit in order. They are positions in the graph's node array, which is sorted by stable ID rather than by input order, so a client reads them from the graph instead of guessing.
 

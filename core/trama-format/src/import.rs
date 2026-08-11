@@ -25,6 +25,12 @@ pub struct Import {
 
 /// Reads one family of source files. Implementations live outside this crate.
 pub trait Importer {
+    /// Names this importer for a caller who must ask for it by name.
+    ///
+    /// A suffix cannot always decide. OpenStreetMap's exports are `.json`, which already means
+    /// "compile this as it stands", and a file whose meaning depends on what it is named is a
+    /// surprise waiting for whoever renames it.
+    fn id(&self) -> &'static str;
     fn suffixes(&self) -> &'static [&'static str];
     fn load(&self, source: &Path, options: &BTreeMap<String, String>) -> Result<Import, String>;
 }

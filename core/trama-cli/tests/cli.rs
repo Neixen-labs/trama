@@ -155,3 +155,62 @@ fn trama_format_channels(container: &[u8]) -> Vec<String> {
     }
     (0..count).map(|index| strings[index * 2].clone()).collect()
 }
+
+#[test]
+fn an_importer_asked_for_by_name_wins_over_the_suffix() {
+    // An OpenStreetMap extract is `.json`, which the compiler already claims. Without the flag
+    // it compiles as plain GeoJSON and every one-way street quietly becomes two-way.
+    let directory = workspace("roads");
+    let source = directory.join("extract.json");
+    std::fs::write(
+        &source,
+        r#"{"elements":[{"type":"way","id":1,"nodes":[10,11],
+           "geometry":[{"lat":40.416,"lon":-3.704},{"lat":40.417,"lon":-3.703}],
+           "tags":{"highway":"residential","oneway":"yes"}}]}"#,
+    )
+    .unwrap();
+    let out = directory.join("roads.trama");
+
+    let result = trama(&["compile", source.to_str().unwrap(), out.to_str().unwrap(), "--importer", "roads"]);
+
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let graph = trama_format::parse_graph(
+        &trama_format::read_sections(&std::fs::read(&out).unwrap())
+            .unwrap()
+            .iter()
+            .find(|section| &section.kind == b"GRPH")
+            .unwrap()
+            .payload,
+    )
+    .unwrap();
+    assert!(graph.edges.iter().all(|edge| edge.directed), "the road importer read the one-way tag");
+}
+
+#[test]
+fn the_same_file_without_the_flag_takes_the_plain_geojson_path() {
+    let directory = workspace("roads-unflagged");
+    let source = directory.join("extract.json");
+    std::fs::write(&source, r#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+
+    let result = trama(&["compile", source.to_str().unwrap(), directory.join("o.trama").to_str().unwrap()]);
+
+    // It fails as GeoJSON rather than being handed to a road importer, which is the point:
+    // nothing changed for a file that was compiling before.
+    assert!(!result.status.success());
+    assert!(!String::from_utf8_lossy(&result.stderr).contains("out geom"));
+}
+
+#[test]
+fn an_unknown_importer_name_lists_the_installed_ones() {
+    let directory = workspace("roads-unknown");
+    let source = directory.join("extract.json");
+    std::fs::write(&source, "{}").unwrap();
+
+    let result =
+        trama(&["compile", source.to_str().unwrap(), directory.join("o.trama").to_str().unwrap(), "--importer", "osm"]);
+
+    let message = String::from_utf8_lossy(&result.stderr);
+    assert!(!result.status.success());
+    assert!(message.contains("no installed importer is named 'osm'"), "{message}");
+    assert!(message.contains("roads"), "the message names what is available: {message}");
+}
