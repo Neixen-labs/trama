@@ -196,3 +196,47 @@ fn nodes_and_relations_in_the_extract_are_ignored_rather_than_failing_it() {
 
     assert_eq!(imported.features.len(), 1);
 }
+
+// --- travel speed ---
+
+fn speed_of(tags: Value) -> f64 {
+    let imported = import(&extract(vec![way(1, vec![10, 11], vec![A, B], tags)])).unwrap();
+    imported.features[0]["properties"]["roads:speed_ms"].as_f64().unwrap()
+}
+
+#[test]
+fn a_tagged_speed_limit_arrives_in_metres_per_second() {
+    // A solver must not have to know what `maxspeed` is, nor that OSM counts in km/h.
+    assert!((speed_of(json!({"maxspeed": "50"})) - 13.888).abs() < 0.01);
+    assert!((speed_of(json!({"maxspeed": "30"})) - 8.333).abs() < 0.01);
+}
+
+#[test]
+fn miles_per_hour_are_converted_rather_than_read_as_kilometres() {
+    // 30 mph is 48.3 km/h. Read as km/h it would be 30, and every British road would be slow.
+    assert!((speed_of(json!({"maxspeed": "30 mph"})) - 13.411).abs() < 0.01);
+}
+
+#[test]
+fn osms_named_speeds_are_understood() {
+    assert!((speed_of(json!({"maxspeed": "walk"})) - 1.944).abs() < 0.01);
+    // `none` is a derestricted motorway, not a missing limit.
+    assert!((speed_of(json!({"maxspeed": "none"})) - 36.111).abs() < 0.01);
+}
+
+#[test]
+fn a_street_with_no_limit_falls_back_to_its_road_class() {
+    // 43% of the sample extract carries `maxspeed`; without this most of a city has no cost.
+    assert!((speed_of(json!({"highway": "living_street"})) - 5.555).abs() < 0.01);
+    assert!((speed_of(json!({"highway": "residential"})) - 8.333).abs() < 0.01);
+    assert!((speed_of(json!({"highway": "primary"})) - 13.888).abs() < 0.01);
+}
+
+#[test]
+fn an_unparseable_limit_falls_back_instead_of_reading_as_zero() {
+    // `signals` and `variable` appear in real data. A zero would make the edge infinitely slow.
+    for nonsense in ["signals", "variable", "", "RO:urban"] {
+        let speed = speed_of(json!({"maxspeed": nonsense, "highway": "residential"}));
+        assert!((speed - 8.333).abs() < 0.01, "maxspeed={nonsense} gave {speed}");
+    }
+}

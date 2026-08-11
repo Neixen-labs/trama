@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BinaryHeap};
 
-use trama_format::{Graph, edge_paths, parse_graph, read_sections};
+use trama_format::{Graph, edge_paths, edge_properties, parse_graph, read_sections};
 use trama_solver::server::{Rejection, Request, Solver};
 use trama_solver::{declared, pack};
 
@@ -16,7 +16,11 @@ pub struct Parameters {
     pub channel: String,
     /// Node indices the route must visit, in order. At least two.
     pub waypoints: Vec<usize>,
+    /// The travelling speed, and the fallback where `speed_property` names no usable value.
     pub speed_metres_per_second: f32,
+    /// A `PROP` column holding each edge's own speed in metres per second. Naming one turns the
+    /// search from shortest into fastest: cost becomes time, so a longer fast road can win.
+    pub speed_property: Option<String>,
     pub step_seconds: f32,
 }
 
@@ -27,6 +31,7 @@ impl Default for Parameters {
             waypoints: Vec::new(),
             // 50 km/h: a number that has to be something, and is a parameter for that reason.
             speed_metres_per_second: 13.9,
+            speed_property: None,
             step_seconds: 60.0,
         }
     }
@@ -34,7 +39,7 @@ impl Default for Parameters {
 
 pub struct RoutingSolver;
 
-const KNOWN: [&str; 4] = ["channel", "waypoints", "speed_metres_per_second", "step_seconds"];
+const KNOWN: [&str; 5] = ["channel", "waypoints", "speed_metres_per_second", "speed_property", "step_seconds"];
 
 impl Solver for RoutingSolver {
     fn id(&self) -> &'static str {
@@ -69,16 +74,17 @@ impl Solver for RoutingSolver {
             speed_metres_per_second: request.params["speed_metres_per_second"]
                 .as_f64()
                 .unwrap_or(defaults.speed_metres_per_second as f64) as f32,
+            speed_property: request.params["speed_property"].as_str().map(str::to_string),
             step_seconds: request.params["step_seconds"].as_f64().unwrap_or(defaults.step_seconds as f64) as f32,
         };
         solve(&request.container, &parameters, request.t0_seconds, request.t1_seconds).map_err(Rejection::input)
     }
 }
 
-/// One leg of the route: the edges crossed, in order, with the distance covered by the end of each.
+/// The route: the edges crossed, in order, with the cost accumulated by the end of each.
 pub struct Route {
     pub edges: Vec<usize>,
-    /// Metres from the start of the route to the far end of `edges[i]`.
+    /// The running total of `costs` at the far end of `edges[i]`, in whatever unit those were.
     pub reached_at: Vec<f64>,
 }
 
@@ -99,22 +105,54 @@ pub fn solve(container: &[u8], parameters: &Parameters, t0_seconds: f32, t1_seco
     let graph = parse_graph(
         &sections.iter().find(|s| &s.kind == b"GRPH").ok_or("container is missing a GRPH section")?.payload,
     )?;
-    let lengths = lengths_of(container)?;
-    let route = plan(&graph, &lengths, &parameters.waypoints)?;
+    // Seconds, so the search minimises travel time and `reached_at` is already a clock reading.
+    // With one speed for every edge that is the same order as distance; with a speed column it
+    // is not, and a longer fast road can win.
+    let costs = traversal_seconds(container, &graph, parameters)?;
+    let route = plan(&graph, &costs, &parameters.waypoints)?;
 
     let steps = ((t1_seconds - t0_seconds) / parameters.step_seconds).floor() as i64 + 1;
     let mut records = Vec::new();
     for step in 0..steps {
         let t = t0_seconds + step as f32 * parameters.step_seconds;
-        let travelled = (t - t0_seconds) as f64 * parameters.speed_metres_per_second as f64;
+        let elapsed = (t - t0_seconds) as f64;
         for (position, edge_index) in route.edges.iter().enumerate() {
             // Reached, not occupied: the channel shows how far the vehicle has got, so scrubbing
             // backwards unwinds the route rather than losing it.
-            let value = if travelled >= route.reached_at[position] { 1.0 } else { 0.0 };
+            let value = if elapsed >= route.reached_at[position] { 1.0 } else { 0.0 };
             records.extend_from_slice(&pack(graph.edges[*edge_index].id, channel, t, value));
         }
     }
     Ok(records)
+}
+
+/// How long each edge takes to cross, in seconds.
+///
+/// Without `speed_property` every edge moves at the same speed, so this is distance in disguise
+/// and the fastest route is the shortest one. With it, each edge uses its own column and the two
+/// stop agreeing. A row with no usable number falls back to the parameter rather than failing:
+/// half a real city has no speed limit tagged, and refusing to route it would be useless.
+fn traversal_seconds(container: &[u8], graph: &Graph, parameters: &Parameters) -> Result<Vec<f64>, String> {
+    let lengths = lengths_of(container)?;
+    let fallback = parameters.speed_metres_per_second as f64;
+    let Some(key) = &parameters.speed_property else {
+        return Ok(lengths.iter().map(|length| length / fallback).collect());
+    };
+    let rows = edge_properties(container)?;
+    Ok(graph
+        .edges
+        .iter()
+        .zip(&lengths)
+        .map(|(edge, length)| {
+            let speed = rows
+                .get(edge.property_row as usize)
+                .and_then(|row| row.get(key))
+                .and_then(serde_json::Value::as_f64)
+                .filter(|speed| speed.is_finite() && *speed > 0.0)
+                .unwrap_or(fallback);
+            length / speed
+        })
+        .collect())
 }
 
 /// Every edge's length in metres, from the geometry the container already stores.
@@ -128,8 +166,8 @@ fn lengths_of(container: &[u8]) -> Result<Vec<f64>, String> {
         .collect())
 }
 
-/// The shortest walk visiting every waypoint in order.
-pub fn plan(graph: &Graph, lengths: &[f64], waypoints: &[usize]) -> Result<Route, String> {
+/// The cheapest walk visiting every waypoint in order, under whatever `costs` measures.
+pub fn plan(graph: &Graph, costs: &[f64], waypoints: &[usize]) -> Result<Route, String> {
     if waypoints.len() < 2 {
         return Err("a route needs at least two waypoints".into());
     }
@@ -140,8 +178,8 @@ pub fn plan(graph: &Graph, lengths: &[f64], waypoints: &[usize]) -> Result<Route
     let mut reached_at = Vec::new();
     let mut covered = 0.0;
     for leg in waypoints.windows(2) {
-        for edge_index in shortest_path(graph, lengths, leg[0], leg[1])? {
-            covered += lengths[edge_index];
+        for edge_index in shortest_path(graph, costs, leg[0], leg[1])? {
+            covered += costs[edge_index];
             edges.push(edge_index);
             reached_at.push(covered);
         }
@@ -154,9 +192,10 @@ pub fn plan(graph: &Graph, lengths: &[f64], waypoints: &[usize]) -> Result<Route
 /// Direction needs no special case here. SPEC 4 gives a directed edge one CSR entry, at its
 /// source, so an edge that may not be crossed backwards simply does not appear among what leaves
 /// its target — the topology states the restriction and the search cannot violate it.
-fn shortest_path(graph: &Graph, lengths: &[f64], from: usize, to: usize) -> Result<Vec<usize>, String> {
-    // Costs are millimetres so the queue can order them as integers. The geometry is quantized to
-    // about 4 cm, so this discards nothing that was ever there.
+fn shortest_path(graph: &Graph, costs: &[f64], from: usize, to: usize) -> Result<Vec<usize>, String> {
+    // Scaled to integers so the queue can order them: a thousandth of the unit, which for
+    // seconds is a millisecond and for metres a millimetre. The geometry is quantized to about
+    // 4 cm, so neither reading discards anything that was ever there.
     let mut best: BTreeMap<u32, u64> = BTreeMap::from([(from as u32, 0)]);
     let mut came_from: BTreeMap<u32, (usize, u32)> = BTreeMap::new();
     let mut queue = BinaryHeap::from([(std::cmp::Reverse(0u64), from as u32)]);
@@ -174,7 +213,7 @@ fn shortest_path(graph: &Graph, lengths: &[f64], from: usize, to: usize) -> Resu
         for entry in &graph.adjacency[start..end] {
             let edge = &graph.edges[entry.edge_index as usize];
             let neighbour = if entry.traversal_direction > 0 { edge.target } else { edge.source };
-            let step = (lengths[entry.edge_index as usize] * 1000.0).round() as u64;
+            let step = (costs[entry.edge_index as usize] * 1000.0).round() as u64;
             let candidate = cost + step;
             if candidate < *best.get(&neighbour).unwrap_or(&u64::MAX) {
                 best.insert(neighbour, candidate);

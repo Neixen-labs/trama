@@ -21,8 +21,8 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 | `core/trama-format` (Rust) | The container: writer, reader, GeoJSON export. Byte-identical output for identical input, typed node and edge properties, declared state channels, and opaque records it carries without reading. | polygons, GeoPackage export |
 | `core/trama-cli` (Rust) | `trama compile`, `validate`, `export --to geojson|inp`, and the grid generator behind the benchmarks. | CSV points |
 | `core/trama-epanet` (Rust) | `.inp` import and export, and a solver that runs the EPANET 2.3 toolkit and streams pressure and flow, natively or in the browser through WASI. Round trip verified by simulation on Net1 and Net3. | — |
-| `core/trama-roads` (Rust) | Reads an OpenStreetMap extract: translates every spelling of `oneway`, splits ways at the junctions they cross, and declares the channel a router writes. | travel time, turn restrictions |
-| `core/trama-routing` (Rust) | Shortest paths over the graph, honouring one-way edges, written into a state channel as a vehicle's progress. The second domain, and the evidence the core is not shaped around water. | travel time from a property, VRP |
+| `core/trama-roads` (Rust) | Reads an OpenStreetMap extract: translates every spelling of `oneway`, normalises `maxspeed` into a speed column, splits ways at the junctions they cross, and declares the channel a router writes. | turn restrictions |
+| `core/trama-routing` (Rust) | Fastest paths over the graph, costed by a speed column or by distance, honouring one-way edges, written into a state channel as a vehicle's progress. The second domain, and the evidence the core is not shaped around water. | VRP |
 | `core/trama-example` (Rust) | Reference solver over HTTP + Server-Sent Events, to keep the contract under a real implementation. | — |
 | `core/trama-wasm` (Rust) | The compiler in a browser, byte-identical to the command line: GeoJSON, EPANET `.inp` and OpenStreetMap extracts, plus the routing solver. 319 kB brotli. | — |
 | `engine/` — `@trama/core` (TypeScript) | Range reader for header, directory, and sections, each checked against its CRC-32C; instanced WebGL2 line renderer with screen-constant width; MapLibre custom layer; state ring buffer feeding an R32F texture; SSE client for solver deltas; fly-through camera that tours the graph | WebGPU, OPFS offline cache |
@@ -81,6 +81,8 @@ curl -s -X POST https://overpass-api.de/api/interpreter --data-urlencode \
 `out geom;` matters: the importer needs each way's node references to split it where other ways cross it, and without that a crossing never becomes a junction. The importer declares the `on_route` channel itself, so no `--channels` is needed.
 
 `params` takes `waypoints`, the node indices to visit in order. They are positions in the graph's node array, which is sorted by stable ID rather than by input order, so a client reads them from the graph instead of guessing.
+
+`params.speed_property` names a `PROP` column holding each edge's speed in metres per second — `roads:speed_ms` for a network from the road importer. With it the search minimises travel time; without it, distance. On the sample extract 9 of 52 node pairs take different streets depending on which.
 
 To drive the demo with EPANET instead, run that solver and point the page at it:
 

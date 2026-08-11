@@ -91,6 +91,10 @@ pub fn import(text: &str) -> Result<Import, String> {
         if directed(oneway) {
             properties.insert("_trama_directed".into(), Value::Bool(true));
         }
+        // A speed a solver can use without knowing what `maxspeed` or `mph` are. Derived rather
+        // than copied, so it carries the same unit for every way whatever the source said.
+        let tag = |key: &str| tags.and_then(|tags| tags.get(key)).and_then(Value::as_str);
+        properties.insert("roads:speed_ms".into(), json!(speed_metres_per_second(tag("maxspeed"), tag("highway"))));
 
         for (piece, span) in split_at_junctions(&coordinates, &nodes, &appearances).iter().enumerate() {
             features.push(json!({
@@ -135,6 +139,37 @@ fn split_at_junctions(coordinates: &[Value], nodes: &[u64], appearances: &BTreeM
         pieces.push(coordinates.to_vec());
     }
     pieces
+}
+
+/// A travelling speed in metres per second, from the tag if there is one and the road class if not.
+///
+/// Only 43% of the ways in the sample extract carry `maxspeed`, and every one that does not is a
+/// `residential`, `living_street` or `tertiary` street — so without a fallback most of a city
+/// would have no cost at all.
+///
+/// ponytail: the fallbacks are urban Spain, where `residential` has been 30 km/h since 2021.
+/// They are wrong for a motorway network and wrong for most other countries. A real one would
+/// come from the extract's country, which an extract does not state.
+fn speed_metres_per_second(maxspeed: Option<&str>, highway: Option<&str>) -> f64 {
+    let declared = maxspeed.and_then(|value| {
+        let value = value.trim();
+        match value {
+            // OSM's named speeds. `none` is a derestricted motorway, not an absent limit.
+            "walk" => Some(7.0),
+            "none" => Some(130.0),
+            _ => match value.strip_suffix(" mph") {
+                Some(number) => number.trim().parse::<f64>().ok().map(|mph| mph * 1.609344),
+                None => value.parse::<f64>().ok(),
+            },
+        }
+    });
+    let kilometres_per_hour = declared.filter(|speed| *speed > 0.0).unwrap_or(match highway {
+        Some("living_street") => 20.0,
+        Some("residential") | Some("unclassified") => 30.0,
+        Some("primary") | Some("secondary") | Some("tertiary") => 50.0,
+        _ => 30.0,
+    });
+    kilometres_per_hour / 3.6
 }
 
 /// The four spellings OSM uses for a one-way street.

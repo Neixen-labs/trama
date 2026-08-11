@@ -39,11 +39,22 @@ pub fn compile_osm(source: &str) -> Result<Vec<u8>, JsError> {
 ///
 /// Unlike EPANET, this solver is Rust with no filesystem in its API, so it needs no WASI: the
 /// same code the server runs compiles straight into this module.
+///
+/// `speed_property` names a `PROP` column holding each edge's own speed in metres per second.
+/// With one the search minimises time, without one distance, and `speed` is the fallback for an
+/// edge whose column holds nothing usable.
 #[wasm_bindgen]
-pub fn solve_route(container: &[u8], waypoints: &[u32], speed: f32, t1_seconds: f32) -> Result<Vec<u8>, JsError> {
+pub fn solve_route(
+    container: &[u8],
+    waypoints: &[u32],
+    speed: f32,
+    speed_property: Option<String>,
+    t1_seconds: f32,
+) -> Result<Vec<u8>, JsError> {
     let parameters = trama_routing::Parameters {
         waypoints: waypoints.iter().map(|index| *index as usize).collect(),
         speed_metres_per_second: speed,
+        speed_property,
         ..Default::default()
     };
     trama_routing::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))

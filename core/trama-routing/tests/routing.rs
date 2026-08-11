@@ -213,3 +213,88 @@ fn a_zero_speed_is_rejected_rather_than_producing_a_stalled_route() {
 
     assert!(solve(&container, &stalled, 0.0, 600.0).err().unwrap().contains("speed"));
 }
+
+// --- travel time ---
+
+/// The same block, with a speed column: the short south side slow, the long north way fast.
+fn block_with_speeds(south: f64, north: f64) -> Vec<Value> {
+    let a = [-3.7040, 40.4160];
+    let b = [-3.7040, 40.4200];
+    let c = [-3.7000, 40.4200];
+    let d = [-3.7000, 40.4160];
+    let road = |id: &str, points: Value, speed: f64| {
+        json!({"type": "Feature", "id": id, "properties": {"speed_ms": speed},
+               "geometry": {"type": "LineString", "coordinates": points}})
+    };
+    vec![
+        road("ab", json!([a, b]), north),
+        road("bc", json!([b, c]), north),
+        road("cd", json!([c, d]), north),
+        road("ad", json!([a, d]), south),
+    ]
+}
+
+fn with_speed_column(waypoints: Vec<usize>) -> Parameters {
+    Parameters { speed_property: Some("speed_ms".into()), ..parameters(waypoints) }
+}
+
+fn routed_edges(stream: &[u8]) -> std::collections::BTreeSet<u64> {
+    stream.chunks_exact(18).map(|record| u64::from_le_bytes(record[0..8].try_into().unwrap())).collect()
+}
+
+#[test]
+fn naming_a_speed_column_turns_the_shortest_route_into_the_fastest_one() {
+    // The south side is a third of the distance at a tenth of the speed, so it is slower.
+    let container = compile(&block_with_speeds(1.0, 10.0), &[CHANNEL()], &[]).unwrap();
+    let graph = graph_of(&container);
+    let (a, d) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.7000, 40.4160));
+
+    let by_distance = plan(&graph, &lengths_of(&container), &[a, d]).unwrap();
+    let stream = solve(&container, &with_speed_column(vec![a, d]), 0.0, 600.0).unwrap();
+
+    assert_eq!(by_distance.edges.len(), 1, "by distance the short side wins");
+    assert_eq!(routed_edges(&stream).len(), 3, "by time the long fast way wins");
+}
+
+#[test]
+fn without_a_speed_column_the_shortest_route_still_wins() {
+    let container = compile(&block_with_speeds(1.0, 10.0), &[CHANNEL()], &[]).unwrap();
+    let (a, d) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.7000, 40.4160));
+
+    let stream = solve(&container, &parameters(vec![a, d]), 0.0, 600.0).unwrap();
+
+    assert_eq!(routed_edges(&stream).len(), 1, "the column is only read when the caller names it");
+}
+
+#[test]
+fn an_edge_with_no_usable_speed_falls_back_rather_than_failing() {
+    // Half a real city has no speed limit tagged; refusing to route it would be useless.
+    let mut features = block_with_speeds(10.0, 10.0);
+    features[3]["properties"] = json!({"speed_ms": 0.0});
+    features[0]["properties"] = json!({});
+    let container = compile(&features, &[CHANNEL()], &[]).unwrap();
+    let (a, d) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.7000, 40.4160));
+
+    let stream = solve(&container, &with_speed_column(vec![a, d]), 0.0, 600.0).unwrap();
+
+    assert!(!stream.is_empty(), "a zero speed and a missing column both fall back to the parameter");
+}
+
+#[test]
+fn the_arrival_time_is_a_clock_reading_not_a_distance() {
+    // At 1 m/s the seconds and the metres coincide numerically, which is what makes this
+    // checkable: the first instant an edge reads as reached is its metre count, to the step.
+    let container = compile(&block_with_speeds(1.0, 1.0), &[CHANNEL()], &[]).unwrap();
+    let (a, d) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.7000, 40.4160));
+    let route = plan(&graph_of(&container), &lengths_of(&container), &[a, d]).unwrap();
+
+    let stream = solve(&container, &with_speed_column(vec![a, d]), 0.0, 1200.0).unwrap();
+
+    let arrival = stream
+        .chunks_exact(18)
+        .filter(|record| f32::from_le_bytes(record[14..18].try_into().unwrap()) == 1.0)
+        .map(|record| f32::from_le_bytes(record[10..14].try_into().unwrap()))
+        .fold(f32::INFINITY, f32::min);
+    let metres = route.reached_at[0];
+    assert!((arrival as f64 - metres).abs() <= 60.0, "arrival {arrival} against {metres} m at 1 m/s");
+}
