@@ -84,3 +84,38 @@ pub fn declared(container: &[u8], name: &str, entity_kind: u8) -> Result<u16, St
             format!("the container declares no {kind} channel named '{name}'")
         })
 }
+
+/// Checks a `solver.toml` against the implementation it claims to describe.
+///
+/// A manifest is a promise made in a file nothing compiles, so it rots quietly: the id changes in
+/// code, the manifest keeps the old one, and a registry resolves a solver that is not there. This
+/// is the smallest guard against that, and it belongs beside the contract rather than in one
+/// crate's tests, since every implementor needs the same check.
+///
+/// ponytail: reads `key = value` lines above the first table header, which is all the fields it
+/// compares. It is not a TOML parser and will not notice a malformed manifest that happens to
+/// spell those two keys correctly — `id` and `contract_versions` are what drift.
+pub fn manifest_agrees_with(manifest: &str, id: &str, contract_versions: &[&str]) -> Result<(), String> {
+    let declared = |key: &str| {
+        manifest
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with('['))
+            .filter_map(|line| line.split_once('='))
+            .find(|(name, _)| name.trim() == key)
+            .map(|(_, value)| value.trim().to_string())
+    };
+    let quoted = |value: &str| value.trim().trim_matches('"').to_string();
+
+    match declared("id") {
+        Some(value) if quoted(&value) == id => {}
+        Some(value) => return Err(format!("manifest id {value} is not the solver's '{id}'")),
+        None => return Err("manifest declares no id".into()),
+    }
+    let versions = declared("contract_versions").ok_or("manifest declares no contract_versions")?;
+    let listed: Vec<String> =
+        versions.trim_matches(['[', ']']).split(',').map(quoted).filter(|value| !value.is_empty()).collect();
+    if listed != contract_versions {
+        return Err(format!("manifest contract_versions {listed:?} are not the solver's {contract_versions:?}"));
+    }
+    Ok(())
+}

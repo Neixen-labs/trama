@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# The manifest docs/SOLVER_CONTRACT.md section 2 requires of every solver package.
+id = "example-diffusion"
+version = "0.1.0"
+license = "LicenseRef-BSL-1.1"
+contract_versions = ["0.1.0", "0.2.0"]
+# Server only. Nothing here implements the WASM ABI of contract section 5.2; the browser build
+# links this crate into a host module instead, which is not the same thing and does not count.
+runtimes = ["server"]
+
+# It walks the topology and nothing else, which is the point of it existing.
+[inputs]
+nodes = true
+edges = true
+edge_properties = []
+node_properties = []
+
+[[outputs]]
+channel = "flow"
+entity_kind = "edge"
+# A pulse height, not a measurement of anything.
+unit = "1"
+
+[params]
+schema = { "type" = "object", "additionalProperties" = false, "properties" = { "channel" = { "type" = "string", "default" = "flow" }, "seed_node_index" = { "type" = "integer", "minimum" = 0, "default" = 0 }, "step_seconds" = { "type" = "number", "exclusiveMinimum" = 0, "default" = 60 }, "speed_hops_per_step" = { "type" = "number", "exclusiveMinimum" = 0, "default" = 1.5 }, "amplitude" = { "type" = "number", "default" = 40 } } }
