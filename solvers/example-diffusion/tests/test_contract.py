@@ -145,3 +145,15 @@ def test_the_manifest_declares_what_the_solver_writes() -> None:
     assert manifest["runtimes"] == ["server"]
     assert manifest["outputs"] == [{"channel": "flow", "entity_kind": "edge", "unit": "l/s"}]
     assert struct.calcsize("<QHff") == 18
+
+
+def test_a_browser_preflight_is_answered(solver: str) -> None:
+    request = urllib.request.Request(solver, method="OPTIONS")
+    request.add_header("Origin", "http://localhost:8790")
+    request.add_header("Access-Control-Request-Method", "POST")
+
+    with urllib.request.urlopen(request, timeout=10) as response:
+        assert response.status == 204
+        assert response.headers["Access-Control-Allow-Origin"] == "*"
+        assert "POST" in response.headers["Access-Control-Allow-Methods"]
+        assert "Content-Type" in response.headers["Access-Control-Allow-Headers"]

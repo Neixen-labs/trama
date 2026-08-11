@@ -59,6 +59,16 @@ class SolveHandler(BaseHTTPRequestHandler):
         self._event("complete", {"delta_count": count})
         self.wfile.write(b"0\r\n\r\n")
 
+    def do_OPTIONS(self) -> None:  # the name BaseHTTPRequestHandler dispatches to
+        """A browser preflights POST with a JSON content type, so /solve must answer it."""
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def log_message(self, format: str, *args: object) -> None:
         """Silence the default stderr access log; tests and demos do not want it."""
 
