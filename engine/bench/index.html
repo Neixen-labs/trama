@@ -1,0 +1,182 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: LicenseRef-BSL-1.1 -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>TRAMA frame benchmark</title>
+    <style>
+      html, body { margin: 0; background: #05080c; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <script type="importmap">
+      { "imports": { "fzstd": "/engine/node_modules/fzstd/esm/index.mjs" } }
+    </script>
+    <script type="module">
+      import { decompress } from "fzstd";
+      import { parseContainer } from "/engine/dist/container.js";
+      import { readSection, parseGeometry, parseGraph } from "/engine/dist/sections.js";
+      import { buildLineInstances } from "/engine/dist/lines.js";
+      import { createLineRenderer } from "/engine/dist/line-renderer.js";
+      import { parseStateChannels, StateRing } from "/engine/dist/state.js";
+      import { createStateTexture } from "/engine/dist/state-texture.js";
+
+      // No MapLibre here on purpose. The number this page reports must belong to the engine's
+      // own draw path, not to a basemap's frame budget sitting underneath it.
+      const query = new URLSearchParams(location.search);
+      const FRAMES = Number(query.get("frames") ?? 300);
+      const WARMUP = Number(query.get("warmup") ?? 60);
+      const DELTA = 18;
+
+      const fail = (error) => {
+        window.__bench = { error: error.message ?? String(error) };
+      };
+
+      try {
+        // The whole file at once: this measures drawing, not range loading.
+        const file = await (await fetch("/bench-container.trama")).arrayBuffer();
+        const container = parseContainer(file);
+        const inflate = (stored) => decompress(stored);
+        const section = (type) => container.sections.find((entry) => entry.type === type);
+        const payloadOf = (entry) => readSection(file, entry, inflate);
+
+        const tiles = container.sections.filter((entry) => entry.type === "GEOM");
+        const built = tiles.map((entry) => ({ key: entry.key, instances: buildLineInstances(parseGeometry(payloadOf(entry))) }));
+        const segments = built.reduce((total, tile) => total + tile.instances.count, 0);
+
+        const graph = parseGraph(payloadOf(section("GRPH")));
+        const channels = parseStateChannels(payloadOf(section("STCH")));
+        const channel = channels.find((candidate) => candidate.entityKind === 2);
+        if (channel === undefined) throw new Error("the container declares no edge channel");
+
+        const ring = new StateRing({
+          channels,
+          nodeIds: graph.nodes.map((node) => node.id),
+          edgeIds: graph.edges.map((edge) => edge.id),
+          slots: 16,
+          slotSeconds: 60,
+        });
+
+        // Fill every slot for every edge: the benchmark is about a network whose state is
+        // known everywhere, not a sparse one that leaves most texels at rest.
+        const filled = performance.now();
+        for (let slot = 0; slot < 16; slot += 1) {
+          const payload = new ArrayBuffer(graph.edges.length * DELTA);
+          const view = new DataView(payload);
+          graph.edges.forEach((edge, index) => {
+            const at = index * DELTA;
+            view.setBigUint64(at, edge.id, true);
+            view.setUint16(at + 8, channel.channelId, true);
+            view.setFloat32(at + 10, slot * 60, true);
+            view.setFloat32(at + 14, 25 + 25 * Math.sin(index * 0.01 + slot), true);
+          });
+          ring.apply(new Uint8Array(payload));
+        }
+        const stateMilliseconds = performance.now() - filled;
+
+        const canvas = document.querySelector("#scene");
+        canvas.width = Number(query.get("width") ?? 1280);
+        canvas.height = Number(query.get("height") ?? 720);
+        const gl = canvas.getContext("webgl2", { antialias: false });
+        if (gl === null) throw new Error("this browser gave no WebGL2 context");
+        const renderer = createLineRenderer(gl);
+        const stateTexture = createStateTexture(gl, ring);
+
+        const keys = built.map(({ key }) => key);
+        const span = (index) => {
+          const values = keys.map((key) => key[index + 1]);
+          return [Math.min(...values), Math.max(...values) + 1];
+        };
+        const [minX, maxX] = span(0);
+        const [minY, maxY] = span(1);
+        const matrixFor = ([, x, y]) => {
+          const matrix = new Float32Array(16);
+          matrix[0] = 2 / (maxX - minX);
+          matrix[5] = -2 / (maxY - minY);
+          matrix[10] = 1;
+          matrix[12] = ((x - minX) * 2) / (maxX - minX) - 1;
+          matrix[13] = 1 - ((y - minY) * 2) / (maxY - minY);
+          matrix[15] = 1;
+          return matrix;
+        };
+        const matrices = built.map(({ key }) => matrixFor(key));
+
+        // Two different questions, two different numbers. `costs` is how long a frame's work
+        // takes; `intervals` is how far apart requestAnimationFrame delivered them. Timing only
+        // the interval would report the display's 16.7 ms whatever the work cost, which is the
+        // trap this benchmark existed to avoid.
+        let bound = 0;
+        const costs = [];
+        const intervals = [];
+        let frame = 0;
+        let previous = performance.now();
+
+        const step = (now) => {
+          const started = performance.now();
+          // Time advances every frame, so each one resolves different ring rows and blends
+          // them in the shader. A still image would measure nothing the product claims.
+          const seconds = (frame % 900) + (frame % 60) / 60;
+          const rows = ring.sampleRows(seconds, channel.channelId);
+          if (rows !== null && frame >= WARMUP) bound += 1;
+          gl.viewport(0, 0, canvas.width, canvas.height);
+          gl.clearColor(0.02, 0.03, 0.05, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          built.forEach(({ instances }, index) => {
+            renderer.draw(instances, {
+              matrix: matrices[index],
+              resolutionPixels: [canvas.width, canvas.height],
+              widthPixels: 2,
+              color: [0.49, 0.82, 1, 1],
+              state: rows === null ? undefined : { texture: stateTexture.texture, rows, range: [0, 50], highColor: [1, 0.72, 0.2, 1] },
+            });
+          });
+          // A finish() before the timestamp keeps the driver from batching whole frames out of
+          // the measurement: without it the loop times how fast commands are queued.
+          gl.finish();
+          const stamp = performance.now();
+          if (frame >= WARMUP) {
+            costs.push(stamp - started);
+            intervals.push(stamp - previous);
+          }
+          previous = stamp;
+          frame += 1;
+          if (frame < WARMUP + FRAMES) {
+            requestAnimationFrame(step);
+            return;
+          }
+          const quantile = (values, fraction) => {
+            const sorted = [...values].sort((a, b) => a - b);
+            return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+          };
+          const cadence = quantile(intervals, 0.5);
+          window.__bench = {
+            segments,
+            tiles: built.length,
+            edges: graph.edges.length,
+            frames: costs.length,
+            // A benchmark that quietly fell back to the flat colour would be measuring the
+            // cheaper path and calling it the expensive one.
+            stateFrames: bound,
+            p50: quantile(costs, 0.5),
+            p95: quantile(costs, 0.95),
+            worst: quantile(costs, 1),
+            cadence,
+            // A frame the display had to wait an extra period for. Counted separately because a
+            // cheap frame can still be late, and a late frame is what a user actually sees.
+            late: intervals.filter((interval) => interval > cadence * 1.5).length,
+            stateMilliseconds,
+            renderer: gl.getParameter(gl.getExtension("WEBGL_debug_renderer_info")?.UNMASKED_RENDERER_WEBGL ?? gl.RENDERER),
+          };
+        };
+        requestAnimationFrame((now) => {
+          previous = now;
+          requestAnimationFrame(step);
+        });
+      } catch (error) {
+        fail(error);
+      }
+    </script>
+  </body>
+</html>

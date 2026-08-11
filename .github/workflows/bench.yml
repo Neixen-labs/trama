@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Frame benchmark
+
+# Not a pull-request gate. A hosted runner has no GPU, so its frame times are SwiftShader's
+# and failing a PR on them would report the runner, not the change. This records the numbers
+# and fails only when the harness itself is broken — a missing state binding, a page error.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'engine/src/**'
+      - 'engine/bench/**'
+      - 'compiler/src/**'
+      - '.github/workflows/bench.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  frames:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build a 100k-segment container
+        working-directory: compiler
+        run: uv run python benchmarks/grid_container.py --side 224 --out "${RUNNER_TEMP}/bench.trama"
+      - name: Install the engine
+        working-directory: engine
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run build
+      - name: Measure
+        working-directory: engine
+        run: npm run bench -- --container "${RUNNER_TEMP}/bench.trama" --screenshot "${RUNNER_TEMP}/frame.png"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frame
+          path: ${{ runner.temp }}/frame.png
