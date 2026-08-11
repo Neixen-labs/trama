@@ -115,6 +115,25 @@
     margin:14px 0 14px;max-width:24ch;text-wrap:balance;
   }
   .sec-lede{color:var(--muted);max-width:58ch;margin-bottom:44px}
+  .playground{
+    border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
+    background:var(--ink-2);margin-bottom:44px;
+  }
+  .playground-bar{
+    display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;
+    padding:10px 14px;border-bottom:1px solid var(--line);color:var(--muted);font-size:.85rem;
+  }
+  .playground-bar a{color:var(--water)}
+  /* Tall enough for the map to be worth looking at, short enough to leave the page readable. */
+  .playground iframe{display:block;width:100%;height:min(72vh,620px);border:0;background:#0b0f14}
+  .playground-small{display:none;margin:0;padding:20px 16px;color:var(--muted);font-size:.95rem}
+  .playground-small a{color:var(--water)}
+  @media (max-width:640px){
+    /* Hidden rather than merely short: display:none also stops the observer from ever loading
+       a few megabytes onto a phone that will not show them. */
+    .playground iframe{display:none}
+    .playground-small{display:block}
+  }
   .sec-lede strong{color:var(--stroke)}
 
   .pillars{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
@@ -273,8 +292,26 @@
   <section>
     <p class="eyebrow"><span class="tick">02</span> // cómo funciona</p>
     <h2>De tus datos al resultado en tres pasos</h2>
-    <p class="sec-lede">La demo compila tus datos <strong>en el navegador</strong>: nada sale de tu máquina.
-    <a href="/demo/">Pruébala</a>.</p>
+    <p class="sec-lede">Está aquí abajo, funcionando. Compila tus datos <strong>en el navegador</strong>:
+    nada sale de tu máquina.</p>
+
+    <div class="playground">
+      <div class="playground-bar">
+        <span>playground · se ejecuta entero en tu navegador</span>
+        <a href="/demo/" target="_blank" rel="noopener">abrir a pantalla completa ↗</a>
+      </div>
+      <!-- `loading="lazy"` is not enough on its own: Chromium's margin is thousands of pixels,
+           so the frame was fetching a few megabytes of compiler before anyone scrolled. The src
+           is assigned when the section is genuinely near the viewport. -->
+      <iframe data-src="/demo/" title="Playground de TRAMA" loading="lazy" referrerpolicy="no-referrer"></iframe>
+      <!-- On a phone the playground's own panel covers the map, so an embedded frame shows
+           everything except the thing worth seeing. The link is the honest version there. -->
+      <p class="playground-small">
+        El playground necesita más pantalla para que se vea el mapa.
+        <a href="/demo/">Ábrelo aquí</a>.
+      </p>
+    </div>
+
     <div class="steps">
       <div class="step">
         <h3>Sube tus datos</h3>
@@ -457,5 +494,23 @@ function start(){ build(); if(reduced){ draw(0,true); } else requestAnimationFra
 addEventListener("resize",()=>{ build(); if(reduced) draw(0,true); });
 start();
 </script>
+  <script>
+    // Loads the playground when its section comes into reach, and never before. Without an
+    // IntersectionObserver — or with JavaScript off — the frame stays empty, so the panel keeps
+    // the link that opens it in its own tab.
+    (function () {
+      var frame = document.querySelector('.playground iframe');
+      if (!frame) return;
+      var load = function () { if (!frame.src) frame.src = frame.dataset.src; };
+      if (!('IntersectionObserver' in window)) return;
+      var watcher = new IntersectionObserver(function (entries) {
+        if (entries.some(function (entry) { return entry.isIntersecting; })) {
+          load();
+          watcher.disconnect();
+        }
+      }, { rootMargin: '200px' });
+      watcher.observe(frame);
+    })();
+  </script>
 </body>
 </html>
