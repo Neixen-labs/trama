@@ -1,17 +1,18 @@
 # TRAMA File Format Specification
 
-**Specification version:** 0.1.0
+**Specification version:** 0.2.0
 **Status:** Draft
 **Normative language:** The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in RFC 2119.
 
 TRAMA is a domain-agnostic, single-file binary format for network maps. A reader knows nodes, edges, typed properties, render geometry, and declared state channels. It MUST NOT need domain concepts to decode a file.
 
-v0 has four logical section kinds:
+v0 has four required section kinds and one optional one:
 
 - `GEOM`: independently fetchable, pre-tessellated render geometry tiles;
 - `GRPH`: stable graph identities, topology, CSR adjacency, and geometry references;
 - `PROP`: typed node and edge properties with a global key dictionary;
-- `STCH`: state-channel declarations.
+- `STCH`: state-channel declarations;
+- `XTRA`: optional opaque payloads belonging to a named owner, which the core stores and never interprets.
 
 A TRAMA file contains no runtime state samples or solver results.
 
@@ -65,7 +66,7 @@ A reader MUST reject a file when its supported version is lower than `minimum_re
 
 | Offset | Type | Name | Meaning |
 |---:|---|---|---|
-| `0x00` | `FourCC` | `type` | `GEOM`, `GRPH`, `PROP`, or `STCH` |
+| `0x00` | `FourCC` | `type` | `GEOM`, `GRPH`, `PROP`, `STCH`, or `XTRA` |
 | `0x04` | `u32` | `record_flags` | bit 0: required; remaining bits zero in v0 |
 | `0x08` | `u32` | `key0` | `GEOM`: zoom `z`; otherwise zero |
 | `0x0c` | `u32` | `key1` | `GEOM`: tile `x`; otherwise zero |
@@ -79,7 +80,7 @@ A reader MUST reject a file when its supported version is lower than `minimum_re
 | `0x33` | `u8` | `reserved0` | zero |
 | `0x34` | `u8[12]` | `reserved1` | zero |
 
-There MUST be exactly one `GRPH`, one `PROP`, and one `STCH` record. There MAY be zero or more `GEOM` records; each `(z, x, y)` tuple MUST be unique. All v0 records use `codec = 1`; the directory is never compressed. Writers SHOULD align payloads to 4096 bytes.
+There MUST be exactly one `GRPH`, one `PROP`, and one `STCH` record. There MAY be zero or more `GEOM` records; each `(z, x, y)` tuple MUST be unique. There MAY be zero or more `XTRA` records under the rules of section 7. All v0 records use `codec = 1`; the directory is never compressed. Writers SHOULD align payloads to 4096 bytes.
 
 Readers MUST verify decoded length and CRC-32C. v0 uses no shared zstd dictionary, so every directory record is independently decodable.
 
@@ -284,11 +285,43 @@ The solver delta tuple is:
 (entity_id: u64, channel_id: u16, t: f32, value: f32)
 ```
 
-## 7. Compression and integrity
+## 7. `XTRA`: opaque owner-scoped payloads
+
+Some source formats carry information the core cannot type: a time-series pattern, a pump curve, a small control language with conditions and actions. An `XTRA` record lets a file keep that information so a domain round trip is possible, without the core acquiring a domain to understand it.
+
+An `XTRA` payload is bytes with an owner. The core stores, compresses, checksums, and range-serves it. A core reader MUST NOT parse it and MUST NOT branch on its contents.
+
+```text
+ExtraHeader
+  u32 owner_offset
+  u32 owner_bytes
+  u32 media_type_offset
+  u32 media_type_bytes
+  u32 payload_offset
+  u32 payload_bytes
+  u32 flags                    # zero in v0
+
+u8 owner[owner_bytes]          # UTF-8, matches a solver.toml `id`
+u8 media_type[media_type_bytes]  # UTF-8 media type naming the payload encoding
+u8 payload[payload_bytes]
+```
+
+- `record_flags` bit 0 (required) MUST be zero. This is not a convention: a reader that predates `XTRA`, or does not know the owner, ignores the record through the mechanism section 9 already defines.
+- `key0`, `key1`, and `key2` MUST be zero. An `XTRA` record is not tile-scoped.
+- Each `(owner, media_type)` pair MUST appear at most once.
+- A reader that does not recognise `owner` MUST ignore the record and MUST NOT reject the file.
+
+### 7.1 What may not go in it
+
+Removing every `XTRA` record from a file MUST leave a valid file that decodes, renders, and traverses identically. A writer therefore MUST NOT place in `XTRA` anything another section can express: geometry, topology, identity, typed properties, or channel declarations. `XTRA` holds what the format would otherwise lose, never what is inconvenient to encode properly.
+
+References point one way. A payload MAY identify entities by their stable `u64` IDs; no other section may refer to an `XTRA` record. This is what makes dropping one safe, and it is the invariant to check when reviewing a change that adds to one.
+
+## 8. Compression and integrity
 
 Every `GEOM`, `GRPH`, `PROP`, and `STCH` directory record is one independent zstd frame. v0 permits no other codec, no mixed codecs, and no cross-record dictionary. Writers SHOULD use deterministic zstd settings. Compression level is not format-significant. A reader MUST reject malformed frames, decoded-size mismatches, checksum mismatches, and invalid references.
 
-## 8. Export and import mapping
+## 9. Export and import mapping
 
 ### GeoJSON
 
@@ -298,11 +331,21 @@ Export creates `nodes` Point and `edges` LineString FeatureCollections. Coordina
 
 Export creates `nodes` and `edges` feature layers in `EPSG:3857`, with `trama_id TEXT NOT NULL`. Typed properties map to SQLite-compatible columns and enums to text labels. Import MAY retain state-channel metadata in a metadata table, but cannot preserve mesh buffers or exact section layout.
 
+### EPANET
+
+Import and export of EPANET `.inp` are defined by `docs/EPANET_BOUNDARY.md` and implemented in `solvers/epanet/`, not in the core. The core's obligations are these:
+
+- Junctions, reservoirs, and tanks become nodes; pipes, pumps, and valves become edges. Per-entity scalars become `PROP` columns under opaque string keys, and the entity's EPANET name is one of them, since the rest of the file refers to entities by name.
+- An `.inp` declares no coordinate reference system, so an importer MUST require the caller to state one and MUST NOT infer it from the coordinate ranges. Section 4.1 explains why an inferred spatial answer is the wrong kind of wrong: it is invisible in a rendered map.
+- Everything with no entity to hang on — patterns, curves, controls, rules, options, times — goes in an `XTRA` record owned by `epanet`, under the rules of section 7. Units belong there too: `PROP` columns carry no unit, and EPANET's are set file-wide by `[OPTIONS] UNITS`.
+
+A round trip `.inp → .trama → .inp` is verified by simulation, not by bytes: both files run through the same EPANET binary MUST agree on every node pressure and link flow, within solver tolerance, at every reported timestep. Comments, section order, and whitespace are not information about the network, and byte comparison would fail on all three while missing a dropped pattern.
+
 ### Mapbox Vector Tiles
 
 MVT is export-only in v0. The exporter emits `nodes` and `edges` layers for selected `GEOM z/x/y` records. MVT extent is `4096`; convert a normalized coordinate with `round(q * 4096 / 65535)`. MVT is not graph-preserving: it loses CSR topology, traversal order, nullable typing, channel declarations, mesh details, and possibly `u64` fidelity.
 
-## 9. Versioning and compatibility
+## 10. Versioning and compatibility
 
 Format versions follow semantic versioning:
 

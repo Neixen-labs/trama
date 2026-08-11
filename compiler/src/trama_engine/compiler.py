@@ -18,7 +18,7 @@ _HEADER = struct.Struct("<8s3H3HIQIIQ16s")
 _DIRECTORY = struct.Struct("<4sIIIIQQQIHBB12s")
 _ID_KEY = "_trama_id"
 _EXTENT = 65535
-# Deterministic and not format-significant (SPEC 7). 19 costs ~1.7 s on a 50k-edge network
+# Deterministic and not format-significant (SPEC 8). 19 costs ~1.7 s on a 50k-edge network
 # and saves 8% of the file, which is paid back on every download.
 _COMPRESSION_LEVEL = 19
 

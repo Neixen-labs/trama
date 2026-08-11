@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LicenseRef-BSL-1.1
-"""GeoJSON export for TRAMA v0 containers, per SPEC section 8."""
+"""GeoJSON export for TRAMA v0 containers, per SPEC section 9."""
 
 from __future__ import annotations
 
