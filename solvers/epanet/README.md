@@ -31,6 +31,21 @@ Export is `trama_epanet.exporter.export_inp(container, destination, crs)`, given
 A pattern, a pump curve, and a control rule are not values attached to an entity, so SPEC 7.1
 will not have them faked as properties. They travel as text and come back as text.
 
+## Solving
+
+```bash
+uv run python -m trama_epanet.server        # http://127.0.0.1:8802/solve
+```
+
+The solver rebuilds a `.inp` from the container, runs the OWA-EPANET toolkit, and emits one
+18-byte delta per entity per reported timestep: node pressure on the `pressure` channel, link
+flow on `flow`, each keyed to the entity's stable `u64`. The engine cannot tell it from any
+other solver, which is the point of the contract.
+
+That the solver goes through the exporter is deliberate: if the round trip is faithful, the
+network being solved is the user's own, and one test proves it by comparing every delta with a
+direct toolkit run of the original file.
+
 ## Round trip
 
 `.inp → .trama → .inp` is verified by simulation, not by bytes: both files run through the

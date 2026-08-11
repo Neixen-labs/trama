@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: LicenseRef-BSL-1.1
+id = "epanet"
+version = "0.1.0"
+license = "LicenseRef-BSL-1.1"
+contract_versions = ["0.1.0"]
+runtimes = ["server"]
+
+[inputs]
+nodes = true
+edges = true
+# The solver rebuilds a .inp from the container, so it needs the properties the importer wrote.
+node_properties = ["epanet:name", "epanet:kind"]
+edge_properties = ["epanet:name", "epanet:kind"]
+
+[[outputs]]
+channel = "pressure"
+entity_kind = "node"
+unit = "psi"
+
+[[outputs]]
+channel = "flow"
+entity_kind = "edge"
+unit = "gpm"
+
+[params]
+schema = {"type" = "object", "properties" = {"pressure_channel" = {"type" = "string", "default" = "pressure"}, "flow_channel" = {"type" = "string", "default" = "flow"}}, "additionalProperties" = false}
