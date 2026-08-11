@@ -169,3 +169,17 @@ Nothing is revalidated. Checking freshness needs a request, which is the one thi
 The key is the caller's because the reader does not know what it is reading: it sees byte ranges, and the identity of the container is a fact the page has and the range reader does not. A key derived from the URL would have been convenient and wrong for a reader that is not HTTP-backed.
 
 **Consequence:** Every failure mode degrades to the uncached behaviour rather than to an error — no OPFS, denied storage, a full disk. That is deliberate: a container that only loads when a cache is available would be a worse product than one that loads slowly. Nothing evicts, so a browsing session across many containers grows until the origin's quota complains and writes start failing, at which point reads still work. The cache is per-origin and per-key, so two containers never mix. This is the storage half of offline; the page and its modules still come from the network, which a service worker is for.
+
+## 2026-08-12 — The playground precaches itself, and its asset list is generated
+
+**Decision:** A service worker precaches the playground on install and serves it cache-first. `build.sh` writes `sw.js` from `sw.template.js`, filling in the list of files it just produced and a version derived from their bytes. Requests to other origins are never intercepted.
+
+**Why:** OPFS caches what a container is made of; this caches what reads it. Neither alone delivers the first pillar's offline promise, and the pair does: with the server shut down — not emulated offline, shut down — the page loads, compiles a 206 kB OpenStreetMap extract and routes across it.
+
+The list is generated because it cannot be written by hand and stay true: whether the EPANET module is in the build at all depends on whether the build had a WASI SDK, and `build.sh` already skips it with a warning rather than failing. A hand-kept list would have been correct until the first build without one. The version is the bytes' own digest, so a deploy that changes nothing keeps its cache and one that changes anything replaces it, with the old cache deleted on activate.
+
+Cross-origin requests pass straight through. A solver on another host is a live thing to talk to, not an asset; serving it from a cache would answer today's question with yesterday's result.
+
+**Consequence:** Install fetches about 5.4 MB, all of it, before the worker activates — a partial precache is an offline page that fails halfway through a task, which is worse than one that never claimed to work. Registration happens after the compiler is ready, so precaching does not compete with the first load, and it is skipped entirely where `navigator.serviceWorker` is absent. `demo/sw.js` is a build artefact and gitignored beside `vendor/`, so a checkout without a build has no worker at all rather than a stale one.
+
+Three of my own test harnesses were wrong before this was proven: Playwright's `setOffline` rejects a navigation before the worker sees it, so it cannot test one; `waitForFunction` with an async page function passes immediately, since a pending promise is truthy, which reported an empty cache as full; and a probe server returning `application/octet-stream` made the browser download the page instead of opening it.

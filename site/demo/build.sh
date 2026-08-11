@@ -57,4 +57,15 @@ cp "$root/fixtures/network.geojson" "$here/examples/network.geojson"
 # OpenStreetMap data, © OpenStreetMap contributors, ODbL. See fixtures/README.md.
 cp "$root/fixtures/madrid.osm.json" "$here/examples/madrid.osm.json"
 
-printf 'ready: %s of compiler\n' "$(du -h "$vendor/trama_wasm_bg.wasm" | cut -f1)"
+echo "service worker"
+# The precache list is generated because it cannot be written by hand: whether the EPANET module
+# is in it depends on whether this build had a WASI SDK. The version is the bytes themselves, so
+# a deploy that changes nothing keeps the same cache and one that changes anything replaces it.
+assets="$(cd "$here" && find vendor examples -type f ! -name "*.tsbuildinfo" ! -name "*.map" | LC_ALL=C sort | sed 's|^|"./|; s|$|",|' | tr -d '\n')"
+version="$(cd "$here" && find vendor examples -type f ! -name "*.tsbuildinfo" ! -name "*.map" | LC_ALL=C sort | xargs shasum | shasum | cut -c1-12)"
+sed -e "s|__ASSETS__|[\"./\", ${assets%,}]|" -e "s|__VERSION__|$version|" \
+  "$here/sw.template.js" > "$here/sw.js"
+
+printf 'ready: %s of compiler, %s cached offline\n' \
+  "$(du -h "$vendor/trama_wasm_bg.wasm" | cut -f1)" \
+  "$(cd "$here" && du -ch vendor examples | tail -1 | cut -f1)"
