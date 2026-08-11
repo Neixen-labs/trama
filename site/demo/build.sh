@@ -20,7 +20,21 @@ echo "compiler"
 # zstd is C, so this needs a clang carrying the WebAssembly backend: Linux ships one, macOS
 # does not, which is what `brew install llvm` is for.
 clang="${CC:-$(command -v /usr/local/opt/llvm/bin/clang || command -v clang)}"
-(cd "$root/core" && CC="$clang" AR="$(dirname "$clang")/llvm-ar" \
+# `ar` must be LLVM's: GNU ar cannot archive WebAssembly objects. Debian ships it beside clang
+# with a version suffix and no bare alias, which is why guessing `<clang dir>/llvm-ar` fails on a
+# CI runner while working on a Homebrew install.
+here_ar="$(dirname "$clang")/llvm-ar"
+archiver="${AR:-}"
+if [ -z "$archiver" ]; then
+  for candidate in "$here_ar" "$(command -v llvm-ar || true)" $(ls -1 "$(dirname "$clang")"/llvm-ar-* /usr/bin/llvm-ar-* 2>/dev/null | sort -V -r); do
+    if [ -x "$candidate" ]; then archiver="$candidate"; break; fi
+  done
+fi
+if [ -z "$archiver" ]; then
+  echo "no llvm-ar found beside $clang or on PATH; install LLVM or set AR" >&2
+  exit 1
+fi
+(cd "$root/core" && CC="$clang" AR="$archiver" \
   cargo build --release --target wasm32-unknown-unknown -p trama-wasm)
 # proj4rs declares wasm-bindgen imports on this target, so the module needs its glue: a
 # hand-rolled C ABI would have meant reimplementing that runtime.

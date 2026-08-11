@@ -28,8 +28,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core
-      # zstd is C, so the wasm build needs a clang carrying the WebAssembly backend.
-      - run: sudo apt-get update && sudo apt-get install -y clang
+      # zstd is C, so the wasm build needs a clang carrying the WebAssembly backend, and
+      # llvm-ar to archive its objects: GNU ar cannot read a WebAssembly object file.
+      - run: sudo apt-get update && sudo apt-get install -y clang llvm
       - run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
       - name: Fetch the WASI SDK
         # EPANET is C with a file-based API: WASI is what gives it a libc and a filesystem in

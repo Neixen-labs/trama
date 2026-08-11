@@ -157,8 +157,7 @@ fn traversal_seconds(container: &[u8], graph: &Graph, parameters: &Parameters) -
 
 /// Every edge's length in metres, from the geometry the container already stores.
 ///
-/// ponytail: length is the only cost. A road network wanting travel time wants a `PROP` column
-/// and a parameter naming it; that needs a container carrying one to be worth designing against.
+/// Length is what a cost is built from: `traversal_seconds` divides it by a speed.
 fn lengths_of(container: &[u8]) -> Result<Vec<f64>, String> {
     Ok(edge_paths(container)?
         .iter()
