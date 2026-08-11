@@ -1,8 +1,16 @@
 # EPANET import and export: where the boundary goes
 
-**Status:** Proposal. Three decisions below are the owner's; no code exists until they are answered.
+**Status:** Accepted 2026-08-11. The owner took the recommendation on all three decisions.
 **Issue:** [#11](https://github.com/Neixen-labs/trama/issues/11)
 **Affects:** `docs/SPEC.md` section 8, `compiler/`, `solvers/epanet/`
+
+| Decision | Answer |
+|---|---|
+| Where category 4 lives | An opaque section owned by a solver, which the core stores but has no code to parse |
+| Where the `.inp` parser lives | `solvers/epanet/`, behind a generic importer interface the compiler discovers |
+| The coordinate reference system | Required as `--source-crs`; refuse to compile without it |
+
+The reasoning below is kept as written, including the options that were not taken — a decision without its rejected alternatives is impossible to revisit honestly.
 
 ## Why this needs deciding first
 
