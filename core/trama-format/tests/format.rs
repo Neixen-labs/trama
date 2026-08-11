@@ -245,3 +245,87 @@ fn duplicate_feature_ids_are_rejected() {
 
     assert!(outcome.unwrap_err().contains("unique"));
 }
+
+// --- directed edges, SPEC 4 and 9 ---
+
+/// Two segments meeting at a shared node, so adjacency has something to be asymmetric about.
+fn pair(directed: Value) -> Vec<Value> {
+    vec![
+        line("a", json!([[-3.704, 40.416], [-3.703, 40.417]]), json!({"_trama_directed": directed})),
+        line("b", json!([[-3.703, 40.417], [-3.702, 40.418]]), json!({})),
+    ]
+}
+
+#[test]
+fn a_directed_edge_is_reachable_from_its_source_only() {
+    let undirected = graph_of(&compile(&pair(json!(false)), &[], &[]).unwrap());
+    let directed = graph_of(&compile(&pair(json!(true)), &[], &[]).unwrap());
+
+    // SPEC 4: one CSR entry rather than two, which is the whole of what the flag does to topology.
+    assert_eq!(directed.adjacency.len(), undirected.adjacency.len() - 1);
+    let flagged = directed.edges.iter().filter(|edge| edge.directed).count();
+    assert_eq!(flagged, 1);
+    assert_eq!(undirected.edges.iter().filter(|edge| edge.directed).count(), 0);
+}
+
+#[test]
+fn a_directed_edge_leaves_its_target_unable_to_traverse_it() {
+    let graph = graph_of(&compile(&pair(json!(true)), &[], &[]).unwrap());
+
+    let edge = graph.edges.iter().position(|edge| edge.directed).unwrap() as u32;
+    let entries = |node: u32| {
+        let start = graph.csr_offsets[node as usize] as usize;
+        let end = graph.csr_offsets[node as usize + 1] as usize;
+        graph.adjacency[start..end].iter().filter(|entry| entry.edge_index == edge).count()
+    };
+    let record = &graph.edges[edge as usize];
+    assert_eq!(entries(record.source), 1, "the source can traverse it");
+    assert_eq!(entries(record.target), 0, "the target cannot");
+}
+
+#[test]
+fn an_absent_directed_key_means_undirected() {
+    let graph = graph_of(&compile(&pair(json!(null)), &[], &[]).unwrap());
+
+    assert!(graph.edges.iter().all(|edge| !edge.directed));
+}
+
+#[test]
+fn a_non_boolean_directed_value_is_rejected_rather_than_read_as_false() {
+    // OSM spells it `yes`, and compiling that as two-way would be an invisible wrong answer.
+    let outcome = compile(&pair(json!("yes")), &[], &[]);
+
+    assert!(outcome.unwrap_err().contains("_trama_directed must be a boolean"));
+}
+
+#[test]
+fn the_directed_key_does_not_become_a_property_column() {
+    let with_key = compile(&pair(json!(true)), &[], &[]).unwrap();
+    let without = compile(&pair(json!(null)), &[], &[]).unwrap();
+
+    assert_eq!(columns(&with_key), columns(&without), "a reserved key must not grow a PROP column");
+}
+
+#[test]
+fn a_directed_edge_survives_a_round_trip_through_geojson() {
+    let container = compile(&pair(json!(true)), &[], &[]).unwrap();
+
+    let exported = trama_format::export(&container).unwrap();
+    let features = exported.edges["features"].as_array().unwrap();
+    let flagged: Vec<&Value> = features.iter().filter(|f| f["properties"]["_trama_directed"] == json!(true)).collect();
+    assert_eq!(flagged.len(), 1, "exactly the directed edge carries the key");
+
+    let recompiled = compile(&features.to_vec(), &[], &[]).unwrap();
+    let graph = graph_of(&recompiled);
+    assert_eq!(graph.edges.iter().filter(|edge| edge.directed).count(), 1);
+}
+
+#[test]
+fn a_file_with_no_directed_edge_exports_without_the_key() {
+    let container = compile(&pair(json!(false)), &[], &[]).unwrap();
+
+    let exported = trama_format::export(&container).unwrap();
+    for feature in exported.edges["features"].as_array().unwrap() {
+        assert!(feature["properties"].get("_trama_directed").is_none());
+    }
+}

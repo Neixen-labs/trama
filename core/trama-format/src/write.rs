@@ -14,6 +14,7 @@ const MAGIC: &[u8; 8] = b"TRAMA\0\0\0";
 const EXTENT: f64 = 65535.0;
 const WORLD: f64 = 40075016.68557849;
 const ID_KEY: &str = "_trama_id";
+const DIRECTED_KEY: &str = "_trama_directed";
 const COMPRESSION_LEVEL: i32 = 19;
 
 pub struct Extra {
@@ -25,7 +26,9 @@ pub struct Extra {
 type Point = (f64, f64);
 type TileKey = (u32, u32, u32);
 /// An edge on its way into the file: identity, endpoints, geometry per tile, and its row.
-type EdgeRecord = (u64, u64, u64, Vec<(TileKey, Vec<Point>)>, BTreeMap<String, Value>);
+type EdgeRecord = (u64, u64, u64, Vec<(TileKey, Vec<Point>)>, BTreeMap<String, Value>, bool);
+/// An edge as `GRPH` stores it: identity, endpoint indices, and whether it is directed.
+type Edge = (u64, u32, u32, bool);
 type TilePaths = BTreeMap<TileKey, Vec<(u32, Vec<(u16, u16)>)>>;
 type ColumnGroup<'a> = (u8, &'a [&'a BTreeMap<String, Value>], Vec<String>);
 
@@ -72,7 +75,7 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
         };
         let source = *node_ids.get(&node_cell(path[0])).ok_or("missing source node")?;
         let target = *node_ids.get(&node_cell(path[path.len() - 1])).ok_or("missing target node")?;
-        ordered.push((edge_id, source, target, split_by_tile(path), row_of(feature)));
+        ordered.push((edge_id, source, target, split_by_tile(path), row_of(feature), declared_directed(feature)?));
     }
     ordered.sort_by_key(|record| record.0);
     if ordered.windows(2).any(|pair| pair[0].0 == pair[1].0) {
@@ -81,7 +84,7 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
 
     let node_order: Vec<u64> = {
         let mut identities: BTreeSet<u64> = BTreeSet::new();
-        for (_id, source, target, _pieces, _row) in &ordered {
+        for (_id, source, target, _pieces, _row, _directed) in &ordered {
             identities.insert(*source);
             identities.insert(*target);
         }
@@ -118,8 +121,8 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
         geometry_refs.push(refs);
     }
 
-    let edges: Vec<(u64, u32, u32)> =
-        ordered.iter().map(|record| (record.0, node_index[&record.1], node_index[&record.2])).collect();
+    let edges: Vec<Edge> =
+        ordered.iter().map(|record| (record.0, node_index[&record.1], node_index[&record.2], record.5)).collect();
 
     let mut decoded: Vec<(&[u8; 4], u32, TileKey, Vec<u8>)> = Vec::new();
     for tile in &tiles {
@@ -211,7 +214,7 @@ fn row_of(feature: &Value) -> BTreeMap<String, Value> {
         .and_then(Value::as_object)
         .map(|row| {
             row.iter()
-                .filter(|(key, _value)| key.as_str() != ID_KEY)
+                .filter(|(key, _value)| key.as_str() != ID_KEY && key.as_str() != DIRECTED_KEY)
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect()
         })
@@ -229,6 +232,17 @@ fn declared_id(feature: &Value) -> Result<Option<u64>, String> {
         other => return Err(format!("{ID_KEY} must be a decimal integer, got {other}")),
     };
     text.parse::<u64>().map(Some).map_err(|_| format!("{ID_KEY} must fit in u64, got '{text}'"))
+}
+
+/// SPEC 9: an edge is directed when the reserved key is the boolean `true`. Anything else is an
+/// error rather than a falsy reading, so a source writing `"yes"` hears about it instead of
+/// silently compiling every street two-way.
+fn declared_directed(feature: &Value) -> Result<bool, String> {
+    match feature.get("properties").and_then(|row| row.get(DIRECTED_KEY)) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(directed)) => Ok(*directed),
+        Some(other) => Err(format!("{DIRECTED_KEY} must be a boolean, got {other}")),
+    }
 }
 
 fn number(value: &Value) -> f64 {
@@ -374,11 +388,15 @@ fn identity_block(identities: &[u64]) -> Vec<u8> {
     block
 }
 
-fn graph_section(edges: &[(u64, u32, u32)], node_order: &[u64], geometry_refs: &[Vec<(u32, u32)>]) -> Vec<u8> {
+fn graph_section(edges: &[Edge], node_order: &[u64], geometry_refs: &[Vec<(u32, u32)>]) -> Vec<u8> {
+    // SPEC 4: a directed edge is reachable from its source only, so it takes one CSR entry where
+    // an undirected one takes both. This is the whole of what the flag does to topology.
     let mut adjacency: Vec<Vec<(u32, i8)>> = vec![Vec::new(); node_order.len()];
-    for (edge_index, (_id, source, target)) in edges.iter().enumerate() {
+    for (edge_index, (_id, source, target, directed)) in edges.iter().enumerate() {
         adjacency[*source as usize].push((edge_index as u32, 1));
-        adjacency[*target as usize].push((edge_index as u32, -1));
+        if !directed {
+            adjacency[*target as usize].push((edge_index as u32, -1));
+        }
     }
     let adjacency_count: usize = adjacency.iter().map(Vec::len).sum();
     let ref_count: usize = geometry_refs.iter().map(Vec::len).sum();
@@ -414,8 +432,8 @@ fn graph_section(edges: &[(u64, u32, u32)], node_order: &[u64], geometry_refs: &
         section.extend_from_slice(&0u32.to_le_bytes());
     }
     let mut ref_start = 0u32;
-    for (edge_index, ((_id, source, target), refs)) in edges.iter().zip(geometry_refs).enumerate() {
-        for value in [*source, *target, edge_index as u32, ref_start, refs.len() as u32, 0] {
+    for (edge_index, ((_id, source, target, directed), refs)) in edges.iter().zip(geometry_refs).enumerate() {
+        for value in [*source, *target, edge_index as u32, ref_start, refs.len() as u32, u32::from(*directed)] {
             section.extend_from_slice(&value.to_le_bytes());
         }
         ref_start += refs.len() as u32;

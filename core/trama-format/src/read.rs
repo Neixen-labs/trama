@@ -26,6 +26,8 @@ pub struct Edge {
     pub property_row: u32,
     pub reference_start: u32,
     pub reference_count: u32,
+    /// SPEC 4 `Edge.flags` bit 0: the edge is traversable from its source only.
+    pub directed: bool,
 }
 
 pub struct GeometryReference {
@@ -38,6 +40,15 @@ pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
     pub references: Vec<GeometryReference>,
+    /// SPEC 4: `adjacency[csr_offsets[n]..csr_offsets[n + 1]]` is what leaves node `n`.
+    pub csr_offsets: Vec<u64>,
+    pub adjacency: Vec<Adjacency>,
+}
+
+pub struct Adjacency {
+    pub edge_index: u32,
+    /// `+1` source to target, `-1` target to source.
+    pub traversal_direction: i8,
 }
 
 fn u16_at(data: &[u8], at: usize) -> u16 {
@@ -172,9 +183,12 @@ pub fn parse_graph(payload: &[u8]) -> Result<Graph, String> {
     }
     let node_count = u32_at(payload, 0) as usize;
     let edge_count = u32_at(payload, 4) as usize;
+    let adjacency_count = u32_at(payload, 8) as usize;
     let reference_count = u32_at(payload, 12) as usize;
     let nodes_offset = u32_at(payload, 16) as usize;
     let edges_offset = u32_at(payload, 20) as usize;
+    let csr_offset = u32_at(payload, 24) as usize;
+    let adjacency_offset = u32_at(payload, 28) as usize;
     let references_offset = u32_at(payload, 32) as usize;
     let node_ids_offset = u32_at(payload, 36) as usize;
     let edge_ids_offset = u32_at(payload, 40) as usize;
@@ -186,6 +200,8 @@ pub fn parse_graph(payload: &[u8]) -> Result<Graph, String> {
     };
     bound(nodes_offset, node_count, 8)?;
     bound(edges_offset, edge_count, 24)?;
+    bound(csr_offset, node_count + 1, 8)?;
+    bound(adjacency_offset, adjacency_count, 8)?;
     bound(references_offset, reference_count, 12)?;
 
     let node_ids = identities(payload, node_ids_offset, node_count)?;
@@ -203,6 +219,7 @@ pub fn parse_graph(payload: &[u8]) -> Result<Graph, String> {
                 property_row: u32_at(payload, at + 8),
                 reference_start: u32_at(payload, at + 12),
                 reference_count: u32_at(payload, at + 16),
+                directed: u32_at(payload, at + 20) & 1 != 0,
             }
         })
         .collect();
@@ -216,5 +233,19 @@ pub fn parse_graph(payload: &[u8]) -> Result<Graph, String> {
             }
         })
         .collect();
-    Ok(Graph { nodes, edges, references })
+    let csr_offsets: Vec<u64> = (0..=node_count).map(|index| u64_at(payload, csr_offset + index * 8)).collect();
+    // SPEC 4: the bounds a reader must check before trusting a slice of the adjacency array.
+    if csr_offsets[0] != 0 || csr_offsets[node_count] != adjacency_count as u64 {
+        return Err("CSR offsets must run from zero to the adjacency count".into());
+    }
+    if csr_offsets.windows(2).any(|pair| pair[1] < pair[0]) {
+        return Err("CSR offsets must be monotonic".into());
+    }
+    let adjacency = (0..adjacency_count)
+        .map(|index| {
+            let at = adjacency_offset + index * 8;
+            Adjacency { edge_index: u32_at(payload, at), traversal_direction: payload[at + 4] as i8 }
+        })
+        .collect();
+    Ok(Graph { nodes, edges, references, csr_offsets, adjacency })
 }
