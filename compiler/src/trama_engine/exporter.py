@@ -28,7 +28,7 @@ def export_geojson(source: Path, destination: Path) -> None:
         if kind == b"GEOM"
     }
     nodes, edges, refs = parse_graph(graph)
-    rows = _parse_properties(properties)
+    node_rows, rows = _parse_properties(properties)
     node_positions: dict[int, tuple[float, float]] = {}
     edge_features = []
     for edge_id, source_index, target_index, property_row, ref_start, ref_count, _flags in edges:
@@ -44,8 +44,12 @@ def export_geojson(source: Path, destination: Path) -> None:
         )
 
     node_features = [
-        _feature({"type": "Point", "coordinates": list(node_positions[index])}, node_id, {})
-        for index, (node_id, _property_row, _flags) in enumerate(nodes)
+        _feature(
+            {"type": "Point", "coordinates": list(node_positions[index])},
+            node_id,
+            node_rows[property_row] if property_row < len(node_rows) else {},
+        )
+        for index, (node_id, property_row, _flags) in enumerate(nodes)
         if index in node_positions
     ]
     destination.mkdir(parents=True, exist_ok=True)
@@ -100,13 +104,23 @@ def _parse_geometry(payload: bytes) -> list[list[tuple[int, int]]]:
     return paths
 
 
-def _parse_properties(payload: bytes) -> list[dict[str, Any]]:
-    _key_count, _string_count, _enum_count, _node_columns, edge_columns = struct.unpack_from("<5I", payload)
-    key_offset, string_offset, _enum_offset, _node_columns_offset, columns_offset = struct.unpack_from("<5I", payload, 20)
+def _parse_properties(payload: bytes) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Node rows and edge rows, each aligned to its entity array."""
+    _key_count, _string_count, _enum_count, node_columns, edge_columns = struct.unpack_from("<5I", payload)
+    key_offset, string_offset, _enum_offset, node_columns_offset, columns_offset = struct.unpack_from("<5I", payload, 20)
     keys = _read_strings(payload, key_offset)
     strings = _read_strings(payload, string_offset)
+    return (
+        _read_columns(payload, node_columns_offset, node_columns, keys, strings),
+        _read_columns(payload, columns_offset, edge_columns, keys, strings),
+    )
+
+
+def _read_columns(
+    payload: bytes, columns_offset: int, count: int, keys: list[str], strings: list[str]
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for column in range(edge_columns):
+    for column in range(count):
         key_id, _kind, value_type, _flags, entity_count, presence_offset, values_offset = struct.unpack_from(
             "<IBBHIII", payload, columns_offset + column * 20
         )

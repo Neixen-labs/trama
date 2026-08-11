@@ -85,11 +85,17 @@ def compile_features(
         for _feature_id, projected in line_records
         for cell in (_node_cell(projected[0]), _node_cell(projected[-1]))
     }
+    node_properties: dict[tuple[int, int], dict[str, Any]] = {}
     for feature in points:
         coordinate = feature["geometry"].get("coordinates", [])[:2]
+        cell = _node_cell(_web_mercator(*coordinate))
         declared = _declared_id(feature)
         if declared is not None:
-            node_ids[_node_cell(_web_mercator(*coordinate))] = declared
+            node_ids[cell] = declared
+        row = feature.get("properties") or {}
+        if not isinstance(row, dict):
+            raise TypeError("GeoJSON properties must be an object")
+        node_properties[cell] = {key: value for key, value in row.items() if key != _ID_KEY}
     ordered = sorted(
         (
             (
@@ -109,6 +115,10 @@ def compile_features(
     edge_properties = [row for _edge, _pieces, row in ordered]
     if len({edge_id for edge_id, *_rest in edges}) != len(edges):
         raise ValueError("GeoJSON feature IDs must be unique")
+    # Node rows follow the node array, which _graph_section sorts by stable ID. A Point whose
+    # position no edge touches never becomes a node, so its properties have nowhere to go.
+    rows_by_id = {node_ids[cell]: row for cell, row in node_properties.items()}
+    node_rows = [rows_by_id.get(node_id, {}) for node_id in _node_order(edges)]
 
     tiles = sorted({tile for _edge, pieces, _row in ordered for tile, _points in pieces})
     tile_indexes = {tile: index for index, tile in enumerate(tiles)}
@@ -126,7 +136,7 @@ def compile_features(
     # that has never heard of its owner skip it instead of rejecting the file (SPEC 7).
     decoded = [(b"GEOM", 1, *tile, _geometry_section(tile_paths[tile])) for tile in tiles] + [
         (b"GRPH", 1, 0, 0, 0, _graph_section(edges, geometry_refs)),
-        (b"PROP", 1, 0, 0, 0, _property_section(edge_properties)),
+        (b"PROP", 1, 0, 0, 0, _property_section(node_rows, edge_properties)),
         # SPEC 6: strings_offset must address a u32 count, so an empty table still needs those 4 bytes.
         (b"STCH", 1, 0, 0, 0, _state_channel_section(channels or [])),
         *((b"XTRA", 0, 0, 0, 0, payload) for payload in _extra_sections(extras or [])),
@@ -252,8 +262,13 @@ def _geometry_section(paths: list[tuple[int, list[tuple[int, int]]]]) -> bytes:
     return header + path_headers + vertices
 
 
+def _node_order(edges: list[tuple[int, int, int]]) -> list[int]:
+    """The node array, sorted by stable ID as SPEC 4 requires. Property rows follow it."""
+    return sorted({node_id for _edge_id, source_id, target_id in edges for node_id in (source_id, target_id)})
+
+
 def _graph_section(edges: list[tuple[int, int, int]], geometry_refs: list[list[tuple[int, int]]]) -> bytes:
-    node_ids = sorted({node_id for _edge_id, source_id, target_id in edges for node_id in (source_id, target_id)})
+    node_ids = _node_order(edges)
     node_indices = {node_id: index for index, node_id in enumerate(node_ids)}
     adjacency: list[list[tuple[int, int]]] = [[] for _node_id in node_ids]
     for edge_index, (_edge_id, source_id, target_id) in enumerate(edges):
@@ -269,7 +284,7 @@ def _graph_section(edges: list[tuple[int, int, int]], geometry_refs: list[list[t
     adjacency_count = sum(len(entries) for entries in adjacency)
     refs_offset = adjacency_offset + adjacency_count * 8
     header = struct.pack("<9I", len(node_ids), len(edges), adjacency_count, ref_count, nodes_offset, edges_offset, csr_offset, adjacency_offset, refs_offset)
-    nodes = b"".join(struct.pack("<QII", node_id, 0, 0) for node_id in node_ids)
+    nodes = b"".join(struct.pack("<QII", node_id, index, 0) for index, node_id in enumerate(node_ids))
     edge_records = b"".join(
         struct.pack(
             "<QIIIIII", edge_id, node_indices[source_id], node_indices[target_id], edge_index, ref_start, len(refs), 0
@@ -287,11 +302,17 @@ def _graph_section(edges: list[tuple[int, int, int]], geometry_refs: list[list[t
     return header + nodes + edge_records + csr + adjacency_records + ref_records
 
 
-def _property_section(rows: list[dict[str, object]]) -> bytes:
-    keys = sorted({key for row in rows for key, value in row.items() if value is not None})
-    string_values = sorted(
-        {value for row in rows for value in row.values() if isinstance(value, str)}
-    )
+def _property_section(node_rows: list[dict[str, Any]], edge_rows: list[dict[str, Any]]) -> bytes:
+    """Typed nullable columns for both entity kinds, sharing one key dictionary (SPEC 5).
+
+    A key gets a column only for the kind that uses it: an all-absent column would claim that
+    edges have an elevation and merely never said which.
+    """
+    groups = [(1, node_rows), (2, edge_rows)]
+    used = [(kind, rows, sorted({key for row in rows for key, value in row.items() if value is not None})) for kind, rows in groups]
+    keys = sorted({key for _kind, _rows, group_keys in used for key in group_keys})
+    key_ids = {key: index for index, key in enumerate(keys)}
+    string_values = sorted({value for _kind, rows in groups for row in rows for value in row.values() if isinstance(value, str)})
     key_dictionary = _string_dictionary(keys)
     string_dictionary = _string_dictionary(string_values)
     enum_dictionary = struct.pack("<I", 0)
@@ -300,23 +321,25 @@ def _property_section(rows: list[dict[str, object]]) -> bytes:
     string_offset = key_offset + len(key_dictionary)
     enum_offset = string_offset + len(string_dictionary)
     columns_offset = enum_offset + len(enum_dictionary)
-    values_offset = columns_offset + len(keys) * 20
-    bitmap_bytes = (len(rows) + 7) // 8
+    values_offset = columns_offset + sum(len(group_keys) for _kind, _rows, group_keys in used) * 20
     columns: list[bytes] = []
     bodies: list[bytes] = []
-    for key_id, key in enumerate(keys):
-        present = [index for index, row in enumerate(rows) if row.get(key) is not None]
-        values = [rows[index][key] for index in present]
-        value_type = _column_type(key, values)
-        presence_offset = values_offset + sum(len(body) for body in bodies)
-        columns.append(
-            struct.pack(
-                "<IBBHIII", key_id, 2, value_type, 1, len(rows), presence_offset, presence_offset + bitmap_bytes
+    for kind, rows, group_keys in used:
+        bitmap_bytes = (len(rows) + 7) // 8
+        for key in group_keys:
+            present = [index for index, row in enumerate(rows) if row.get(key) is not None]
+            values = [rows[index][key] for index in present]
+            value_type = _column_type(key, values)
+            presence_offset = values_offset + sum(len(body) for body in bodies)
+            columns.append(
+                struct.pack(
+                    "<IBBHIII", key_ids[key], kind, value_type, 1, len(rows), presence_offset, presence_offset + bitmap_bytes
+                )
             )
-        )
-        bodies.append(_packed_bits(present, len(rows)) + _column_values(value_type, values, string_values))
+            bodies.append(_packed_bits(present, len(rows)) + _column_values(value_type, values, string_values))
+    node_columns = len(used[0][2])
     header = struct.pack(
-        "<10I", len(keys), len(string_values), 0, 0, len(keys), key_offset, string_offset, enum_offset, columns_offset, columns_offset
+        "<10I", len(keys), len(string_values), 0, node_columns, len(used[1][2]), key_offset, string_offset, enum_offset, columns_offset, columns_offset + node_columns * 20
     )
     return header + key_dictionary + string_dictionary + enum_dictionary + b"".join(columns) + b"".join(bodies)
 
