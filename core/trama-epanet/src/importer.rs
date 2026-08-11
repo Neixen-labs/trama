@@ -55,6 +55,11 @@ const LINK_FIELDS: [(&str, &[&str]); 2] = [
 
 pub struct EpanetImporter;
 
+/// Import from text rather than a path, which is what a browser has.
+pub fn import(text: &str, crs: &str) -> Result<Import, String> {
+    EpanetImporter.read(text, crs)
+}
+
 impl Importer for EpanetImporter {
     fn suffixes(&self) -> &'static [&'static str] {
         &[".inp"]
@@ -66,7 +71,13 @@ impl Importer for EpanetImporter {
             .filter(|value| !value.is_empty())
             .ok_or("an EPANET .inp declares no coordinate reference system; pass -o source-crs=EPSG:xxxx")?;
         let text = std::fs::read_to_string(source).map_err(|error| error.to_string())?;
-        let document = inp::parse(&text);
+        self.read(&text, crs)
+    }
+}
+
+impl EpanetImporter {
+    fn read(&self, text: &str, crs: &str) -> Result<Import, String> {
+        let document = inp::parse(text);
         let transform = Reprojection::to_wgs84(crs)?;
 
         let mut positions: BTreeMap<String, (f64, f64)> = BTreeMap::new();
