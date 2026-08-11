@@ -329,3 +329,34 @@ fn a_file_with_no_directed_edge_exports_without_the_key() {
         assert!(feature["properties"].get("_trama_directed").is_none());
     }
 }
+
+// --- edge geometry for traversal costs ---
+
+#[test]
+fn edge_paths_returns_one_centerline_per_edge_in_metres() {
+    let container = compile(&pair(json!(null)), &[], &[]).unwrap();
+
+    let paths = trama_format::edge_paths(&container).unwrap();
+
+    let graph = graph_of(&container);
+    assert_eq!(paths.len(), graph.edges.len());
+    for path in &paths {
+        assert!(path.len() >= 2, "a centerline has at least its endpoints");
+    }
+    // Web Mercator metres near Madrid, not degrees: longitude -3.7 is about -412 km.
+    let (x, y) = paths[0][0];
+    assert!(x < -400_000.0 && x > -420_000.0, "x {x}");
+    assert!(y > 4_900_000.0 && y < 5_000_000.0, "y {y}");
+}
+
+#[test]
+fn edge_paths_measures_a_segment_against_its_known_ground_length() {
+    // Two points 0.001 degrees of latitude apart: about 111 m on the ground, and Web Mercator
+    // stretches that by 1/cos(latitude), so near 40.4 degrees it measures about 146 m.
+    let container = compile(&[line("a", json!([[-3.704, 40.416], [-3.704, 40.417]]), json!({}))], &[], &[]).unwrap();
+
+    let path = &trama_format::edge_paths(&container).unwrap()[0];
+
+    let length: f64 = path.windows(2).map(|pair| (pair[1].1 - pair[0].1).abs()).sum();
+    assert!((length - 146.0).abs() < 2.0, "length {length}");
+}

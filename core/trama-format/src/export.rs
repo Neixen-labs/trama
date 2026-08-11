@@ -41,7 +41,8 @@ pub fn export(data: &[u8]) -> Result<Export, String> {
     for edge in &parsed.edges {
         let start = edge.reference_start as usize;
         let references = &parsed.references[start..start + edge.reference_count as usize];
-        let coordinates = edge_coordinates(references, &geometry)?;
+        let metres = edge_coordinates(references, &geometry)?;
+        let coordinates: Vec<(f64, f64)> = metres.iter().map(|point| wgs84(*point)).collect();
         positions.insert(edge.source, coordinates[0]);
         positions.insert(edge.target, coordinates[coordinates.len() - 1]);
         let mut exported = feature(
@@ -86,13 +87,39 @@ fn feature(geometry: Value, id: u64, row: Option<&BTreeMap<String, Value>>) -> V
     json!({"type": "Feature", "geometry": geometry, "properties": Value::Object(properties)})
 }
 
+/// Every edge's centerline in `EPSG:3857` metres, indexed by edge index.
+///
+/// This is what a solver costing a traversal needs, and it is the same reconstruction the export
+/// does before projecting to WGS 84 — geometry rather than domain, so it belongs to the format.
+/// Lengths carry the precision the file stores: section 3.1 quantizes to about 4 cm at `z14`.
+pub fn edge_paths(data: &[u8]) -> Result<Vec<Vec<(f64, f64)>>, String> {
+    let sections = read_sections(data)?;
+    let graph = sections.iter().find(|s| &s.kind == b"GRPH").ok_or("container is missing a GRPH section")?;
+    let geometry: Tiles = sections
+        .iter()
+        .enumerate()
+        .filter(|(_index, section)| &section.kind == b"GEOM")
+        .map(|(index, section)| Ok((index, (&section.key, parse_geometry(&section.payload)?))))
+        .collect::<Result<_, String>>()?;
+    let parsed = parse_graph(&graph.payload)?;
+    parsed
+        .edges
+        .iter()
+        .map(|edge| {
+            let start = edge.reference_start as usize;
+            edge_coordinates(&parsed.references[start..start + edge.reference_count as usize], &geometry)
+        })
+        .collect()
+}
+
+/// One edge's centerline in `EPSG:3857` metres, in traversal order across the tiles it spans.
 fn edge_coordinates(references: &[GeometryReference], geometry: &Tiles) -> Result<Vec<(f64, f64)>, String> {
     let mut coordinates: Vec<(f64, f64)> = Vec::new();
     for reference in references {
         let (key, paths) =
             geometry.get(&(reference.directory_index as usize)).ok_or("edge references a section that is not GEOM")?;
         let path = paths.get(reference.path_index as usize).ok_or("edge references a missing path")?;
-        let mut piece: Vec<(f64, f64)> = path.iter().map(|point| wgs84(dequantize(*point, **key))).collect();
+        let mut piece: Vec<(f64, f64)> = path.iter().map(|point| dequantize(*point, **key)).collect();
         if reference.direction < 0 {
             piece.reverse();
         }
