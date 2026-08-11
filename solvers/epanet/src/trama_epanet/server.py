@@ -18,7 +18,13 @@ import urllib.request
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from trama_epanet.solver import DELTA, InvalidInput, Parameters, solve
+from trama_epanet.solver import (
+    DELTA,
+    InvalidInput,
+    Parameters,
+    ToolkitUnavailable,
+    solve,
+)
 
 SOLVER_ID = "epanet"
 CONTRACT_VERSION = "0.1.0"
@@ -49,6 +55,10 @@ class SolveHandler(BaseHTTPRequestHandler):
             return
         except InvalidInput as error:
             self._reject(400, "invalid_input", str(error))
+            return
+        except ToolkitUnavailable as error:
+            # 503, not 400: the request was fine and this host cannot serve it.
+            self._reject(503, "solver_unavailable", str(error))
             return
         except (OSError, urllib.error.URLError) as error:
             self._reject(400, "fetch_failed", str(error))
