@@ -20,11 +20,11 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 |---|---|---|
 | `core/trama-format` (Rust) | The container: writer, reader, GeoJSON export. Byte-identical output for identical input, typed node and edge properties, declared state channels, and opaque records it carries without reading. | polygons, GeoPackage export |
 | `core/trama-cli` (Rust) | `trama compile`, `validate`, `export --to geojson|inp`, and the grid generator behind the benchmarks. | CSV points |
-| `core/trama-epanet` (Rust) | `.inp` import and export, and a solver that runs the EPANET 2.3 toolkit and streams pressure and flow. Round trip verified by simulation on Net1 and Net3. | no WASM build of the solver itself yet |
+| `core/trama-epanet` (Rust) | `.inp` import and export, and a solver that runs the EPANET 2.3 toolkit and streams pressure and flow, natively or in the browser through WASI. Round trip verified by simulation on Net1 and Net3. | — |
 | `core/trama-example` (Rust) | Reference solver over HTTP + Server-Sent Events, to keep the contract under a real implementation. | — |
 | `core/trama-wasm` (Rust) | The compiler in a browser: 121 kB brotli, and byte-identical to the command line. | it compiles GeoJSON only; `.inp` import needs the EPANET crate too |
-| `engine/` — `@trama/core` (TypeScript) | Range reader for header, directory, and sections, each checked against its CRC-32C; instanced WebGL2 line renderer with screen-constant width; MapLibre custom layer; state ring buffer feeding an R32F texture; SSE client for solver deltas | WebGPU, OPFS offline cache, fly-through camera |
-| `site/` | Landing page at [trama.build](https://trama.build) | The in-browser playground is phase 5 |
+| `engine/` — `@trama/core` (TypeScript) | Range reader for header, directory, and sections, each checked against its CRC-32C; instanced WebGL2 line renderer with screen-constant width; MapLibre custom layer; state ring buffer feeding an R32F texture; SSE client for solver deltas; fly-through camera that tours the graph | WebGPU, OPFS offline cache |
+| `site/` | Landing page at [trama.build](https://trama.build), and a playground that compiles and solves a network in the browser | Offline: nothing is cached, so the page still needs the network to load |
 
 ### Measured
 
