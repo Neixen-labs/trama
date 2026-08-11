@@ -17,6 +17,7 @@ _MAGIC = b"TRAMA\0\0\0"
 _HEADER = struct.Struct("<8s3H3HIQIIQ16s")
 _DIRECTORY = struct.Struct("<4sIIIIQQQIHBB12s")
 _ID_KEY = "_trama_id"
+_EXTENT = 65535
 # Deterministic and not format-significant (SPEC 7). 19 costs ~1.7 s on a 50k-edge network
 # and saves 8% of the file, which is paid back on every download.
 _COMPRESSION_LEVEL = 19
@@ -42,31 +43,30 @@ def compile_geojson(source: Path, destination: Path, channels: list[dict[str, An
         coordinates = feature["geometry"].get("coordinates", [])
         if len(coordinates) < 2:
             raise ValueError("LineString requires at least two coordinates")
-        projected = [_web_mercator(*coordinate[:2]) for coordinate in coordinates]
-        line_records.append((str(feature.get("id", f"edge-{index}")), coordinates, projected))
+        line_records.append((str(feature.get("id", f"edge-{index}")), [_web_mercator(*coordinate[:2]) for coordinate in coordinates]))
     # A Point only names a node; an exported nodes.geojson is how node identity survives a round trip.
     node_ids = {
-        tuple(coordinates[endpoint][:2]): _stable_id(f"node:{coordinates[endpoint][0]!r},{coordinates[endpoint][1]!r}")
-        for _feature_id, coordinates, _projected in line_records
-        for endpoint in (0, -1)
+        cell: _stable_id(f"node:{cell[0]},{cell[1]}")
+        for _feature_id, projected in line_records
+        for cell in (_node_cell(projected[0]), _node_cell(projected[-1]))
     }
     for feature in points:
-        coordinate = tuple(feature["geometry"].get("coordinates", [])[:2])
+        coordinate = feature["geometry"].get("coordinates", [])[:2]
         declared = _declared_id(feature)
         if declared is not None:
-            node_ids[coordinate] = declared
+            node_ids[_node_cell(_web_mercator(*coordinate))] = declared
     ordered = sorted(
         (
             (
                 (
                     _declared(feature, f"edge:{feature_id}"),
-                    node_ids[tuple(coordinates[0][:2])],
-                    node_ids[tuple(coordinates[-1][:2])],
+                    node_ids[_node_cell(projected[0])],
+                    node_ids[_node_cell(projected[-1])],
                 ),
                 _split_by_tile(projected),
                 {key: value for key, value in row.items() if key != _ID_KEY},
             )
-            for feature, (feature_id, coordinates, projected), row in zip(lines, line_records, properties)
+            for feature, (feature_id, projected), row in zip(lines, line_records, properties)
         ),
         key=lambda record: record[0][0],
     )
@@ -421,9 +421,20 @@ def _quantize(point: tuple[float, float], z: int, x: int, y: int) -> tuple[int, 
     min_x = -world / 2 + x * width
     max_y = world / 2 - y * width
     return (
-        max(0, min(65535, round((point[0] - min_x) / width * 65535))),
-        max(0, min(65535, round((max_y - point[1]) / width * 65535))),
+        max(0, min(_EXTENT, round((point[0] - min_x) / width * _EXTENT))),
+        max(0, min(_EXTENT, round((max_y - point[1]) / width * _EXTENT))),
     )
+
+
+def _node_cell(point: tuple[float, float]) -> tuple[int, int]:
+    """The identity cell of a projected point: SPEC 4.1, the geometry grid made global.
+
+    Quantization samples both tile edges, so `_EXTENT` in one tile addresses the position `0`
+    addresses in the next, and a node on a tile boundary lands in one cell either way.
+    """
+    z, x, y = _tile_key(*point)
+    quantized_x, quantized_y = _quantize(point, z, x, y)
+    return x * _EXTENT + quantized_x, y * _EXTENT + quantized_y
 
 
 def _crc32c_table() -> list[int]:
