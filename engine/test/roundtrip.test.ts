@@ -32,11 +32,12 @@ test("reads the graph the compiler wrote", () => {
   const container = parseContainer(file);
   const graph = parseGraph(readSection(file, container.sections[2]!, inflate));
 
+  // Node IDs come from the SPEC 4.1 grid cell, so they change with the fixture, never with a run.
   assert.deepEqual(graph.nodes.map((node) => node.id), [
-    1374865284882970112n,
-    8093211145144104199n,
-    8261272653162081503n,
-    12382409452541619382n,
+    2195025027559335999n,
+    13309651855582348747n,
+    14204704510718787469n,
+    15756743663225437053n,
   ]);
   assert.deepEqual(graph.edges.map((edge) => edge.id), [
     1565066226786393687n,
