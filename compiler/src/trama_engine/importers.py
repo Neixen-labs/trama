@@ -26,6 +26,9 @@ class Import(NamedTuple):
     # No default: an importer that loses nothing should have to say so, since the alternative
     # is dropping a pattern or a curve without ever noticing.
     extras: list[Extra]
+    # What a container built from this format can be solved for. STCH is a declaration, never
+    # data, and which channels a format implies is the importer's knowledge, not the caller's.
+    channels: list[dict[str, Any]]
 
 
 @runtime_checkable
