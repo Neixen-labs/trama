@@ -2,6 +2,12 @@
 
 EPANET `.inp` import and export for TRAMA, following `docs/EPANET_BOUNDARY.md`.
 
+**Simulating needs a platform `owa-epanet` ships a wheel for: Linux, or macOS on Python 3.11.**
+There is no Windows wheel in the 2.3 series and none for macOS on 3.12, so elsewhere the
+toolkit must be built from source with `swig` and `ninja` on `PATH`. Import, export, and
+`trama compile network.inp` never touch it — `uv sync --no-dev` is enough for those, on any
+platform `pyproj` supports.
+
 This package holds every hydraulic concept in the project. `compiler/` knows nodes, edges,
 typed properties, and opaque records; it discovers this package through the `trama.importers`
 entry point and never learns what a pump is.
@@ -67,8 +73,11 @@ Two things the round trip does not preserve, both deliberate:
 [OpenWaterAnalytics/EPANET](https://github.com/OpenWaterAnalytics/EPANET), originally from the
 US EPA. They are included unmodified.
 
-## Verification dependency
+## The toolkit dependency
 
-`owa-epanet` runs the comparison. It publishes a `cp312` manylinux wheel, so CI installs it
-without a toolchain. There is no macOS wheel for this Python; building locally wants `swig` and
-`ninja` on `PATH`.
+`owa-epanet` both runs the simulations and verifies the round trip. It publishes a `cp312`
+manylinux wheel, so CI installs it without a toolchain, and nothing else.
+
+It is imported where it is used rather than at module load, so a machine without it still
+imports, exports, and compiles; only `solve` refuses, with a message that says so. Three tests
+run with the module made unimportable to keep that true.

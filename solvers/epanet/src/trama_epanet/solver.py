@@ -12,8 +12,8 @@ import struct
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from epanet import toolkit as en
 from trama_engine.compiler import read_sections
 
 from trama_epanet.exporter import entity_ids, export_inp
@@ -34,10 +34,34 @@ class InvalidInput(ValueError):
     """The container or the parameters do not satisfy the solver's declared inputs."""
 
 
+class ToolkitUnavailable(RuntimeError):
+    """The EPANET binding is not installed. Nothing about the request is wrong."""
+
+
+def toolkit() -> Any:
+    """The EPANET binding, imported where it is used rather than where the module loads.
+
+    `owa-epanet` ships no Windows wheel in the 2.3 series and none for macOS on 3.12, so on
+    those platforms it must be built from source. Importing it at module load would take the
+    importer and exporter down with it, and neither needs it.
+    """
+    try:
+        from epanet import toolkit as binding
+    except ImportError as error:
+        raise ToolkitUnavailable(
+            "the EPANET toolkit is not installed, so this container cannot be simulated. "
+            "owa-epanet publishes no Windows wheel and none for macOS on Python 3.12; "
+            "building it needs swig and ninja on PATH. Import and export do not need it: "
+            "`uv sync --no-dev` is enough for `trama compile network.inp`."
+        ) from error
+    return binding
+
+
 def solve(container: bytes, parameters: Parameters, t0_seconds: float, t1_seconds: float) -> bytes:
     """Packed deltas for every node pressure and link flow reported within [t0, t1]."""
     if t1_seconds < t0_seconds:
         raise InvalidInput("t1_seconds must not precede t0_seconds")
+    toolkit()  # before rebuilding the network: an absent toolkit is not the request's fault
     declarations = next((payload for kind, _key, payload in read_sections(container) if kind == b"STCH"), None)
     if declarations is None:
         raise InvalidInput("container is missing an STCH section")
@@ -67,6 +91,7 @@ def _simulate(
     t0_seconds: float,
     t1_seconds: float,
 ) -> bytes:
+    en = toolkit()
     project = en.createproject()
     records = bytearray()
     try:
