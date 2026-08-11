@@ -5,20 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from trama_engine.compiler import compile_geojson, read_sections
+from trama_engine.compiler import compile_geojson, parse_graph, read_sections
 from trama_engine.exporter import export_geojson
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
 
 def _identities(container: Path) -> tuple[list[int], list[int]]:
+    """Through parse_graph: SPEC 4.1 puts identity in a varint block, not at a fixed offset."""
     graph = next(payload for kind, _key, payload in read_sections(container.read_bytes()) if kind == b"GRPH")
-    node_count, edge_count = struct.unpack_from("<2I", graph)
-    nodes_offset, edges_offset = struct.unpack_from("<2I", graph, 16)
-    return (
-        [struct.unpack_from("<Q", graph, nodes_offset + index * 16)[0] for index in range(node_count)],
-        [struct.unpack_from("<Q", graph, edges_offset + index * 32)[0] for index in range(edge_count)],
-    )
+    nodes, edges, _refs = parse_graph(graph)
+    return ([node[0] for node in nodes], [edge[0] for edge in edges])
 
 
 def test_recompiling_an_export_keeps_every_stable_id(tmp_path: Path) -> None:

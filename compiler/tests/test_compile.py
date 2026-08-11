@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 import zstandard
 
-from trama_engine.compiler import _stable_id, compile_geojson, validate_container
+from trama_engine.compiler import (
+    _stable_id,
+    compile_geojson,
+    parse_graph,
+    validate_container,
+)
 
 _LINES = {
     "a": [[-3.704, 40.416], [-3.703, 40.417]],
@@ -141,8 +146,7 @@ def test_compile_geojson_sorts_nodes_by_stable_id(tmp_path: Path) -> None:
     graph_offset = struct.unpack_from("<Q", data, 64 + 64 + 20)[0]
     graph_size = struct.unpack_from("<Q", data, 64 + 64 + 36)[0]
     graph = zstandard.ZstdDecompressor().decompress(data[graph_offset : graph_offset + graph_size])
-    nodes_offset = struct.unpack_from("<I", graph, 16)[0]
-    node_ids = [struct.unpack_from("<Q", graph, nodes_offset + index * 16)[0] for index in range(2)]
+    node_ids = [node[0] for node in parse_graph(graph)[0]]
     assert node_ids == sorted(node_ids)
 
 
@@ -232,8 +236,7 @@ def test_compile_geojson_points_each_edge_at_its_property_row(tmp_path: Path) ->
     graph_offset = struct.unpack_from("<Q", data, graph_record + 20)[0]
     graph_size = struct.unpack_from("<Q", data, graph_record + 36)[0]
     graph = zstandard.ZstdDecompressor().decompress(data[graph_offset : graph_offset + graph_size])
-    edges_offset = struct.unpack_from("<I", graph, 20)[0]
-    property_rows = [struct.unpack_from("<I", graph, edges_offset + index * 32 + 16)[0] for index in range(3)]
+    property_rows = [edge[3] for edge in parse_graph(graph)[1]]
     assert property_rows == [0, 1, 2]
 
 

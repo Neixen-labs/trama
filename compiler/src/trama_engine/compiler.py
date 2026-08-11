@@ -200,8 +200,18 @@ def parse_graph(
     """Decode a GRPH payload into its nodes, edges, and geometry references."""
     node_count, edge_count, _adjacency_count, ref_count = struct.unpack_from("<4I", payload)
     nodes_offset, edges_offset, _csr_offset, _adjacency_offset, refs_offset = struct.unpack_from("<5I", payload, 16)
-    nodes = [struct.unpack_from("<QII", payload, nodes_offset + index * 16) for index in range(node_count)]
-    edges = [struct.unpack_from("<QIIIIII", payload, edges_offset + index * 32) for index in range(edge_count)]
+    node_ids_offset, edge_ids_offset = struct.unpack_from("<2I", payload, 36)
+    node_ids = _identities(payload, node_ids_offset, node_count)
+    edge_ids = _identities(payload, edge_ids_offset, edge_count)
+    # Identity is rejoined with its record here so callers keep reading (id, ...) tuples: where
+    # the bytes sit is the format's business, not theirs.
+    nodes = [
+        (node_ids[index], *struct.unpack_from("<II", payload, nodes_offset + index * 8)) for index in range(node_count)
+    ]
+    edges = [
+        (edge_ids[index], *struct.unpack_from("<IIIIII", payload, edges_offset + index * 24))
+        for index in range(edge_count)
+    ]
     refs = [struct.unpack_from("<IIb", payload, refs_offset + index * 12) for index in range(ref_count)]
     return nodes, edges, refs
 
@@ -276,20 +286,25 @@ def _graph_section(edges: list[tuple[int, int, int]], geometry_refs: list[list[t
         adjacency[node_indices[target_id]].append((edge_index, -1))
     ref_starts = itertools.accumulate((len(refs) for refs in geometry_refs), initial=0)
     ref_count = sum(len(refs) for refs in geometry_refs)
-    header_size = 36
+    header_size = 44
     nodes_offset = header_size
-    edges_offset = nodes_offset + len(node_ids) * 16
-    csr_offset = edges_offset + len(edges) * 32
+    edges_offset = nodes_offset + len(node_ids) * 8
+    csr_offset = edges_offset + len(edges) * 24
     adjacency_offset = csr_offset + (len(node_ids) + 1) * 8
     adjacency_count = sum(len(entries) for entries in adjacency)
     refs_offset = adjacency_offset + adjacency_count * 8
-    header = struct.pack("<9I", len(node_ids), len(edges), adjacency_count, ref_count, nodes_offset, edges_offset, csr_offset, adjacency_offset, refs_offset)
-    nodes = b"".join(struct.pack("<QII", node_id, index, 0) for index, node_id in enumerate(node_ids))
+    node_id_block = _identity_block(node_ids)
+    node_ids_offset = refs_offset + ref_count * 12
+    edge_ids_offset = node_ids_offset + len(node_id_block)
+    header = struct.pack(
+        "<11I", len(node_ids), len(edges), adjacency_count, ref_count, nodes_offset, edges_offset, csr_offset, adjacency_offset, refs_offset, node_ids_offset, edge_ids_offset
+    )
+    nodes = b"".join(struct.pack("<II", index, 0) for index in range(len(node_ids)))
     edge_records = b"".join(
         struct.pack(
-            "<QIIIIII", edge_id, node_indices[source_id], node_indices[target_id], edge_index, ref_start, len(refs), 0
+            "<IIIIII", node_indices[source_id], node_indices[target_id], edge_index, ref_start, len(refs), 0
         )
-        for edge_index, ((edge_id, source_id, target_id), ref_start, refs) in enumerate(zip(edges, ref_starts, geometry_refs))
+        for edge_index, ((_edge_id, source_id, target_id), ref_start, refs) in enumerate(zip(edges, ref_starts, geometry_refs))
     )
     offsets = [0]
     for entries in adjacency:
@@ -299,7 +314,47 @@ def _graph_section(edges: list[tuple[int, int, int]], geometry_refs: list[list[t
     ref_records = b"".join(
         struct.pack("<IIb3x", directory_index, path_index, 1) for refs in geometry_refs for directory_index, path_index in refs
     )
-    return header + nodes + edge_records + csr + adjacency_records + ref_records
+    # SPEC 4.1: identity is the only part of this section a compressor cannot help with, so it
+    # is stored as gaps between sorted values rather than as eight bytes of hash each.
+    return (
+        header + nodes + edge_records + csr + adjacency_records + ref_records
+        + node_id_block + _identity_block([edge_id for edge_id, *_rest in edges])
+    )
+
+
+def _identity_block(identities: list[int]) -> bytes:
+    """Ascending ids as unsigned LEB128 gaps, the first counted from zero (SPEC 4.1)."""
+    block = bytearray()
+    previous = 0
+    for identity in identities:
+        gap = identity - previous
+        while True:
+            group, gap = gap & 0x7F, gap >> 7
+            block.append(group | (0x80 if gap else 0))
+            if not gap:
+                break
+        previous = identity
+    return bytes(block)
+
+
+def _identities(payload: bytes, offset: int, count: int) -> list[int]:
+    identities = []
+    value = 0
+    at = offset
+    for _index in range(count):
+        gap, shift = 0, 0
+        while True:
+            if at >= len(payload):
+                raise ValueError("identity block runs past the section")
+            group = payload[at]
+            at += 1
+            gap |= (group & 0x7F) << shift
+            shift += 7
+            if not group & 0x80:
+                break
+        value += gap
+        identities.append(value)
+    return identities
 
 
 def _property_section(node_rows: list[dict[str, Any]], edge_rows: list[dict[str, Any]]) -> bytes:
