@@ -1,0 +1,10 @@
+[package]
+name = "trama-roads"
+description = "Reads a road network out of an OpenStreetMap extract, translating one-way tags for the core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+trama-format = { path = "../trama-format" }
+serde_json.workspace = true

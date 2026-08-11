@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 trama-format = { path = "../trama-format" }
 trama-epanet = { path = "../trama-epanet" }
+trama-roads = { path = "../trama-roads" }
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
 

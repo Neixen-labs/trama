@@ -61,6 +61,10 @@ pub fn import(text: &str, crs: &str) -> Result<Import, String> {
 }
 
 impl Importer for EpanetImporter {
+    fn id(&self) -> &'static str {
+        "epanet"
+    }
+
     fn suffixes(&self) -> &'static [&'static str] {
         &[".inp"]
     }
