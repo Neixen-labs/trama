@@ -42,6 +42,14 @@
 
 **Consequence:** The engine's solver client is written against a stream, which is the harder of the two shapes; a WASM runtime can hand it the same bytes without changing it. Nothing yet proves the sandboxed path, and no solver is isolated from the host — an HTTP solver is trusted code at the other end of a socket. The event framing is now load-bearing and belongs in `docs/SOLVER_CONTRACT.md`, not in the example's source.
 
+## 2026-08-11 — The frame benchmark reports rather than gates
+
+**Decision:** `engine/bench` measures 100k segments with animated state and prints frame cost, cadence and late frames. Its workflow runs on `main` and on demand, uploads the rendered frame, and fails only when the harness breaks — never on a frame time. `FRAME_BUDGET_MS` turns the budget into an exit code for whoever runs it on real hardware.
+
+**Why:** `KICKOFF.md` asks for 60fps on a mid-range phone. A hosted runner has no GPU, so its numbers are SwiftShader's; failing a pull request on them would report the runner rather than the change, and passing would be a green check on a claim nobody verified. Two guards do the gating instead, both of which catch a benchmark flattering itself: the run fails if no frame ever bound the state texture, and `--screenshot` makes "it drew nothing, very fast" disprovable.
+
+**Consequence:** No automated protection against a rendering regression; a human runs the benchmark and reads the numbers. Acceptable while the measured cost is 0.6 ms against a 16.7 ms budget, and revisited if that margin ever narrows. The phone target stays unverified and is an owner task, since it needs a real device.
+
 ## 2026-08-11 — Graph identities are stored as ascending deltas
 
 **Decision:** `Node` and `Edge` records no longer carry a `u64 id`. Each array's identities become a block of unsigned LEB128 varints holding the first id and then the gap to each predecessor, addressed from two new header offsets (SPEC 4.1). The specification moves to 0.3.0.
