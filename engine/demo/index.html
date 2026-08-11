@@ -55,7 +55,7 @@
 
       import { openContainer, httpRangeReader, fetchSection } from "/engine/dist/range.js";
       import { createTramaLayer } from "/engine/dist/maplibre.js";
-      import { parseGraph } from "/engine/dist/sections.js";
+      import { parseGeometry, parseGraph } from "/engine/dist/sections.js";
       import { parseStateChannels, StateRing } from "/engine/dist/state.js";
       import { solveDeltas } from "/engine/dist/solver.js";
 
@@ -69,8 +69,21 @@
 
       // demo-grid.trama by default: network.trama is a three-segment test fixture and reads as
       // a broken demo. ?file= loads anything else in fixtures/.
-      const name = new URLSearchParams(location.search).get("file") ?? "demo-grid.trama";
+      const query = new URLSearchParams(location.search);
+      const name = query.get("file") ?? "demo-grid.trama";
       const url = `/fixtures/${name}`;
+      // Any solver speaking the contract will do. net3.trama wants the EPANET one:
+      //   ?file=net3.trama&solver=http://127.0.0.1:8802/solve
+      const SOLVER = query.get("solver") ?? "http://127.0.0.1:8801/solve";
+      // The ring keeps node and edge rows apart and the renderer reads at the edge index, so a
+      // node channel would colour every edge by the wrong entity. Edge channels only.
+      const CHANNEL_NAME = query.get("channel") ?? "flow";
+      // A solver's own clock decides these. The example solver steps every minute; EPANET
+      // reports hourly over a day, and a ring sized for minutes would hold only its first
+      // instant — which looks exactly like a solver that produced one frame and stopped.
+      //   &step=3600&window=86400
+      const STEP_SECONDS = Number(query.get("step") ?? 60);
+      const WINDOW_SECONDS = Number(query.get("window") ?? 600);
 
       /** Counts what the page actually transfers, so the range loading is visible, not claimed. */
       let transferred = 0;
@@ -92,7 +105,7 @@
           container: "map",
           // A background-only style: the demo shows the network, and stays offline.
           style: { version: 8, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#0b0f14" } }] },
-          bounds: boundsOf(tiles),
+          bounds: await boundsOf(tiles),
           fitBoundsOptions: { padding: 48 },
         });
 
@@ -114,9 +127,9 @@
 
         map.on("load", () => addLayer(undefined));
 
-        const SOLVER = "http://127.0.0.1:8801/solve";
-        const CHANNEL_NAME = "flow";
         const scrub = document.querySelector("#scrub");
+        scrub.max = String(WINDOW_SECONDS);
+        scrub.step = String(STEP_SECONDS);
         const clock = document.querySelector("#clock");
         const solveButton = document.querySelector("#solve");
         let solverStatus = "not run";
@@ -134,8 +147,10 @@
             channels,
             nodeIds: graph.nodes.map((node) => node.id),
             edgeIds: graph.edges.map((edge) => edge.id),
-            slots: 16,
-            slotSeconds: 60,
+            // One slot per reported instant, plus one: a ring that wraps mid-window would
+            // drop the oldest frame the scrub can still ask for.
+            slots: Math.min(64, Math.ceil(WINDOW_SECONDS / STEP_SECONDS) + 1),
+            slotSeconds: STEP_SECONDS,
           });
           return { ring, channel };
         }
@@ -146,12 +161,14 @@
             solverStatus = "loading graph";
             report();
             const { ring, channel } = await buildRing();
+            // Ramps from 0 rather than the declared minimum: these solvers write magnitudes,
+            // and mapping a symmetric declared range would paint a network at rest mid-ramp.
+            // A channel with no declared range is filled in from the deltas as they arrive.
+            const range = [0, channel.rangePresent ? channel.declaredMax : 1];
             const state = {
               ring,
               channelId: channel.channelId,
-              // Ramps from 0 rather than the declared minimum: this solver writes non-negative
-              // magnitudes, and mapping the whole declared range would paint rest at mid-ramp.
-              range: [0, channel.declaredMax],
+              range,
               highColor: [1, 0.72, 0.2, 1],
               timeSeconds: () => Number(scrub.value),
             };
@@ -161,14 +178,18 @@
             solverStatus = "solving";
             report();
             let applied = 0;
+            let observed = 0;
+            // No params: every solver declares its own defaults, and one solver's parameter
+            // name is another's rejection.
             for await (const payload of solveDeltas(SOLVER, {
               tramaUrl: new URL(url, location.href).href,
-              params: { channel: CHANNEL_NAME },
               t0Seconds: 0,
               t1Seconds: Number(scrub.max),
             })) {
               applied += ring.apply(payload);
+              observed = Math.max(observed, peakOf(payload, channel.channelId));
             }
+            if (!channel.rangePresent && observed > 0) range[1] = observed;
             layer.refreshState();
             scrub.disabled = false;
             solverStatus = `${applied} deltas`;
@@ -201,13 +222,36 @@
       }
 
       /** Frames whatever container it is given, from its GEOM tile keys. */
-      function boundsOf(tiles) {
-        const corners = tiles.flatMap(({ key: [z, x, y] }) => [
-          lonLat(z, x, y),
-          lonLat(z, x + 1, y + 1),
-        ]);
-        const longitudes = corners.map(([longitude]) => longitude);
-        const latitudes = corners.map(([, latitude]) => latitude);
+      /** Largest magnitude a delta batch carries for one channel, for a self-scaling ramp. */
+      function peakOf(payload, channelId) {
+        const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+        let peak = 0;
+        for (let at = 0; at + 18 <= payload.byteLength; at += 18) {
+          if (view.getUint16(at + 8, true) !== channelId) continue;
+          peak = Math.max(peak, Math.abs(view.getFloat32(at + 14, true)));
+        }
+        return peak;
+      }
+
+      /** Frames the geometry, not the tiles that hold it.
+       *
+       * A z14 tile is about 2.4 km wide, so an 80 m network framed by its tile is a speck in
+       * the middle of the screen. The vertices cost one extra fetch of sections the layer will
+       * ask for anyway, and the panel counts those bytes honestly.
+       */
+      async function boundsOf(tiles) {
+        const points = [];
+        for (const section of tiles) {
+          const [z, x, y] = section.key;
+          for (const path of parseGeometry(await fetchSection(read, section, (stored) => decompress(stored))).paths) {
+            for (let at = 0; at + 1 < path.vertices.length; at += 2) {
+              points.push(lonLat(z, x + path.vertices[at] / 65535, y + path.vertices[at + 1] / 65535));
+            }
+          }
+        }
+        if (points.length === 0) throw new Error("this container holds no path vertices");
+        const longitudes = points.map(([longitude]) => longitude);
+        const latitudes = points.map(([, latitude]) => latitude);
         return [Math.min(...longitudes), Math.min(...latitudes), Math.max(...longitudes), Math.max(...latitudes)];
       }
 
