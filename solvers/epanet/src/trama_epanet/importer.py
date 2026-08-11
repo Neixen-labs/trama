@@ -39,7 +39,10 @@ KINDS = {"JUNCTIONS": "junction", "RESERVOIRS": "reservoir", "TANKS": "tank", "P
 # `[OPTIONS] Units` sets the whole file's unit system, and EPANET reports pressure in psi for
 # the US flow units and in metres for the SI ones. A channel declaration that named the wrong
 # one would be a lie the file tells every solver that reads it.
-US_FLOW_UNITS = {"cfs", "gpm", "mgd", "imgd", "afd"}
+US_FLOW_UNITS = ("cfs", "gpm", "mgd", "imgd", "afd")
+SI_FLOW_UNITS = ("lps", "lpm", "mld", "cmh", "cmd")
+FLOW_UNITS = US_FLOW_UNITS + SI_FLOW_UNITS
+PRESSURE_UNITS = ("psi", "m")
 DEFAULT_FLOW_UNITS = "gpm"  # EPANET's own default when [OPTIONS] says nothing
 
 
@@ -152,6 +155,10 @@ def channels(document: inp.Document) -> list[dict[str, Any]]:
         (row[-1].lower() for row in document.rows("OPTIONS") if row[0].lower() == "units"),
         DEFAULT_FLOW_UNITS,
     )
+    # An unknown keyword would become a declared unit no solver could match, and the mismatch
+    # would surface at solve time rather than here, where the file that caused it is in hand.
+    if flow_units not in FLOW_UNITS:
+        raise ValueError(f"[OPTIONS] Units names {flow_units!r}, which is not an EPANET flow unit")
     return [
         {"name": "pressure", "entity_kind": "node", "unit": "psi" if flow_units in US_FLOW_UNITS else "m"},
         {"name": "flow", "entity_kind": "edge", "unit": flow_units},

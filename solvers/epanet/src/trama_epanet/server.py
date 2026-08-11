@@ -27,7 +27,10 @@ from trama_epanet.solver import (
 )
 
 SOLVER_ID = "epanet"
-CONTRACT_VERSION = "0.1.0"
+CONTRACT_VERSION = "0.2.0"
+# Both, because nothing in the wire protocol changed between them: 0.2.0 only added a way for
+# a manifest to name more than one unit.
+CONTRACT_VERSIONS = ("0.1.0", "0.2.0")
 # One event per 256 deltas: contract section 6 allows batching, and an event per delta would
 # spend more bytes on SSE framing than on payload.
 DELTAS_PER_EVENT = 256
@@ -94,8 +97,8 @@ class SolveHandler(BaseHTTPRequestHandler):
             raise _Rejected("invalid_request", f"body is not JSON: {error}") from error
         if not isinstance(request, dict):
             raise _Rejected("invalid_request", "body must be a JSON object")
-        if request.get("contract_version") != CONTRACT_VERSION:
-            raise _Rejected("unsupported_contract", f"this solver speaks {CONTRACT_VERSION}")
+        if request.get("contract_version") not in CONTRACT_VERSIONS:
+            raise _Rejected("unsupported_contract", f"this solver speaks {', '.join(CONTRACT_VERSIONS)}")
         url = (request.get("trama") or {}).get("url")
         if not isinstance(url, str) or not url:
             raise _Rejected("invalid_request", "trama.url is required")
