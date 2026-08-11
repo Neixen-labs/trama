@@ -25,3 +25,9 @@ packages = ["src/trama_epanet"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# The SWIG bindings ship no py.typed marker, so the toolkit arrives untyped. Silencing it here
+# keeps the rest of the package strictly checked instead of turning the setting off globally.
+[[tool.mypy.overrides]]
+module = "epanet.*"
+ignore_missing_imports = true

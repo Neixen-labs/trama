@@ -58,6 +58,18 @@ def export_inp(source: Path, destination: Path, crs: str) -> None:
     destination.write_text(inp.serialize(inp.Document([*title, *entities, *rest, *geometry, *end])))
 
 
+def entity_ids(source: Path) -> tuple[dict[str, int], dict[str, int]]:
+    """EPANET names mapped to stable `u64` identities, for nodes and for links.
+
+    A solver writes deltas against those identities; the names only exist to talk to EPANET.
+    """
+    nodes, edges = _features(source)
+    return (
+        {feature["properties"]["epanet:name"]: int(feature["properties"]["_trama_id"]) for feature in nodes},
+        {feature["properties"]["epanet:name"]: int(feature["properties"]["_trama_id"]) for feature in edges},
+    )
+
+
 def _remainder(source: Path) -> inp.Document:
     """The sections the core carried without reading them."""
     for kind, _key, payload in read_sections(source.read_bytes()):
