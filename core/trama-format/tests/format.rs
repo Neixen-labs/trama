@@ -353,8 +353,7 @@ fn edge_paths_returns_one_centerline_per_edge_in_metres() {
 fn edge_paths_measures_a_segment_against_its_known_ground_length() {
     // Two points 0.001 degrees of latitude apart: about 111 m on the ground, and Web Mercator
     // stretches that by 1/cos(latitude), so near 40.4 degrees it measures about 146 m.
-    let container =
-        compile(&[line("a", json!([[-3.704, 40.416], [-3.704, 40.417]]), json!({}))], &[], &[]).unwrap();
+    let container = compile(&[line("a", json!([[-3.704, 40.416], [-3.704, 40.417]]), json!({}))], &[], &[]).unwrap();
 
     let path = &trama_format::edge_paths(&container).unwrap()[0];
 
