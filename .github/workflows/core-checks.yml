@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Core checks
+
+on:
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'fixtures/**'
+      - '.github/workflows/core-checks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'core/**'
+      - 'fixtures/**'
+      - '.github/workflows/core-checks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --release
+
+  wasm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      # zstd is C, so the wasm build needs a clang carrying the WebAssembly backend. Linux
+      # ships one; macOS does not, which is why a local wasm build wants brew's llvm.
+      - run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Build the browser module
+        env:
+          CC: clang
+        run: cargo build --release --target wasm32-unknown-unknown -p trama-wasm
+      - name: Report its size
+        run: |
+          module=target/wasm32-unknown-unknown/release/trama_wasm.wasm
+          echo "raw    $(stat -c%s "$module") bytes"
+          echo "brotli $(brotli -q 11 -c "$module" | wc -c) bytes"

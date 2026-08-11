@@ -62,10 +62,7 @@ fn the_rebuilt_network_simulates_identically() {
         let actual = results(&rebuilt);
 
         assert_eq!(actual.len(), expected.len(), "{name} produced a different number of samples");
-        let worst = expected
-            .iter()
-            .map(|(key, value)| (actual[key] - value).abs())
-            .fold(0.0f32, f32::max);
+        let worst = expected.iter().map(|(key, value)| (actual[key] - value).abs()).fold(0.0f32, f32::max);
         assert!(worst < 1e-3, "{name} drifted by {worst}");
     }
 }

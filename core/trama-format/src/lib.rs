@@ -10,10 +10,10 @@ mod import;
 mod read;
 mod write;
 
-pub use export::{export, Export};
-pub use import::{parse_options, Import, Importer};
-pub use read::{parse_graph, read_sections, Edge, GeometryReference, Graph, Node, Section};
-pub use write::{compile, Extra};
+pub use export::{Export, export};
+pub use import::{Import, Importer, parse_options};
+pub use read::{Edge, GeometryReference, Graph, Node, Section, parse_graph, read_sections};
+pub use write::{Extra, compile};
 
 /// CRC-32C (Castagnoli), the checksum every section carries.
 pub(crate) fn crc32c(data: &[u8]) -> u32 {

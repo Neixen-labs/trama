@@ -22,12 +22,7 @@ impl Document {
 
     pub fn without(&self, names: &[&str]) -> Document {
         Document {
-            sections: self
-                .sections
-                .iter()
-                .filter(|(name, _body)| !names.contains(&name.as_str()))
-                .cloned()
-                .collect(),
+            sections: self.sections.iter().filter(|(name, _body)| !names.contains(&name.as_str())).cloned().collect(),
         }
     }
 }
@@ -85,9 +80,5 @@ pub fn section(name: &str, header: &str, rows: Vec<Vec<String>>) -> (String, Vec
 
 /// Render a value back into a field, without the trailing `.0` EPANET never writes.
 pub fn text(value: f64) -> String {
-    if value == value.trunc() && value.abs() < 1e15 {
-        format!("{}", value as i64)
-    } else {
-        format!("{value}")
-    }
+    if value == value.trunc() && value.abs() < 1e15 { format!("{}", value as i64) } else { format!("{value}") }
 }

@@ -6,7 +6,7 @@
 //! solving the user's network and not an approximation of it.
 
 use std::collections::BTreeMap;
-use std::ffi::{c_char, c_int, c_long, CString};
+use std::ffi::{CString, c_char, c_int, c_long};
 use std::path::Path;
 
 use trama_format::{export, read_sections};
@@ -64,14 +64,18 @@ pub fn solve(
     std::fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
     let network = workspace.join("network.inp");
     std::fs::write(&network, export_inp(container, WORKING_CRS)?).map_err(|error| error.to_string())?;
-    let result = simulate(&network, &workspace.join("report.rpt"), &nodes, &links, pressure, flow, t0_seconds, t1_seconds);
+    let result =
+        simulate(&network, &workspace.join("report.rpt"), &nodes, &links, pressure, flow, t0_seconds, t1_seconds);
     let _ = std::fs::remove_dir_all(&workspace);
     result
 }
 
+/// EPANET names mapped to stable `u64` identities, nodes first and links second.
+pub type Identities = (BTreeMap<String, u64>, BTreeMap<String, u64>);
+
 /// EPANET names mapped to stable `u64` identities, for nodes and for links. A solver writes
 /// deltas against those identities; the names only exist to talk to EPANET.
-pub fn entity_ids(container: &[u8]) -> Result<(BTreeMap<String, u64>, BTreeMap<String, u64>), String> {
+pub fn entity_ids(container: &[u8]) -> Result<Identities, String> {
     let sections = read_sections(container)?;
     if !sections.iter().any(|section| &section.kind == b"XTRA") {
         return Err("container was not compiled from an EPANET network".into());
@@ -105,7 +109,8 @@ fn simulate(
     t0_seconds: f32,
     t1_seconds: f32,
 ) -> Result<Vec<u8>, String> {
-    let path = |value: &Path| CString::new(value.to_string_lossy().as_bytes()).map_err(|_| "path is not usable".to_string());
+    let path =
+        |value: &Path| CString::new(value.to_string_lossy().as_bytes()).map_err(|_| "path is not usable".to_string());
     let network = path(network)?;
     let report = path(report)?;
     let empty = CString::new("").unwrap();
@@ -129,12 +134,22 @@ fn simulate(
                 if seconds >= t0_seconds && seconds <= t1_seconds {
                     for index in 1..=node_count {
                         if let Some(identity) = nodes.get(&identifier(project, index, true)?) {
-                            records.extend_from_slice(&pack(*identity, pressure, seconds, value(project, index, PRESSURE, true)?));
+                            records.extend_from_slice(&pack(
+                                *identity,
+                                pressure,
+                                seconds,
+                                value(project, index, PRESSURE, true)?,
+                            ));
                         }
                     }
                     for index in 1..=link_count {
                         if let Some(identity) = links.get(&identifier(project, index, false)?) {
-                            records.extend_from_slice(&pack(*identity, flow, seconds, value(project, index, FLOW, false)?));
+                            records.extend_from_slice(&pack(
+                                *identity,
+                                flow,
+                                seconds,
+                                value(project, index, FLOW, false)?,
+                            ));
                         }
                     }
                 }

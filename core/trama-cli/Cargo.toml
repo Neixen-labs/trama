@@ -14,3 +14,6 @@ trama-format = { path = "../trama-format" }
 trama-epanet = { path = "../trama-epanet" }
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+trama-format = { path = "../trama-format" }

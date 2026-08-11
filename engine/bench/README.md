@@ -3,7 +3,7 @@
 The phase 4 criterion in `KICKOFF.md`: 100k segments with animated state at 60fps.
 
 ```bash
-uv run --project ../compiler python ../compiler/benchmarks/grid_container.py --side 224 --out /tmp/bench.trama
+cargo run --release --manifest-path ../core/Cargo.toml -p trama-cli --bin grid -- --side 224 --out /tmp/bench.trama
 npm run build
 npm run bench -- --container /tmp/bench.trama --screenshot /tmp/frame.png
 ```

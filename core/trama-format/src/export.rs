@@ -6,12 +6,15 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::read::{parse_graph, read_sections, GeometryReference};
+use crate::read::{GeometryReference, parse_graph, read_sections};
 
 const WORLD: f64 = 40075016.68557849;
 const EXTENT: f64 = 65535.0;
+
+/// Decoded geometry by directory index, with the tile key each payload belongs to.
+type Tiles<'a> = BTreeMap<usize, (&'a (u32, u32, u32), Vec<Vec<(u16, u16)>>)>;
 
 pub struct Export {
     pub nodes: Value,
@@ -23,7 +26,7 @@ pub fn export(data: &[u8]) -> Result<Export, String> {
     let sections = read_sections(data)?;
     let graph = sections.iter().find(|s| &s.kind == b"GRPH").ok_or("container is missing a GRPH section")?;
     let properties = sections.iter().find(|s| &s.kind == b"PROP").ok_or("container is missing a PROP section")?;
-    let geometry: BTreeMap<usize, (&(u32, u32, u32), Vec<Vec<(u16, u16)>>)> = sections
+    let geometry: Tiles = sections
         .iter()
         .enumerate()
         .filter(|(_index, section)| &section.kind == b"GEOM")
@@ -54,7 +57,11 @@ pub fn export(data: &[u8]) -> Result<Export, String> {
         .enumerate()
         .filter_map(|(index, node)| {
             positions.get(&(index as u32)).map(|(x, y)| {
-                feature(json!({"type": "Point", "coordinates": [x, y]}), node.id, node_rows.get(node.property_row as usize))
+                feature(
+                    json!({"type": "Point", "coordinates": [x, y]}),
+                    node.id,
+                    node_rows.get(node.property_row as usize),
+                )
             })
         })
         .collect();
@@ -74,15 +81,11 @@ fn feature(geometry: Value, id: u64, row: Option<&BTreeMap<String, Value>>) -> V
     json!({"type": "Feature", "geometry": geometry, "properties": Value::Object(properties)})
 }
 
-fn edge_coordinates(
-    references: &[GeometryReference],
-    geometry: &BTreeMap<usize, (&(u32, u32, u32), Vec<Vec<(u16, u16)>>)>,
-) -> Result<Vec<(f64, f64)>, String> {
+fn edge_coordinates(references: &[GeometryReference], geometry: &Tiles) -> Result<Vec<(f64, f64)>, String> {
     let mut coordinates: Vec<(f64, f64)> = Vec::new();
     for reference in references {
-        let (key, paths) = geometry
-            .get(&(reference.directory_index as usize))
-            .ok_or("edge references a section that is not GEOM")?;
+        let (key, paths) =
+            geometry.get(&(reference.directory_index as usize)).ok_or("edge references a section that is not GEOM")?;
         let path = paths.get(reference.path_index as usize).ok_or("edge references a missing path")?;
         let mut piece: Vec<(f64, f64)> = path.iter().map(|point| wgs84(dequantize(*point, **key))).collect();
         if reference.direction < 0 {
@@ -186,7 +189,13 @@ fn read_columns(
     Ok(rows)
 }
 
-fn read_value(payload: &[u8], values_offset: usize, dense: usize, value_type: u8, strings: &[String]) -> Result<Value, String> {
+fn read_value(
+    payload: &[u8],
+    values_offset: usize,
+    dense: usize,
+    value_type: u8,
+    strings: &[String],
+) -> Result<Value, String> {
     match value_type {
         1 => {
             let at = values_offset + dense * 8;
@@ -237,8 +246,7 @@ fn dequantize(point: (u16, u16), tile: (u32, u32, u32)) -> (f64, f64) {
 
 fn wgs84(point: (f64, f64)) -> (f64, f64) {
     let longitude = point.0 * 180.0 / (WORLD / 2.0);
-    let latitude = (2.0 * (point.1 * std::f64::consts::PI / (WORLD / 2.0)).exp().atan()
-        - std::f64::consts::PI / 2.0)
-        .to_degrees();
+    let latitude =
+        (2.0 * (point.1 * std::f64::consts::PI / (WORLD / 2.0)).exp().atan() - std::f64::consts::PI / 2.0).to_degrees();
     (longitude, latitude)
 }

@@ -7,7 +7,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// One event per 256 deltas: the contract allows batching, and an event per delta would spend
 /// more bytes on framing than on payload.
@@ -75,7 +75,10 @@ fn handle(solver: &dyn Solver, mut stream: TcpStream) {
         return;
     }
     if path != "/solve" {
-        reject(&mut stream, &Rejection { status: 404, code: "invalid_request", message: format!("no such endpoint {path}") });
+        reject(
+            &mut stream,
+            &Rejection { status: 404, code: "invalid_request", message: format!("no such endpoint {path}") },
+        );
         return;
     }
     match prepare(solver, &body).and_then(|request| solver.solve(&request)) {
@@ -85,7 +88,8 @@ fn handle(solver: &dyn Solver, mut stream: TcpStream) {
 }
 
 fn prepare(solver: &dyn Solver, body: &[u8]) -> Result<Request, Rejection> {
-    let parsed: Value = serde_json::from_slice(body).map_err(|error| Rejection::request(format!("body is not JSON: {error}")))?;
+    let parsed: Value =
+        serde_json::from_slice(body).map_err(|error| Rejection::request(format!("body is not JSON: {error}")))?;
     if !parsed.is_object() {
         return Err(Rejection::request("body must be a JSON object"));
     }
@@ -97,7 +101,10 @@ fn prepare(solver: &dyn Solver, body: &[u8]) -> Result<Request, Rejection> {
             message: format!("this solver speaks {}", solver.contract_versions().join(", ")),
         });
     }
-    let url = parsed["trama"]["url"].as_str().filter(|url| !url.is_empty()).ok_or_else(|| Rejection::request("trama.url is required"))?;
+    let url = parsed["trama"]["url"]
+        .as_str()
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| Rejection::request("trama.url is required"))?;
     Ok(Request {
         container: fetch(url)?,
         params: parsed.get("params").cloned().unwrap_or_else(|| json!({})),
@@ -118,15 +125,28 @@ fn fetch(url: &str) -> Result<Vec<u8>, Rejection> {
         Some((port, path)) => (format!("127.0.0.1{port}"), format!("/{path}")),
         None => (format!("127.0.0.1{rest}"), "/".to_string()),
     };
-    let mut stream = TcpStream::connect(&authority).map_err(|error| Rejection { status: 400, code: "fetch_failed", message: error.to_string() })?;
+    let mut stream = TcpStream::connect(&authority).map_err(|error| Rejection {
+        status: 400,
+        code: "fetch_failed",
+        message: error.to_string(),
+    })?;
     let request = format!("GET {path} HTTP/1.0\r\nHost: {authority}\r\nAccept: */*\r\n\r\n");
-    stream.write_all(request.as_bytes()).map_err(|error| Rejection { status: 400, code: "fetch_failed", message: error.to_string() })?;
+    stream.write_all(request.as_bytes()).map_err(|error| Rejection {
+        status: 400,
+        code: "fetch_failed",
+        message: error.to_string(),
+    })?;
     let mut response = Vec::new();
-    stream.take(MAXIMUM_CONTAINER_BYTES as u64 + 1).read_to_end(&mut response).map_err(|error| Rejection { status: 400, code: "fetch_failed", message: error.to_string() })?;
-    let separator = response
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| Rejection { status: 400, code: "fetch_failed", message: "no HTTP response headers".into() })?;
+    stream.take(MAXIMUM_CONTAINER_BYTES as u64 + 1).read_to_end(&mut response).map_err(|error| Rejection {
+        status: 400,
+        code: "fetch_failed",
+        message: error.to_string(),
+    })?;
+    let separator = response.windows(4).position(|window| window == b"\r\n\r\n").ok_or_else(|| Rejection {
+        status: 400,
+        code: "fetch_failed",
+        message: "no HTTP response headers".into(),
+    })?;
     Ok(response[separator + 4..].to_vec())
 }
 
@@ -143,10 +163,10 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<(String, String, Vec<
         if reader.read_line(&mut line)? == 0 || line.trim().is_empty() {
             break;
         }
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                length = value.trim().parse().unwrap_or(0);
-            }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().unwrap_or(0);
         }
     }
     let mut body = vec![0u8; length];
@@ -173,10 +193,7 @@ fn stream_deltas(stream: &mut TcpStream, solver: &dyn Solver, deltas: &[u8]) {
 
 fn reject(stream: &mut TcpStream, rejection: &Rejection) {
     // A failure before the stream starts is still one terminal error event, per section 6.
-    let body = format!(
-        "event: error\ndata: {}\n\n",
-        json!({"code": rejection.code, "message": rejection.message})
-    );
+    let body = format!("event: error\ndata: {}\n\n", json!({"code": rejection.code, "message": rejection.message}));
     let _ = write!(
         stream,
         "HTTP/1.1 {} {}\r\nContent-Type: text/event-stream\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -191,7 +208,10 @@ fn base64(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut encoded = String::with_capacity(data.len().div_ceil(3) * 4);
     for group in data.chunks(3) {
-        let triple = group.iter().enumerate().fold(0u32, |packed, (index, byte)| packed | (u32::from(*byte) << (16 - 8 * index)));
+        let triple = group
+            .iter()
+            .enumerate()
+            .fold(0u32, |packed, (index, byte)| packed | (u32::from(*byte) << (16 - 8 * index)));
         for slot in 0..4 {
             if slot <= group.len() {
                 encoded.push(ALPHABET[(triple >> (18 - 6 * slot) & 0x3F) as usize] as char);

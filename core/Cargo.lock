@@ -659,6 +659,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trama-example"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "trama-format",
+ "trama-solver",
+]
+
+[[package]]
 name = "trama-format"
 version = "0.1.0"
 dependencies = [
@@ -669,6 +678,14 @@ dependencies = [
 
 [[package]]
 name = "trama-solver"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "trama-format",
+]
+
+[[package]]
+name = "trama-wasm"
 version = "0.1.0"
 dependencies = [
  "serde_json",

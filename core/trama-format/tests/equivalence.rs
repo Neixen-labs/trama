@@ -11,7 +11,8 @@ fn repository() -> PathBuf {
 }
 
 fn features(name: &str) -> Vec<Value> {
-    let source: Value = serde_json::from_str(&fs::read_to_string(repository().join("fixtures").join(name)).unwrap()).unwrap();
+    let source: Value =
+        serde_json::from_str(&fs::read_to_string(repository().join("fixtures").join(name)).unwrap()).unwrap();
     source["features"].as_array().cloned().unwrap()
 }
 
@@ -35,7 +36,11 @@ fn reads_back_what_it_wrote() {
     assert_eq!(parsed.nodes.len(), 4);
     assert_eq!(parsed.edges.len(), 3);
     let mut identities: Vec<u64> = parsed.nodes.iter().map(|node| node.id).collect();
-    let sorted = { let mut copy = identities.clone(); copy.sort_unstable(); copy };
+    let sorted = {
+        let mut copy = identities.clone();
+        copy.sort_unstable();
+        copy
+    };
     assert_eq!(identities, sorted, "SPEC 4 requires the node array sorted by ascending id");
     identities.dedup();
     assert_eq!(identities.len(), 4);

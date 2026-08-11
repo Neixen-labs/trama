@@ -24,6 +24,10 @@ pub struct Extra {
 
 type Point = (f64, f64);
 type TileKey = (u32, u32, u32);
+/// An edge on its way into the file: identity, endpoints, geometry per tile, and its row.
+type EdgeRecord = (u64, u64, u64, Vec<(TileKey, Vec<Point>)>, BTreeMap<String, Value>);
+type TilePaths = BTreeMap<TileKey, Vec<(u32, Vec<(u16, u16)>)>>;
+type ColumnGroup<'a> = (u8, &'a [&'a BTreeMap<String, Value>], Vec<String>);
 
 pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Result<Vec<u8>, String> {
     let lines: Vec<&Value> = features.iter().filter(|f| geometry_type(f) == "LineString").collect();
@@ -34,16 +38,11 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
 
     let mut projected_lines: Vec<(String, Vec<Point>)> = Vec::with_capacity(lines.len());
     for (index, feature) in lines.iter().enumerate() {
-        let coordinates = feature["geometry"]["coordinates"]
-            .as_array()
-            .ok_or("LineString requires coordinates")?;
+        let coordinates = feature["geometry"]["coordinates"].as_array().ok_or("LineString requires coordinates")?;
         if coordinates.len() < 2 {
             return Err("LineString requires at least two coordinates".into());
         }
-        let path = coordinates
-            .iter()
-            .map(|pair| web_mercator(number(&pair[0]), number(&pair[1])))
-            .collect();
+        let path = coordinates.iter().map(|pair| web_mercator(number(&pair[0]), number(&pair[1]))).collect();
         projected_lines.push((feature_id(feature, index), path));
     }
 
@@ -65,7 +64,7 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
     }
 
     // Edges are sorted by stable id, as SPEC 4 requires of the array they become.
-    let mut ordered: Vec<(u64, u64, u64, Vec<(TileKey, Vec<Point>)>, BTreeMap<String, Value>)> = Vec::new();
+    let mut ordered: Vec<EdgeRecord> = Vec::new();
     for (feature, (id, path)) in lines.iter().zip(&projected_lines) {
         let edge_id = match declared_id(feature)? {
             Some(declared) => declared,
@@ -88,12 +87,9 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
         }
         identities.into_iter().collect()
     };
-    let node_index: BTreeMap<u64, u32> =
-        node_order.iter().enumerate().map(|(index, id)| (*id, index as u32)).collect();
-    let rows_by_id: BTreeMap<u64, &BTreeMap<String, Value>> = node_properties
-        .iter()
-        .filter_map(|(cell, row)| node_ids.get(cell).map(|id| (*id, row)))
-        .collect();
+    let node_index: BTreeMap<u64, u32> = node_order.iter().enumerate().map(|(index, id)| (*id, index as u32)).collect();
+    let rows_by_id: BTreeMap<u64, &BTreeMap<String, Value>> =
+        node_properties.iter().filter_map(|(cell, row)| node_ids.get(cell).map(|id| (*id, row))).collect();
     let empty = BTreeMap::new();
     let node_rows: Vec<&BTreeMap<String, Value>> =
         node_order.iter().map(|id| *rows_by_id.get(id).unwrap_or(&&empty)).collect();
@@ -110,8 +106,7 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
     };
     let tile_index: BTreeMap<TileKey, u32> =
         tiles.iter().enumerate().map(|(index, key)| (*key, index as u32)).collect();
-    let mut tile_paths: BTreeMap<TileKey, Vec<(u32, Vec<(u16, u16)>)>> =
-        tiles.iter().map(|key| (*key, Vec::new())).collect();
+    let mut tile_paths: TilePaths = tiles.iter().map(|key| (*key, Vec::new())).collect();
     let mut geometry_refs: Vec<Vec<(u32, u32)>> = Vec::with_capacity(ordered.len());
     for (edge_index, record) in ordered.iter().enumerate() {
         let mut refs = Vec::new();
@@ -123,17 +118,15 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
         geometry_refs.push(refs);
     }
 
-    let edges: Vec<(u64, u32, u32)> = ordered
-        .iter()
-        .map(|record| (record.0, node_index[&record.1], node_index[&record.2]))
-        .collect();
+    let edges: Vec<(u64, u32, u32)> =
+        ordered.iter().map(|record| (record.0, node_index[&record.1], node_index[&record.2])).collect();
 
     let mut decoded: Vec<(&[u8; 4], u32, TileKey, Vec<u8>)> = Vec::new();
     for tile in &tiles {
         decoded.push((b"GEOM", 1, *tile, geometry_section(&tile_paths[tile])));
     }
     decoded.push((b"GRPH", 1, (0, 0, 0), graph_section(&edges, &node_order, &geometry_refs)));
-    decoded.push((b"PROP", 1, (0, 0, 0), property_section(&node_rows, &edge_rows)));
+    decoded.push((b"PROP", 1, (0, 0, 0), property_section(&node_rows, &edge_rows)?));
     decoded.push((b"STCH", 1, (0, 0, 0), state_channel_section(channels)?));
     for payload in extra_sections(extras)? {
         decoded.push((b"XTRA", 0, (0, 0, 0), payload));
@@ -209,11 +202,7 @@ fn feature_id(feature: &Value, index: usize) -> String {
 /// Python's `str(float)`: a trailing `.0` where Rust would print an integer.
 fn python_float(value: f64) -> String {
     let rendered = format!("{value}");
-    if rendered.contains(['.', 'e', 'n', 'i']) {
-        rendered
-    } else {
-        format!("{rendered}.0")
-    }
+    if rendered.contains(['.', 'e', 'n', 'i']) { rendered } else { format!("{rendered}.0") }
 }
 
 fn row_of(feature: &Value) -> BTreeMap<String, Value> {
@@ -279,15 +268,8 @@ fn quantize(point: Point, tile: TileKey) -> (u16, u16) {
 fn round_half_even(value: f64) -> f64 {
     let floor = value.floor();
     let fraction = value - floor;
-    if fraction > 0.5 {
-        floor + 1.0
-    } else if fraction < 0.5 {
-        floor
-    } else if (floor as i64) % 2 == 0 {
-        floor
-    } else {
-        floor + 1.0
-    }
+    let upward = fraction > 0.5 || (fraction == 0.5 && (floor as i64) % 2 != 0);
+    if upward { floor + 1.0 } else { floor }
 }
 
 fn node_cell(point: Point) -> (u64, u64) {
@@ -505,9 +487,12 @@ fn string_dictionary(values: &[String]) -> Vec<u8> {
     block
 }
 
-fn property_section(node_rows: &[&BTreeMap<String, Value>], edge_rows: &[&BTreeMap<String, Value>]) -> Vec<u8> {
+fn property_section(
+    node_rows: &[&BTreeMap<String, Value>],
+    edge_rows: &[&BTreeMap<String, Value>],
+) -> Result<Vec<u8>, String> {
     let groups: [(u8, &[&BTreeMap<String, Value>]); 2] = [(1, node_rows), (2, edge_rows)];
-    let used: Vec<(u8, &[&BTreeMap<String, Value>], Vec<String>)> = groups
+    let used: Vec<ColumnGroup> = groups
         .iter()
         .map(|(kind, rows)| {
             let mut keys: BTreeSet<String> = BTreeSet::new();
@@ -528,8 +513,7 @@ fn property_section(node_rows: &[&BTreeMap<String, Value>], edge_rows: &[&BTreeM
         }
         all.into_iter().collect()
     };
-    let key_ids: BTreeMap<&String, u32> =
-        keys.iter().enumerate().map(|(index, key)| (key, index as u32)).collect();
+    let key_ids: BTreeMap<&String, u32> = keys.iter().enumerate().map(|(index, key)| (key, index as u32)).collect();
     let string_values: Vec<String> = {
         let mut all: BTreeSet<String> = BTreeSet::new();
         for (_kind, rows) in &groups {
@@ -569,7 +553,7 @@ fn property_section(node_rows: &[&BTreeMap<String, Value>], edge_rows: &[&BTreeM
                 .map(|(index, _row)| index)
                 .collect();
             let values: Vec<&Value> = present.iter().map(|index| &rows[*index][key]).collect();
-            let kind_of_column = column_type(key, &values).unwrap();
+            let kind_of_column = column_type(key, &values)?;
             let presence_offset = values_offset + bodies.len() as u32;
             columns.extend_from_slice(&key_ids[key].to_le_bytes());
             columns.push(*kind);
@@ -591,18 +575,22 @@ fn property_section(node_rows: &[&BTreeMap<String, Value>], edge_rows: &[&BTreeM
                 }
                 3 => {
                     for value in &values {
-                        let text = value.as_str().unwrap().to_string();
+                        let text = value.as_str().ok_or("property value is not a string")?.to_string();
                         bodies.extend_from_slice(&string_ids[&text].to_le_bytes());
                     }
                 }
                 2 => {
                     for value in &values {
-                        bodies.extend_from_slice(&value.as_i64().unwrap().to_le_bytes());
+                        bodies.extend_from_slice(
+                            &value.as_i64().ok_or("property value is not an integer")?.to_le_bytes(),
+                        );
                     }
                 }
                 _ => {
                     for value in &values {
-                        bodies.extend_from_slice(&value.as_f64().unwrap().to_le_bytes());
+                        bodies.extend_from_slice(
+                            &value.as_f64().ok_or("property value is not a finite number")?.to_le_bytes(),
+                        );
                     }
                 }
             }
@@ -630,7 +618,7 @@ fn property_section(node_rows: &[&BTreeMap<String, Value>], edge_rows: &[&BTreeM
     section.extend_from_slice(&enum_dictionary);
     section.extend_from_slice(&columns);
     section.extend_from_slice(&bodies);
-    section
+    Ok(section)
 }
 
 fn state_channel_section(channels: &[Value]) -> Result<Vec<u8>, String> {
@@ -655,10 +643,10 @@ fn state_channel_section(channels: &[Value]) -> Result<Vec<u8>, String> {
         if minimum.is_some() != maximum.is_some() {
             return Err(format!("channel '{name}' declares half a range"));
         }
-        if let (Some(low), Some(high)) = (minimum, maximum) {
-            if low > high {
-                return Err(format!("channel '{name}' declares an inverted range"));
-            }
+        if let (Some(low), Some(high)) = (minimum, maximum)
+            && low > high
+        {
+            return Err(format!("channel '{name}' declares an inverted range"));
         }
         let interpolate = channel.get("interpolate").and_then(Value::as_bool).unwrap_or(true);
         let flags = u32::from(minimum.is_some()) | if interpolate { 2 } else { 0 };
@@ -698,7 +686,9 @@ fn extra_sections(extras: &[Extra]) -> Result<Vec<Vec<u8>>, String> {
     }
     let mut payloads = Vec::new();
     for extra in ordered {
-        if extra.owner.is_empty() || !extra.owner.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+        if extra.owner.is_empty()
+            || !extra.owner.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
             return Err(format!(
                 "XTRA owner must be a solver id of lowercase letters, digits and '-', got '{}'",
                 extra.owner

@@ -18,10 +18,12 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 
 | Piece | What works today | Not yet |
 |---|---|---|
-| `compiler/` — `trama-engine` (Python) | GeoJSON and, through an installed importer, EPANET `.inp`; `compile`, `validate`, and `export --to geojson` back out. Byte-identical output for identical input. Typed node and edge properties, declared state channels, and opaque records the core carries without reading. | CSV points, polygons, GeoPackage export |
+| `core/trama-format` (Rust) | The container: writer, reader, GeoJSON export. Byte-identical output for identical input, typed node and edge properties, declared state channels, and opaque records it carries without reading. | polygons, GeoPackage export |
+| `core/trama-cli` (Rust) | `trama compile`, `validate`, `export --to geojson|inp`, and the grid generator behind the benchmarks. | CSV points |
+| `core/trama-epanet` (Rust) | `.inp` import and export, and a solver that runs the EPANET 2.3 toolkit and streams pressure and flow. Round trip verified by simulation on Net1 and Net3. | no WASM build of the solver itself yet |
+| `core/trama-example` (Rust) | Reference solver over HTTP + Server-Sent Events, to keep the contract under a real implementation. | — |
+| `core/trama-wasm` (Rust) | The compiler in a browser: 121 kB brotli, and byte-identical to the command line. | it compiles GeoJSON only; `.inp` import needs the EPANET crate too |
 | `engine/` — `@trama/core` (TypeScript) | Range reader for header, directory, and sections, each checked against its CRC-32C; instanced WebGL2 line renderer with screen-constant width; MapLibre custom layer; state ring buffer feeding an R32F texture; SSE client for solver deltas | WebGPU, OPFS offline cache, fly-through camera |
-| `solvers/epanet` | `.inp` import and export, and a solver that runs the OWA-EPANET toolkit and streams pressure and flow. Round trip verified by simulation on Net1 and Net3. | Simulating needs a platform with a wheel; no WASM runtime yet |
-| `solvers/example-diffusion` | Reference solver over HTTP + Server-Sent Events, with a contract test suite that runs against a real server | — |
 | `site/` | Landing page at [trama.build](https://trama.build) | The in-browser playground is phase 5 |
 
 ### Measured
@@ -30,11 +32,13 @@ Numbers from `compiler/benchmarks/synthetic_grid.py` and `engine/bench/`, not es
 
 | | Result | Criterion |
 |---|---|---|
-| Compile 49,612 edges | 5.7 s | under 30 s |
-| Container size | 19.0% of the source GeoJSON | under 20% |
+| Compile 49,612 edges | 3.0 s | under 30 s |
+| Container size | 12.1% of the equivalent export, 20.9% of a compact hand-written source | under 20% |
 | Draw 103,040 segments with animated state | 0.6 ms per frame, p95 0.8 ms | under 16.7 ms |
 
 The frame budget has twenty times the headroom it needs on integrated graphics from 2017. Loading state is where a large network first costs anything: filling sixteen ring slots for 99,904 edges is about 470 ms, or 290 ns per delta.
+
+The size criterion has two honest answers because "the equivalent GeoJSON" is ambiguous. Against the export — same entities, same IDs, full precision — the container is 12.1%. Against a compact hand-written source, which omits nodes and rounds coordinates, it is 20.9% and misses the target.
 
 - [File format specification](docs/SPEC.md)
 - [Solver contract](docs/SOLVER_CONTRACT.md)
@@ -44,28 +48,28 @@ The frame budget has twenty times the headroom it needs on integrated graphics f
 ### Run it
 
 ```bash
-cd compiler && uv run trama compile ../fixtures/network.geojson out.trama
-uv run trama validate out.trama
+cd core && cargo build --release
+./target/release/trama compile ../fixtures/network.geojson out.trama
+./target/release/trama validate out.trama
 ```
 
-An EPANET network needs the importer that reads it, and a coordinate reference system, because a `.inp` declares none:
+An EPANET network needs a coordinate reference system, because a `.inp` declares none:
 
 ```bash
-cd solvers/epanet && uv sync
-uv run trama compile tests/networks/Net3.inp net3.trama -o source-crs=EPSG:3857
+./target/release/trama compile ../core/trama-epanet/tests/networks/Net3.inp net3.trama -o source-crs=EPSG:3857
 ```
 
 The demo renders a compiled file on a MapLibre basemap and scrubs solver state over it. It needs two terminals, and no bundler:
 
 ```bash
-cd engine && npm run demo                                    # http://localhost:8790/
-cd solvers/example-diffusion && uv run python -m example_diffusion.server
+cd engine && npm run demo                    # http://localhost:8790/
+cd core && ./target/release/trama-solver-example
 ```
 
 To drive it with EPANET instead, run that solver and point the page at it:
 
 ```bash
-cd solvers/epanet && uv run python -m trama_epanet.server
+cd core && ./target/release/trama-solver-epanet
 ```
 
 `http://localhost:8790/?file=net3.trama&solver=http://127.0.0.1:8802/solve&step=3600&window=86400`

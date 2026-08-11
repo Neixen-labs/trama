@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use proj4rs::Proj;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use trama_format::{Extra, Import, Importer};
 
 use crate::inp;
@@ -36,7 +36,16 @@ const NODE_FIELDS: [(&str, &[&str]); 3] = [
     ("RESERVOIRS", &["#head", "pattern"]),
     (
         "TANKS",
-        &["#elevation", "#init-level", "#min-level", "#max-level", "#diameter", "#min-volume", "volume-curve", "overflow"],
+        &[
+            "#elevation",
+            "#init-level",
+            "#min-level",
+            "#max-level",
+            "#diameter",
+            "#min-volume",
+            "volume-curve",
+            "overflow",
+        ],
     ),
 ];
 const LINK_FIELDS: [(&str, &[&str]); 2] = [
@@ -104,11 +113,7 @@ impl Importer for EpanetImporter {
         let remainder = inp::serialize(&document.without(&EXPRESSED));
         Ok(Import {
             features,
-            extras: vec![Extra {
-                owner: OWNER.into(),
-                media_type: MEDIA_TYPE.into(),
-                payload: remainder.into_bytes(),
-            }],
+            extras: vec![Extra { owner: OWNER.into(), media_type: MEDIA_TYPE.into(), payload: remainder.into_bytes() }],
             channels: channels(&document)?,
         })
     }
@@ -168,10 +173,8 @@ fn link(
     let mut path = vec![*place(&row[1], positions)?];
     path.extend(vertices.get(&row[0]).cloned().unwrap_or_default());
     path.push(*place(&row[2], positions)?);
-    let coordinates: Result<Vec<Value>, String> = path
-        .into_iter()
-        .map(|point| transform.apply(point).map(|(x, y)| json!([x, y])))
-        .collect();
+    let coordinates: Result<Vec<Value>, String> =
+        path.into_iter().map(|point| transform.apply(point).map(|(x, y)| json!([x, y]))).collect();
     Ok(json!({
         "type": "Feature",
         "id": row[0],
@@ -213,11 +216,7 @@ impl Reprojection {
         };
         proj4rs::transform::transform(&self.source, &self.target, &mut moved)
             .map_err(|error| format!("cannot reproject: {error}"))?;
-        if self.target.is_latlong() {
-            Ok((moved.0.to_degrees(), moved.1.to_degrees()))
-        } else {
-            Ok((moved.0, moved.1))
-        }
+        if self.target.is_latlong() { Ok((moved.0.to_degrees(), moved.1.to_degrees())) } else { Ok((moved.0, moved.1)) }
     }
 }
 

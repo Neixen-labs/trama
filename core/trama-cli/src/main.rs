@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use serde_json::Value;
-use trama_format::{parse_options, read_sections, Import, Importer};
+use trama_format::{Import, Importer, parse_options, read_sections};
 
 /// Formats the core does not know are read by the crates that own them. The seam is the same
 /// one a plugin would use; linking them here only decides which are present in this binary.

@@ -134,10 +134,7 @@ fn validate_extra(
     };
     let identity = (text(spans[0]), text(spans[1]));
     if !seen.insert(identity.clone()) {
-        return Err(format!(
-            "two XTRA records share an owner and media type: '{}', '{}'",
-            identity.0, identity.1
-        ));
+        return Err(format!("two XTRA records share an owner and media type: '{}', '{}'", identity.0, identity.1));
     }
     Ok(())
 }

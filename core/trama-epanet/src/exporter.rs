@@ -11,14 +11,20 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 use trama_format::{export, parse_graph, read_sections};
 
-use crate::importer::{Reprojection, MEDIA_TYPE, OWNER};
+use crate::importer::{MEDIA_TYPE, OWNER, Reprojection};
 use crate::inp;
 
 const HEADERS: [(&str, &str); 8] = [
     ("JUNCTIONS", "ID              \tElev        \tDemand      \tPattern"),
     ("RESERVOIRS", "ID              \tHead        \tPattern"),
-    ("TANKS", "ID              \tElevation   \tInitLevel   \tMinLevel    \tMaxLevel    \tDiameter    \tMinVol      \tVolCurve"),
-    ("PIPES", "ID              \tNode1           \tNode2           \tLength      \tDiameter    \tRoughness   \tMinorLoss   \tStatus"),
+    (
+        "TANKS",
+        "ID              \tElevation   \tInitLevel   \tMinLevel    \tMaxLevel    \tDiameter    \tMinVol      \tVolCurve",
+    ),
+    (
+        "PIPES",
+        "ID              \tNode1           \tNode2           \tLength      \tDiameter    \tRoughness   \tMinorLoss   \tStatus",
+    ),
     ("PUMPS", "ID              \tNode1           \tNode2           \tParameters"),
     ("VALVES", "ID              \tNode1           \tNode2           \tDiameter    \tType\tSetting     \tMinorLoss"),
     ("COORDINATES", "Node            \tX-Coord         \tY-Coord"),
@@ -30,7 +36,16 @@ const NODE_SECTIONS: [(&str, &str, &[&str]); 3] = [
     (
         "TANKS",
         "tank",
-        &["#elevation", "#init-level", "#min-level", "#max-level", "#diameter", "#min-volume", "volume-curve", "overflow"],
+        &[
+            "#elevation",
+            "#init-level",
+            "#min-level",
+            "#max-level",
+            "#diameter",
+            "#min-volume",
+            "volume-curve",
+            "overflow",
+        ],
     ),
 ];
 
@@ -102,9 +117,7 @@ pub fn export_inp(container: &[u8], crs: &str) -> Result<String, String> {
     }
     let mut document = inp::Document { sections: take(&remainder, "TITLE") };
     document.sections.extend(sections);
-    document
-        .sections
-        .extend(remainder.sections.iter().filter(|(name, _)| name != "TITLE" && name != "END").cloned());
+    document.sections.extend(remainder.sections.iter().filter(|(name, _)| name != "TITLE" && name != "END").cloned());
     document.sections.push(inp::section("COORDINATES", header("COORDINATES"), coordinates));
     document.sections.push(inp::section("VERTICES", header("VERTICES"), vertices));
     let end = take(&remainder, "END");
@@ -205,10 +218,8 @@ fn coordinates_of(feature: &Value) -> Vec<(f64, f64)> {
 /// missing text field in that position has no such convention, so it fails rather than guess
 /// at a placeholder EPANET might read as a pattern name.
 fn rendered(names: &[&str], properties: &Value) -> Result<Vec<String>, String> {
-    let present: Vec<Option<&Value>> = names
-        .iter()
-        .map(|name| properties.get(format!("epanet:{}", name.trim_start_matches('#'))))
-        .collect();
+    let present: Vec<Option<&Value>> =
+        names.iter().map(|name| properties.get(format!("epanet:{}", name.trim_start_matches('#')))).collect();
     let last = present.iter().rposition(Option::is_some);
     let Some(last) = last else { return Ok(Vec::new()) };
     let mut rendered = Vec::with_capacity(last + 1);
@@ -221,7 +232,7 @@ fn rendered(names: &[&str], properties: &Value) -> Result<Vec<String>, String> {
                 return Err(format!(
                     "'{}' is absent but a later field is present, and EPANET has no blank for it",
                     name.trim_start_matches('#')
-                ))
+                ));
             }
         }
     }
