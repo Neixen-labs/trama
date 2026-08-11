@@ -25,6 +25,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/trama_engine"]
+artifacts = ["src/trama_engine/py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

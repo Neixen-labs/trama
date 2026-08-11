@@ -28,15 +28,19 @@ def write_grid(
     origin: tuple[float, float] = ORIGIN,
 ) -> int:
     """A side x side node grid wired horizontally and vertically, like a distribution network."""
+    # Every endpoint comes from the same expression: `longitude + spacing` and
+    # `origin + (column + 1) * spacing` differ in the last bit, and the compiler joins nodes by
+    # exact coordinate equality, so the second form would silently split the grid apart.
+    def point(row: int, column: int) -> tuple[float, float]:
+        return (origin[0] + column * spacing, origin[1] + row * spacing)
+
     features = []
     for row in range(side):
         for column in range(side):
-            longitude = origin[0] + column * spacing
-            latitude = origin[1] + row * spacing
             if column + 1 < side:
-                features.append(_edge(f"h{row}-{column}", (longitude, latitude), (longitude + spacing, latitude), row, column))
+                features.append(_edge(f"h{row}-{column}", point(row, column), point(row, column + 1), row, column))
             if row + 1 < side:
-                features.append(_edge(f"v{row}-{column}", (longitude, latitude), (longitude, latitude + spacing), row, column))
+                features.append(_edge(f"v{row}-{column}", point(row, column), point(row + 1, column), row, column))
     destination.write_text(json.dumps({"type": "FeatureCollection", "features": features}))
     return len(features)
 

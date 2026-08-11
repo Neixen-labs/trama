@@ -9,7 +9,7 @@ import struct
 from pathlib import Path
 from typing import Any
 
-from trama_engine.compiler import read_sections
+from trama_engine.compiler import parse_graph, read_sections
 
 _WORLD = 40075016.68557849
 _EXTENT = 65535
@@ -27,7 +27,7 @@ def export_geojson(source: Path, destination: Path) -> None:
         for index, (kind, key, payload) in enumerate(sections)
         if kind == b"GEOM"
     }
-    nodes, edges, refs = _parse_graph(graph)
+    nodes, edges, refs = parse_graph(graph)
     rows = _parse_properties(properties)
     node_positions: dict[int, tuple[float, float]] = {}
     edge_features = []
@@ -83,17 +83,6 @@ def _feature(geometry: dict[str, Any], stable_id: int, properties: dict[str, Any
 
 def _write(destination: Path, features: list[dict[str, Any]]) -> None:
     destination.write_text(json.dumps({"type": "FeatureCollection", "features": features}, indent=2) + "\n")
-
-
-def _parse_graph(
-    payload: bytes,
-) -> tuple[list[tuple[int, int, int]], list[tuple[int, ...]], list[tuple[int, int, int]]]:
-    node_count, edge_count, _adjacency_count, ref_count = struct.unpack_from("<4I", payload)
-    nodes_offset, edges_offset, _csr_offset, _adjacency_offset, refs_offset = struct.unpack_from("<5I", payload, 16)
-    nodes = [struct.unpack_from("<QII", payload, nodes_offset + index * 16) for index in range(node_count)]
-    edges = [struct.unpack_from("<QIIIIII", payload, edges_offset + index * 32) for index in range(edge_count)]
-    refs = [struct.unpack_from("<IIb", payload, refs_offset + index * 12) for index in range(ref_count)]
-    return nodes, edges, refs
 
 
 def _parse_geometry(payload: bytes) -> list[list[tuple[int, int]]]:

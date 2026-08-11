@@ -143,6 +143,18 @@ def read_sections(data: bytes) -> list[tuple[bytes, tuple[int, int, int], bytes]
     return sections
 
 
+def parse_graph(
+    payload: bytes,
+) -> tuple[list[tuple[int, int, int]], list[tuple[int, ...]], list[tuple[int, int, int]]]:
+    """Decode a GRPH payload into its nodes, edges, and geometry references."""
+    node_count, edge_count, _adjacency_count, ref_count = struct.unpack_from("<4I", payload)
+    nodes_offset, edges_offset, _csr_offset, _adjacency_offset, refs_offset = struct.unpack_from("<5I", payload, 16)
+    nodes = [struct.unpack_from("<QII", payload, nodes_offset + index * 16) for index in range(node_count)]
+    edges = [struct.unpack_from("<QIIIIII", payload, edges_offset + index * 32) for index in range(edge_count)]
+    refs = [struct.unpack_from("<IIb", payload, refs_offset + index * 12) for index in range(ref_count)]
+    return nodes, edges, refs
+
+
 def _split_by_tile(points: list[tuple[float, float]]) -> list[tuple[tuple[int, int, int], list[tuple[float, float]]]]:
     """Cut a projected polyline at tile boundaries, in traversal order."""
     pieces: list[tuple[tuple[int, int, int], list[tuple[float, float]]]] = []
