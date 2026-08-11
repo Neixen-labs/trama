@@ -6,10 +6,12 @@
 //! two could disagree, the tests compare their bytes rather than trusting either.
 
 mod export;
+mod import;
 mod read;
 mod write;
 
 pub use export::{export, Export};
+pub use import::{parse_options, Import, Importer};
 pub use read::{parse_graph, read_sections, Edge, GeometryReference, Graph, Node, Section};
 pub use write::{compile, Extra};
 
