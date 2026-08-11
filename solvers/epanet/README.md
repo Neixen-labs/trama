@@ -2,11 +2,19 @@
 
 EPANET `.inp` import and export for TRAMA, following `docs/EPANET_BOUNDARY.md`.
 
-**Simulating needs a platform `owa-epanet` ships a wheel for: Linux, or macOS on Python 3.11.**
-There is no Windows wheel in the 2.3 series and none for macOS on 3.12, so elsewhere the
-toolkit must be built from source with `swig` and `ninja` on `PATH`. Import, export, and
-`trama compile network.inp` never touch it — `uv sync --no-dev` is enough for those, on any
-platform `pyproj` supports.
+**Simulating needs `owa-epanet`, which ships a wheel only for Linux (`cp312`) and macOS on
+Python 3.11.** Everywhere else it builds from source, which takes two tools and about 15
+seconds:
+
+```bash
+uv tool install swig && uv tool install ninja     # once, into ~/.local/bin
+uv sync
+```
+
+There is no Windows wheel at all in the 2.3 series, and building there also wants MSVC.
+
+Import, export, and `trama compile network.inp` never touch the toolkit: `uv sync --no-dev`
+is enough for those on any platform `pyproj` supports, Windows included.
 
 This package holds every hydraulic concept in the project. `compiler/` knows nodes, edges,
 typed properties, and opaque records; it discovers this package through the `trama.importers`
