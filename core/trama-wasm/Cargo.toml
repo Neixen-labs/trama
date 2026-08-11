@@ -1,0 +1,13 @@
+[package]
+name = "trama-wasm"
+description = "The browser entry point: JSON in, a TRAMA container out."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+trama-format = { path = "../trama-format" }
+serde_json.workspace = true

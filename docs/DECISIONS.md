@@ -42,6 +42,14 @@
 
 **Consequence:** The engine's solver client is written against a stream, which is the harder of the two shapes; a WASM runtime can hand it the same bytes without changing it. Nothing yet proves the sandboxed path, and no solver is isolated from the host — an HTTP solver is trusted code at the other end of a socket. The event framing is now load-bearing and belongs in `docs/SOLVER_CONTRACT.md`, not in the example's source.
 
+## 2026-08-11 — The producing side is written in Rust
+
+**Decision:** The compiler, the CLI, the solvers and the browser module are Rust. `compiler/` and `solvers/**` are removed. The rendering engine stays TypeScript, so the repository holds two languages rather than three. This replaces the stack `CLAUDE.md` fixed as an owner constraint, and the owner made the change knowingly.
+
+**Why:** Distribution was the weakest part of the project. Running the EPANET solver needed Python plus a C toolchain — `owa-epanet` publishes no Windows wheel and none for macOS on 3.12 — and the phase 5 playground needs the compiler in a browser, where Python costs 5.8 MB of Pyodide against 121 kB of Rust compiled to wasm. The alternative to a rewrite was a second compiler in TypeScript, which is two implementations of a deterministic format that must agree byte for byte. Doing it at 600 lines was judged cheaper than doing it later at several thousand.
+
+**Consequence:** Every future format change is written in a language the owner does not use daily, which is a bet about maintenance more than about technology. Publishing changes shape: a pure-Python package installed everywhere instantly, and native binaries must be built per platform instead — the problem `owa-epanet` had, now ours. The port also had to reproduce Python's rounding of halves to even and zstd's content-size field, both of which turned out to be spec gaps rather than porting details (#89, #90). Equivalence was checkable rather than argued: the container, the GeoJSON export, the `.inp` export and the demo fixture are all byte-identical to what Python produced, and the EPANET round trip still passes on Net1 and Net3.
+
 ## 2026-08-11 — The frame benchmark reports rather than gates
 
 **Decision:** `engine/bench` measures 100k segments with animated state and prints frame cost, cadence and late frames. Its workflow runs on `main` and on demand, uploads the rendered frame, and fails only when the harness breaks — never on a frame time. `FRAME_BUDGET_MS` turns the budget into an exit code for whoever runs it on real hardware.

@@ -1,0 +1,15 @@
+[package]
+name = "trama-example"
+description = "A pulse diffusing over a graph's own topology, to put the solver contract under a real implementation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "trama-solver-example"
+path = "src/main.rs"
+
+[dependencies]
+trama-format = { path = "../trama-format" }
+trama-solver = { path = "../trama-solver" }
+serde_json.workspace = true

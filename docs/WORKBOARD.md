@@ -16,9 +16,10 @@ A task is unclaimed until its GitHub Issue comment exists. Do not use this file 
 
 | Area | Owner while claimed | Do not overlap with |
 |---|---|---|
-| `compiler/**` | one compiler agent | another compiler change |
+| `core/trama-format/**` | one format agent | another format change |
+| `core/trama-epanet/**`, `core/trama-example/**` | one solver agent | another solver change |
+| `core/trama-cli/**`, `core/trama-wasm/**` | one packaging agent | another entry-point change |
 | `engine/**` | one runtime agent | another runtime change |
-| `solvers/**` | one solver agent | another solver change |
 | `docs/SPEC.md`, `docs/SOLVER_CONTRACT.md` | one spec agent | format/code changes needing the same decision |
 | `site/**` | one site agent | another site change |
 | `.github/**`, root manifests | one integration agent | all concurrent dependency/CI work |
@@ -26,7 +27,7 @@ A task is unclaimed until its GitHub Issue comment exists. Do not use this file 
 ## Quality gate
 
 - Read `KICKOFF.md`, `CLAUDE.md`, and the touched code before editing.
-- New behavior: one focused test written first; then `uv run pytest -q`, `uv run ruff check .`, and `uv run mypy src` for compiler work.
+- New behavior: one focused test written first; then `cargo test --release`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check` for Rust work.
 - Core source files carry the BSL SPDX header. Workflow files carry Apache SPDX.
 - A PR may not silently change `docs/SPEC.md`; format decisions need a separate docs PR and owner approval first.
 - Keep a deliberate ceiling explicit with a `ponytail:` comment only where it genuinely exists.

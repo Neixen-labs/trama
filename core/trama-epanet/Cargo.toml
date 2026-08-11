@@ -1,0 +1,18 @@
+[package]
+name = "trama-epanet"
+description = "EPANET .inp import and export for TRAMA, and the solver that runs it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+trama-format = { path = "../trama-format" }
+serde_json.workspace = true
+proj4rs = "0.1"
+trama-solver = { path = "../trama-solver" }
+crs-definitions = { version = "0.5.0", default-features = false, features = ["proj4"] }
+epanet-sys = { version = "2.3.0", features = ["static-link"] }
+
+[[bin]]
+name = "trama-solver-epanet"
+path = "src/bin/server.rs"

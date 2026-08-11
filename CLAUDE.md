@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 3 of `KICKOFF.md`, with phase 4 just started. `solvers/epanet/` is still an empty placeholder; do not invent build commands for it.
 
-- `compiler/` — Python package `trama-engine`, run with `uv` from that directory: `uv run pytest -q`, `uv run ruff check .`, `uv run mypy src`. It compiles a GeoJSON `LineString` FeatureCollection into a v0 container and validates one back. Known limits, each enforced by an explicit error or a zero field: every line must fall inside a single z14 tile, `mesh_index_count` is `0` (no tessellation yet), and only `LineString` is accepted.
+- `core/` — Rust workspace, run with cargo from that directory: `cargo test --release`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. `trama-format` is the container, `trama-cli` the command line, `trama-epanet` every hydraulic concept in the project, `trama-solver` the contract runtime, `trama-example` a reference solver, `trama-wasm` the browser entry point. `mesh_index_count` is still `0` (no tessellation yet) and only `LineString` and `Point` features are accepted.
 - `engine/` — TypeScript package `@trama/core`, run with npm from that directory: `npm test`, `npm run check`. It reads the container header and section directory only.
 - `site/` — static landing page, no build step.
 
@@ -26,7 +26,7 @@ The pieces connect as: Python compiler (`compiler/`, PyPI `trama-engine`) produc
 
 ## Non-negotiable rules
 
-- **Domain-agnostic core.** No domain concept (pipe, pressure, road, voltage) may exist outside `solvers/`. The core knows nodes, edges, typed properties, and state channels. This is the rule most likely to be violated by a plausible-looking change.
+- **Domain-agnostic core.** No domain concept (pipe, pressure, road, voltage) may exist outside `core/trama-epanet` and any future domain crate. The core knows nodes, edges, typed properties, and state channels. This is the rule most likely to be violated by a plausible-looking change.
 - **The spec leads the code.** If code needs something `docs/SPEC.md` does not cover, change the spec first in a separate PR. Never improvise format.
 - **BSL 1.1 header in every source file.** The core is source-available, not OSI open source; the repo's own workflow files carry `SPDX-License-Identifier: Apache-2.0` since they are not core.
 - **English in code and technical docs**, Spanish allowed in discussion. Conventional commits, small PRs.
@@ -35,7 +35,7 @@ The pieces connect as: Python compiler (`compiler/`, PyPI `trama-engine`) produc
 
 ## Planned stack (owner constraints — do not substitute)
 
-- Python 3.12 + uv, `typer` CLI, no heavy dependencies (shapely, pyproj, mapbox-earcut, zstandard, numpy). CI: pytest + ruff + mypy.
+- Rust for the producing side: the format, the CLI, the solvers, and the browser module. Owner decision on 2026-08-11, replacing the Python stack that came before; `docs/DECISIONS.md` records why and what it cost. Dependencies stay few: `serde_json`, `sha2`, `zstd`, `proj4rs`, `crs-definitions`, `epanet-sys`, `clap`. CI: `cargo fmt`, `cargo clippy -D warnings`, `cargo test`.
 - TypeScript engine as a pure library with framework adapters, not a framework.
 - Backend (when one exists): FastAPI + uvicorn, SQLAlchemy 2.0 async, Pydantic v2. Frontend: Next.js App Router + Tailwind + shadcn/ui + TanStack Query.
 - GitHub Actions for open source, Azure DevOps for private work.
