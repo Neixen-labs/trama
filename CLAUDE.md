@@ -4,11 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-Phase 3 of `KICKOFF.md`, with phase 4 just started. `solvers/epanet/` is still an empty placeholder; do not invent build commands for it.
+Phases 1-3 of `KICKOFF.md` are done and phases 4 and 5 are most of the way: a network compiles, range-loads, renders with a time scrub, and is solved by EPANET or a router. There is no `solvers/` directory and no `compiler/` one — the solvers are crates in `core/` and the compiler is `trama-cli`. `README.md` holds the honest per-piece table; keep it current rather than duplicating it here.
 
-- `core/` — Rust workspace, run with cargo from that directory: `cargo test --release`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. `trama-format` is the container, `trama-cli` the command line, `trama-epanet` every hydraulic concept in the project, `trama-solver` the contract runtime, `trama-example` a reference solver, `trama-wasm` the browser entry point. `mesh_index_count` is still `0` (no tessellation yet) and only `LineString` and `Point` features are accepted.
-- `engine/` — TypeScript package `@trama/core`, run with npm from that directory: `npm test`, `npm run check`. It reads the container header and section directory only.
-- `site/` — static landing page, no build step.
+Known gaps, so they are not rediscovered as bugs: no WebGPU (the renderer is WebGL2 only), no polygons and no GeoPackage export, no CSV point input, nothing published to npm or crates.io.
+
+- `core/` — Rust workspace, run with cargo from that directory: `cargo test --release`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. `trama-format` is the container, `trama-cli` the command line and the `grid` benchmark generator, `trama-solver` the contract runtime, `trama-example` a reference solver over HTTP+SSE, `trama-wasm` the browser entry point. Domain crates: `trama-epanet` (hydraulics, `.inp` in and out, EPANET 2.3 native and over WASI), `trama-roads` (OpenStreetMap import), `trama-routing` (fastest paths). `trama-trace` is domain-free by design — reach, isolation, critical edges — despite reading like water.
+- Only `LineString` and `Point` features are accepted. Mesh vertex and index counts are zero because SPEC §3.3 forbids tessellating lines, not for want of a tessellator; a mesh is what a polygon would need.
+- `engine/` — TypeScript package `@trama/core`, run with npm from that directory: `npm test`, `npm run check`, `npm run demo` (needs a solver running), `npm run bench -- --container <file>`. It range-reads every section with CRC checks, renders instanced lines as a MapLibre custom layer, feeds an R32F state texture from a ring buffer, consumes solver deltas over SSE, flies the graph, and caches reads in OPFS. `src/` imports nothing at runtime — keep it that way.
+- `site/` — landing page plus the playground under `site/demo/`, which is a build: `site/demo/build.sh` gathers the engine, the WASM compiler and the examples into ignored `vendor/` and `examples/`, and generates `sw.js` from `sw.template.js`.
+- CI: `core-checks.yml` and `engine-checks.yml` gate pull requests. `bench.yml` does not — a hosted runner has no GPU — so it only runs on `main` and its red goes unnoticed unless someone looks.
 
 `KICKOFF.md` is the authoritative roadmap and constraint list. Read it before any non-trivial change. Tasks marked `[HUMANO]` are the owner's, not yours; every `[DECISIÓN]` must be presented with 2-3 options and a recommendation before implementing.
 
@@ -22,11 +26,11 @@ TRAMA is a network-map engine built on three pillars that constrain every design
 2. **GPU rendering with time** — runtime state lives as a GPU texture indexed by entity ID, with a temporal ring buffer for video-style scrubbing and in-shader interpolation. WebGPU with WebGL2 fallback, mounted as a custom layer on MapLibre (no basemap of its own).
 3. **Solver plugins** — `solver.toml` manifest, WASM/WASI sandbox and/or HTTP server, both emitting the same packed state delta `(entity_id: u64, channel: u16, t: f32, value: f32)`. That delta is what feeds the engine's GPU texture, so the client cannot tell local from remote.
 
-The pieces connect as: Python compiler (`compiler/`, PyPI `trama-engine`) produces `.trama` files → TypeScript runtime (`engine/`, npm `@trama/core`) range-loads and renders them → solvers (`solvers/`) read the graph and write state channels back into the ring buffer.
+The pieces connect as: the Rust compiler (`core/trama-cli`, and the same code as WASM in `core/trama-wasm`) produces `.trama` files → the TypeScript runtime (`engine/`, npm `@trama/core`) range-loads and renders them → solvers (crates in `core/`, over HTTP+SSE or WASI) read the graph and write state channels back into the ring buffer.
 
 ## Non-negotiable rules
 
-- **Domain-agnostic core.** No domain concept (pipe, pressure, road, voltage) may exist outside `core/trama-epanet` and any future domain crate. The core knows nodes, edges, typed properties, and state channels. This is the rule most likely to be violated by a plausible-looking change.
+- **Domain-agnostic core.** No domain concept (pipe, pressure, road, voltage) may exist outside the domain crates — today `trama-epanet`, `trama-roads`, `trama-routing` — and any future one. The core knows nodes, edges, typed properties, and state channels. This is the rule most likely to be violated by a plausible-looking change.
 - **The spec leads the code.** If code needs something `docs/SPEC.md` does not cover, change the spec first in a separate PR. Never improvise format.
 - **BSL 1.1 header in every source file.** The core is source-available, not OSI open source; the repo's own workflow files carry `SPDX-License-Identifier: Apache-2.0` since they are not core.
 - **English in code and technical docs**, Spanish allowed in discussion. Conventional commits, small PRs.
@@ -42,7 +46,7 @@ The pieces connect as: Python compiler (`compiler/`, PyPI `trama-engine`) produc
 
 ## Site
 
-`site/` deploys to Cloudflare Pages on every push to `main` touching `site/**` (`.github/workflows/deploy-pages.yml`, needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`). Open `site/index.html` directly in a browser to preview. `FORM_ENDPOINT` at the top of its inline script is intentionally empty until the waitlist provider is chosen; the form degrades to a message when unset. Landing copy is Spanish; keep `prefers-reduced-motion` handling intact when editing the canvas animation.
+`site/` deploys to Cloudflare Pages on every push to `main` touching `site/**`, `engine/src/**` or `core/**` (`.github/workflows/deploy-pages.yml`, needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`). The workflow runs `site/demo/build.sh`, so the playground on production is built from that push. Open `site/index.html` directly in a browser to preview the landing page; the playground needs a server, because it fetches modules. The waitlist posts to Formspree through `FORM_ENDPOINT`. Landing copy is Spanish; keep `prefers-reduced-motion` handling intact when editing the canvas animation.
 
 ## Contributions
 
