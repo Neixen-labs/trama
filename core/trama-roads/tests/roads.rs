@@ -157,12 +157,14 @@ fn tags_arrive_namespaced_so_they_cannot_collide_with_a_reserved_key() {
 }
 
 #[test]
-fn the_importer_declares_the_channel_a_router_writes() {
+fn the_importer_declares_every_channel_a_solver_may_write() {
     let imported = import(&extract(vec![way(1, vec![10, 11], vec![A, B], json!({}))])).unwrap();
 
-    assert_eq!(imported.channels.len(), 1);
-    assert_eq!(imported.channels[0]["name"], json!("on_route"));
-    assert_eq!(imported.channels[0]["entity_kind"], json!("edge"));
+    // A solver may only write where the file says it may, so an undeclared channel is a
+    // calculation refused. Three of these are topological and say nothing about roads.
+    let names: Vec<&str> = imported.channels.iter().map(|channel| channel["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["on_route", "reach", "isolated", "critical"]);
+    assert!(imported.channels.iter().all(|channel| channel["entity_kind"] == json!("edge")));
 }
 
 #[test]

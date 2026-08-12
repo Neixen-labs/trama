@@ -21,6 +21,7 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 | `core/trama-format` (Rust) | The container: writer, reader, GeoJSON export. Byte-identical output for identical input, typed node and edge properties, declared state channels, and opaque records it carries without reading. | polygons, GeoPackage export |
 | `core/trama-cli` (Rust) | `trama compile`, `validate`, `export --to geojson|inp`, and the grid generator behind the benchmarks. | CSV points |
 | `core/trama-epanet` (Rust) | `.inp` import and export, and a solver that runs the EPANET 2.3 toolkit and streams pressure and flow, natively or in the browser through WASI. Round trip verified by simulation on Net1 and Net3. | — |
+| `core/trama-trace` (Rust) | What a network reaches and what a cut takes out: downstream, upstream, reach, isochrone, isolation, critical edges, source allocation. One search with three knobs for the first four. Nothing in it knows what an edge is. | polygon cuts |
 | `core/trama-roads` (Rust) | Reads an OpenStreetMap extract: translates every spelling of `oneway`, normalises `maxspeed` into a speed column, splits ways at the junctions they cross, and declares the channel a router writes. | turn restrictions |
 | `core/trama-routing` (Rust) | Fastest paths over the graph, costed by a speed column or by distance, honouring one-way edges, written into a state channel as a vehicle's progress. The second domain, and the evidence the core is not shaped around water. | VRP |
 | `core/trama-example` (Rust) | Reference solver over HTTP + Server-Sent Events, to keep the contract under a real implementation. | — |
@@ -73,10 +74,17 @@ Routing is the second domain. A road network comes from an OpenStreetMap extract
 ```bash
 curl -s -X POST https://overpass-api.de/api/interpreter --data-urlencode \
   'data=[out:json][timeout:80];way["highway"~"^(residential|primary|secondary|tertiary)$"](40.4100,-3.7120,40.4230,-3.6950);out geom;' \
-  -o madrid.json
-./target/release/trama compile madrid.json madrid.trama --importer roads
+  -o city.json
+./target/release/trama compile --importer roads city.json city.trama
 ./target/release/trama-solver-routing          # http://127.0.0.1:8803/solve
+./target/release/trama-solver-trace            # http://127.0.0.1:8804/solve
 ```
+
+The same container answers questions that are not about roads at all. `trama-trace` asks what a
+network reaches — downstream, upstream, connected reach and isochrone are one search with three
+knobs — and what it stops reaching when it is cut: isolation, critical edges, source allocation.
+None of it needs a domain: "upstream" is water's name for searching against the arrows, and a
+street network answers "what is cut off if I close this" in the same call a pipe network does.
 
 `out geom;` matters: the importer needs each way's node references to split it where other ways cross it, and without that a crossing never becomes a junction. The importer declares the `on_route` channel itself, so no `--channels` is needed.
 

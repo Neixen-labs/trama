@@ -31,9 +31,17 @@ impl Importer for RoadImporter {
     }
 }
 
-/// The channel a routed network can be solved for. SPEC declares channels; it never holds state.
+/// The channels a street network can be solved for. SPEC declares channels; it never holds state.
+///
+/// Three of the four are topological and say nothing about roads: what a point reaches, what a
+/// closure cuts off, which streets are the only way through. A container declares them because
+/// they are true of any connected network, and because a solver may only write where the file
+/// says it may — an undeclared channel is a calculation the file has refused.
 pub fn channels() -> Vec<Value> {
-    vec![json!({"name": "on_route", "entity_kind": "edge", "unit": "1", "min": 0, "max": 1})]
+    ["on_route", "reach", "isolated", "critical"]
+        .iter()
+        .map(|name| json!({"name": name, "entity_kind": "edge", "unit": "1", "min": 0, "max": 1}))
+        .collect()
 }
 
 /// Turns an Overpass `out geom` response into features the compiler already speaks.

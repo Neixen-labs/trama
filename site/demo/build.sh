@@ -54,8 +54,10 @@ fi
 echo "examples"
 cp "$root/core/trama-epanet/tests/networks/Net3.inp" "$here/examples/net3.inp"
 cp "$root/fixtures/network.geojson" "$here/examples/network.geojson"
-# OpenStreetMap data, © OpenStreetMap contributors, ODbL. See fixtures/README.md.
-cp "$root/fixtures/madrid.osm.json" "$here/examples/madrid.osm.json"
+# OpenStreetMap data, © OpenStreetMap contributors, ODbL. See fixtures/README.md. Shipped
+# compiled: the whole city is 240 kB as a container against 1.9 MB as the JSON it came from,
+# which is the first pillar's claim stated in the one place a visitor can weigh it.
+cp "$root/fixtures/teruel.trama" "$here/examples/teruel.trama"
 
 echo "service worker"
 # The precache list is generated because it cannot be written by hand: whether the EPANET module

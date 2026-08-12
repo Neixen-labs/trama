@@ -76,7 +76,7 @@
 
       <div class="row">
         <button class="ghost" data-example="net3.inp" disabled>Ejemplo: Net3</button>
-        <button class="ghost" data-example="madrid.osm.json" disabled>Ejemplo: calles de Madrid</button>
+        <button class="ghost" data-example="teruel.trama" disabled>Ejemplo: Teruel entera</button>
         <button class="ghost" data-example="network.geojson" disabled>Ejemplo: GeoJSON</button>
       </div>
 
@@ -116,7 +116,7 @@
         servidor. Y no te ata: <code>trama export</code> lo devuelve a GeoJSON cuando lo necesites.
       </p>
       <p class="note">
-        El ejemplo de Madrid son datos de <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>,
+        El ejemplo de Teruel son datos de <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>,
         © colaboradores de OpenStreetMap, bajo <a href="https://opendatacommons.org/licenses/odbl/">ODbL</a>.
       </p>
     </div>
@@ -263,12 +263,24 @@
         clearWaypoints();
 
         const channels = parseStateChannels(readSection(bufferOf(container), parsed.sections.find((s) => s.type === "STCH"), inflate));
-        const channel = channels.find((candidate) => candidate.entityKind === 2);
+        // Whichever channel the chosen engine writes. With one declared channel these agree;
+        // with four they do not, and the map would draw a calculation nobody asked for.
+        const channelFor = (choice) => {
+          const wanted = ENGINES.find((engine) => engine.value === choice)?.paints;
+          const edges = channels.filter((candidate) => candidate.entityKind === 2);
+          return edges.find((candidate) => candidate.name === wanted) ?? edges[0];
+        };
         // A solver's own clock decides the ring: EPANET reports hourly over a day, the pulse
         // every minute, and a ring sized for one holds a single instant of the other.
         const clockOf = (choice) =>
-          choice === "epanet" ? { step: 3600, window: 86400 } : { step: 60, window: choice === "routing" ? 1800 : 600 };
+          choice === "epanet"
+            ? { step: 3600, window: 86400 }
+            : // A property of the shape has no clock at all: one instant is the whole answer.
+              choice === "critical"
+              ? { step: 60, window: 60 }
+              : { step: 60, window: choice === "routing" ? 1800 : 600 };
         makeState = (choice) => {
+          const channel = channelFor(choice);
           if (channel === undefined) return null;
           const clock = clockOf(choice);
           const scrub = document.querySelector("#scrub");
@@ -294,7 +306,7 @@
         state = makeState(document.querySelector("#engine-choice").value);
 
         map.on("click", (moment) => {
-          if (document.querySelector("#engine-choice").value === "routing") addWaypoint(moment.lngLat);
+          if (["routing", "reach"].includes(document.querySelector("#engine-choice").value)) addWaypoint(moment.lngLat);
         });
         map.on("load", () => {
           layer = createTramaLayer({
@@ -327,7 +339,7 @@
 
       function updateWaypointCount() {
         const row = document.querySelector("#route-row");
-        row.hidden = document.querySelector("#engine-choice").value !== "routing";
+        row.hidden = !["routing", "reach"].includes(document.querySelector("#engine-choice").value);
         document.querySelector("#waypoint-count").textContent =
           waypoints.length === 0 ? "pulsa sobre la red" : `${waypoints.length} puntos`;
       }
@@ -553,6 +565,7 @@
           value: "epanet",
           label: "EPANET · presión y caudal",
           channel: "pressure",
+          paints: "flow",
           needs: "una red importada de un .inp de EPANET",
           does: "resuelve la hidráulica con el toolkit de EPANET 2.3 y escribe presión en los nudos y caudal en los tramos, 24 horas en pasos de una hora.",
         },
@@ -560,13 +573,31 @@
           value: "routing",
           label: "ruta más rápida",
           channel: "on_route",
+          paints: "on_route",
           needs: "una red de calles con sentidos y velocidades",
           does: "busca el camino más rápido entre los puntos que elijas, midiendo en tiempo y respetando los sentidos únicos, y marca por dónde va el vehículo en cada instante.",
+        },
+        {
+          value: "reach",
+          label: "hasta dónde llego",
+          channel: "reach",
+          paints: "reach",
+          needs: "una red con velocidades por tramo",
+          does: "propaga desde el punto que elijas respetando los sentidos, y el reloj de abajo es el presupuesto: arrastra para ver hasta dónde se llega en cada minuto.",
+        },
+        {
+          value: "critical",
+          label: "calles sin alternativa",
+          channel: "critical",
+          paints: "critical",
+          needs: "cualquier red conectada",
+          does: "marca los tramos que son el único paso: si se corta uno, lo que hay detrás se queda sin salida. No hace falta elegir nada, es una propiedad de la forma de la red.",
         },
         {
           value: "example",
           label: "pulso de demostración",
           channel: "flow",
+          paints: "flow",
           needs: "un canal de tramo llamado flow",
           does: "no calcula nada real: difunde un pulso por la topología para ver el tiempo moverse sobre la red.",
         },
@@ -645,8 +676,10 @@
       document.querySelector("#solve").addEventListener("click", async () => {
         if (container === null || state === null) return;
         const choiceNow = document.querySelector("#engine-choice").value;
-        if (choiceNow === "routing" && waypoints.length < 2) {
-          show([["error", '<span class="error">elige al menos dos puntos sobre la red</span>']]);
+        const needed = { routing: 2, reach: 1 }[choiceNow] ?? 0;
+        if (waypoints.length < needed) {
+          const what = needed === 1 ? "un punto" : `al menos ${needed} puntos`;
+          show([["error", `<span class="error">elige ${what} sobre la red</span>`]]);
           return;
         }
         const solve = document.querySelector("#solve");
@@ -667,7 +700,11 @@
           map.addLayer(layer);
           const deltas = choice === "epanet"
             ? await solveWithEpanet(container, Number(scrub.max))
-            : choice === "routing"
+            : choice === "critical"
+              ? wasm.solve_critical(container, Number(scrub.max))
+              : choice === "reach"
+                ? wasm.solve_reach(container, Uint32Array.from(waypoints.slice(0, 1)), 8, "roads:speed_ms", Number(scrub.max))
+                : choice === "routing"
               // The road importer wrote a speed for every edge, so the search minimises time and
               // a longer fast street can beat a short slow one. The 8 m/s is only the fallback,
               // for a network compiled without that column.
@@ -682,13 +719,18 @@
           if (choice === "routing") scrub.max = String(arrivalOf(deltas, Number(scrub.step)));
           // The flight follows what was computed: the route itself when there is one, and
           // otherwise a tour of the network, which now has state on it worth looking at.
+          // A tour of a whole city is the doubling-back problem again, and outside routing there
+          // is no answer to follow instead. A small network still reads well.
+          const tourable = routableGraph.edges.length <= 500;
           route =
             choice === "routing"
               ? buildRoute(routableGraph, routeSteps(routableGraph, deltas), geometryTiles)
-              : buildRoute(routableGraph, walk(routableGraph, startNode(routableGraph), 5000), geometryTiles);
+              : tourable
+                ? buildRoute(routableGraph, walk(routableGraph, startNode(routableGraph), 5000), geometryTiles)
+                : null;
           document.querySelector("#fly").textContent = choice === "routing" ? "sobrevolar la ruta" : "sobrevolar la red";
-          document.querySelector("#fly-row").hidden = route.length === 0;
-          document.querySelector("#odometer").textContent = metres(route.length);
+          document.querySelector("#fly-row").hidden = route === null || route.length === 0;
+          if (route !== null) document.querySelector("#odometer").textContent = metres(route.length);
           scrub.disabled = false;
           scrub.value = "0";
           clock.textContent = `${scrub.value} s`;
@@ -699,7 +741,13 @@
             .filter(([term]) => term !== "simulación" && term !== "error")
             .concat([["simulación", `${applied} deltas`]]));
         } catch (error) {
-          show([["error", `<span class="error">${error.message}</span>`]]);
+          // A real city has stray pieces — a pedestrian street, a car park that touches nothing —
+          // and two clicks can land in different ones. The solver is right; its wording is about
+          // node indices, which is not what the person clicking needs to hear.
+          const message = /^no route from node/.test(error.message)
+            ? "no hay camino entre esos puntos: alguno cae en un trozo de red suelto"
+            : error.message;
+          show([["error", `<span class="error">${message}</span>`]]);
         }
         solve.disabled = false;
       });
