@@ -261,3 +261,15 @@ The forward case needs no direction rule at all: SPEC 4 gives a directed edge a 
 **Consequence:** Ten tests, two of them proved to bite by mutation — making `Forward` ignore direction fails `downstream_from_a_tail_reaches_nothing`, and disabling the budget check fails two more. Traces are emitted as a progression, so the scrub unwinds a spread the way it unwinds a route. Components answers "is this one network or twelve", which is the question that cost hours when the first OpenStreetMap extract came back in fragments and the map looked fine.
 
 Moving `edge_lengths` to the core surfaced #132: those are Web Mercator metres, long by `1/cos(latitude)` — about 30% at Madrid's. `trama-routing` has always had it, so the playground's 3.24 km route is nearer 2.5 km on the ground. Fixed separately, because it changes published numbers.
+
+## 2026-08-12 — Isolation, critical edges and allocation, from the same search
+
+**Decision:** `trama-trace` gains three operations. `Isolation` removes a set of edges and reports what the seeds no longer reach. `Critical` finds the bridges — edges whose removal splits the network. `Allocation` labels each edge with whichever of several sources reaches it most cheaply.
+
+**Why:** these are the questions a utility actually asks, and none of them needs a drop of hydraulics. "Close this valve, who loses water" and "close this street, what is cut off" are the same computation over the same graph; putting it in the water solver would have tied it to a `.inp` for no reason.
+
+Two of the three are the search that was already there, read differently: isolation is the search with a blocked set and the answer inverted, allocation is one search per source keeping the cheapest arrival. Only bridges needed their own pass, and they get Tarjan's low-link on an explicit stack, because a city network is deeper than a recursive descent is willing to go. Parallel edges are handled by refusing to return along the *edge* just used rather than the node it came from: two pipes between the same pair are each other's spare and neither is critical.
+
+**Consequence:** Sixteen tests. Mutation found something better than a weak test — flipping `>` to `>=` in the bridge condition fails as it should, but removing `blocked[edge] ||` from isolation failed nothing, because a blocked edge is never crossed and so never reached: the clause was dead. It is gone, and the comment now says why the result is right without it.
+
+The ring-with-a-tail fixture is the shape that makes all three legible at once: cutting a ring edge loses only itself because the ring is its own spare, cutting the tail loses the tail, and two sources on opposite corners split the ring between them.
