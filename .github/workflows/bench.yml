@@ -28,7 +28,9 @@ jobs:
           node-version: '22'
       - name: Build a 100k-segment container
         working-directory: core
-        run: cargo run --release -p trama-cli --bin grid -- --side 224 --out "${RUNNER_TEMP}/bench.trama"
+        # `--channels` is what makes the grid declare an edge channel. The benchmark measures
+        # drawing state, so without it the page has nothing to bind and stops before drawing.
+        run: cargo run --release -p trama-cli --bin grid -- --side 224 --channels --out "${RUNNER_TEMP}/bench.trama"
       - name: Install the engine
         working-directory: engine
         run: |
