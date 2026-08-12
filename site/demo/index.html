@@ -14,8 +14,16 @@
       #panel {
         position: absolute; z-index: 1; margin: 14px; padding: 16px; width: min(24rem, calc(100% - 28px));
         background: #11161de6; border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(8px);
+        /* Never taller than the window: on a phone the panel is otherwise 160% of the screen and
+           the map it exists to show is entirely behind it. */
+        max-height: calc(100dvh - 28px); overflow-y: auto;
       }
-      h1 { margin: 0 0 2px; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: #7fd1ff; }
+      /* Folded keeps the header, what the network turned out to be, and the rows that act on the
+         map — flying, picking points, scrubbing time. Everything else is input, and input is what
+         you have already finished doing by the time you want to see the map. */
+      #panel.folded > :not(#head):not(.live) { display: none; }
+      #head { margin-top: 0; }
+      h1 { flex: 1; margin: 0 0 2px; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: #7fd1ff; }
       p.lead { margin: 0 0 12px; color: var(--dim); font-size: 13px; }
       #drop {
         display: block; /* a label is inline by default, and the dashed box collapsed onto the row below */
@@ -25,7 +33,9 @@
       #drop.over { border-color: #7fd1ff; background: #7fd1ff14; }
       #drop strong { display: block; color: #cfe9ff; }
       #drop span { color: var(--dim); font-size: 12px; }
-      .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+      /* `:not([hidden])` because `display: flex` on its own beats the browser's own rule for the
+         attribute, and every row this page hides was being shown regardless. */
+      .row:not([hidden]) { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
       button, select, input {
         font: inherit; color: #cfe9ff; background: #17324a; border: 1px solid #2b5a72; border-radius: 6px; padding: 4px 10px;
       }
@@ -43,7 +53,10 @@
   </head>
   <body>
     <div id="panel">
-      <h1>TRAMA</h1>
+      <div class="row" id="head">
+        <h1>TRAMA</h1>
+        <button class="ghost" id="fold" type="button" aria-expanded="true" aria-controls="panel">ocultar</button>
+      </div>
       <p class="lead">Suelta tu red y mírala. Se compila aquí, en tu navegador: el archivo no sale de tu equipo.</p>
 
       <label id="drop">
@@ -63,7 +76,7 @@
         <button class="ghost" data-example="network.geojson" disabled>Ejemplo: GeoJSON</button>
       </div>
 
-      <dl id="stats"><dt>cargando</dt><dd>el compilador y los solvers</dd></dl>
+      <dl class="live" id="stats"><dt>cargando</dt><dd>el compilador y los solvers</dd></dl>
 
       <div class="row" id="download-row" hidden>
         <span style="color: var(--dim); font-size: 12.5px; flex: 1">llévatelo</span>
@@ -72,17 +85,17 @@
         <button class="ghost" id="save-edges" type="button">tramos</button>
       </div>
 
-      <div class="row" id="fly-row" hidden>
+      <div class="row live" id="fly-row" hidden>
         <button id="fly" type="button">sobrevolar la red</button>
         <output id="odometer" style="color: var(--dim); min-width: 6em; text-align: right">—</output>
       </div>
 
-      <div class="row" id="route-row" hidden>
+      <div class="row live" id="route-row" hidden>
         <output id="waypoint-count" style="color: var(--dim); font-size: 12.5px; flex: 1">pulsa sobre la red</output>
         <button class="ghost" id="clear-waypoints" type="button">limpiar puntos</button>
       </div>
 
-      <div class="row" id="time-row" hidden>
+      <div class="row live" id="time-row" hidden>
         <select id="engine-choice">
           <option value="epanet">EPANET</option>
           <option value="routing">ruta más rápida</option>
@@ -424,6 +437,9 @@
           container = compiled.container;
           stem = name.replace(/\.[^.]+$/, "").replace(/\.osm$/, "") || "network";
           document.querySelector("#download-row").hidden = false;
+          // On a phone the panel covers the map it just compiled, so it gets out of the way as
+          // soon as there is something behind it worth seeing.
+          if (narrow.matches) setFolded(true);
           const shape = await display(name, container);
           show([
             ["archivo", name],
@@ -459,6 +475,17 @@
           await load(name, await (await fetch(`examples/${name}`)).text());
         });
       }
+
+      const panel = document.querySelector("#panel");
+      const foldButton = document.querySelector("#fold");
+      const narrow = window.matchMedia("(max-width: 640px)");
+
+      function setFolded(folded) {
+        panel.classList.toggle("folded", folded);
+        foldButton.textContent = folded ? "mostrar" : "ocultar";
+        foldButton.setAttribute("aria-expanded", String(!folded));
+      }
+      foldButton.addEventListener("click", () => setFolded(!panel.classList.contains("folded")));
 
       /**
        * Hands a file to the browser. The container never left the page to be compiled, and it
@@ -539,6 +566,8 @@
           scrub.disabled = false;
           scrub.value = "0";
           clock.textContent = `${scrub.value} s`;
+          // The moment the map matters most is the moment a phone-sized panel covers all of it.
+          if (narrow.matches) setFolded(true);
           // The previous run's error goes with it, or a success keeps reporting a failure.
           show([...document.querySelectorAll("#stats dt")].map((dt) => [dt.textContent, dt.nextElementSibling.innerHTML])
             .filter(([term]) => term !== "simulación" && term !== "error")
