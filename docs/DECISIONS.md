@@ -213,3 +213,13 @@ What survives the fold is what still has a job while you are looking at the map:
 Dropping the stats in a short window is the same reasoning as the fold itself: inside a 425px frame the folded panel was still 323px, leaving 102px of map. What the network turned out to be can wait; seeing it cannot.
 
 **Consequence:** Measured on an iPhone 13 viewport: 0 requests into `/demo/` before the section is reached, the page still scrolls 500px with the pointer over the frame, and after the tap the frame compiles Net3 with the panel at 187px of 425. Desktop is untouched — no overlay, no fold, stats visible. The overlay's rule is written `.playground-tap:not([hidden])` for the reason the last commit found the hard way: a plain `display` rule beats the `hidden` attribute.
+
+## 2026-08-12 — The playground opens a container, and offers only one download
+
+**Decision:** The playground accepts a `.trama`, reads dropped files as bytes, and passes a container through without compiling it. The two GeoJSON download buttons are gone, along with `export_nodes` and `export_edges` in `trama-wasm`; one button downloads the container and a line of prose points at `trama export` for GeoJSON.
+
+**Why:** the download button added the day before handed out a file the page itself rejected with `expected value at line 1 column 1`. With no published CLI binaries, `@trama/core` still `private: true`, and no hosted solver, a `.trama` was usable only by whoever produced it on the machine that produced it — which is the first pillar failing in the one place a visitor can check it.
+
+Three equal buttons also said the wrong thing. They read as "pick a format" when the claim is that the container *is* the format, and the GeoJSON was 599 kB against the container's 43 kB — offering the same map fourteen times larger. Export is still a real promise, and a promise about not being trapped is better kept by the command line than by a button competing with the thing being demonstrated. Removing the two WASM exports saved 19,411 bytes, under 1%: the weight was never the argument.
+
+**Consequence:** Verified end to end — Madrid compiles to 43 kB, downloads as 44,069 bytes, reopens with no compile step at 617 nodes and 806 edges, and *routes on the reopened file*, 1,705 deltas from a container the page never compiled. A file renamed to `.trama` is refused by its magic with a sentence rather than a stack trace. This is the minimum for the format to exist for anyone but its author; published binaries and a published package are still missing.
