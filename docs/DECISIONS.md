@@ -313,3 +313,15 @@ Two clicks with different jobs in the same mode is a small interface risk, taken
 **Consequence:** Measured on the published fixtures. On Net3, 31 of 119 pipes are critical and **the worst single closure takes 25 of them out of service** — a fifth of the network behind one valve. On a meshed pipe the same closure loses only itself, which is what a ring main is for and is now a test. Teruel behaves the same way with streets.
 
 This changed `fixtures/net3.trama`, compared byte for byte by the equivalence test: declaring channels changes the container. Regenerated deliberately. It also caught a test helper reading the channel section by assuming two dictionary strings per channel — three channels sharing the unit `"1"` contribute one entry between them, so the assumption walked off the end. It reads each record's own string id now.
+
+## 2026-08-12 — Made publishable, not published
+
+**Decision:** `@trama/core` gets a real manifest — a version, `exports` with subpaths, `files`, `sideEffects: false`, an entry point, and a README that is its npm page — plus a release workflow that publishes on a tag and builds `trama` for Linux, macOS x86 and arm, and Windows. Nothing is published: that needs an `NPM_TOKEN` and is the owner's decision.
+
+**Why:** the package was `"private": true` at `0.0.0` and there were no binaries, so everything built here was reachable only by someone who clones the repository and has a Rust toolchain. A visitor could watch a city compile, take the container away and open it again, and still not install any of it. That is the ceiling on adoption, and it is a packaging problem rather than an engineering one.
+
+Preparing without publishing is the split that matters. Publishing is irreversible — npm does not let a version be taken back — and it is an outward-facing act with the owner's name on it, so the work stops at the point where a tag would trigger it.
+
+**Consequence:** `npm pack` produces 25.5 kB over 27 files, with the licence and README in it and no source maps or build info. The workflow refuses to publish when the tag disagrees with the manifest version, because a mismatch publishes a version nobody asked for and cannot be undone.
+
+The fact worth advertising, found while writing this: nothing in `src` imports anything. Not `maplibre-gl`, not `fzstd`. The adapter describes the host map it needs with a type and decompression is a parameter, so **the published package has no runtime dependencies at all** — `fzstd` was in `dependencies` and only tests ever used it.

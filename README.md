@@ -48,6 +48,16 @@ The size criterion has two honest answers because "the equivalent GeoJSON" is am
 - [Design decisions](docs/DECISIONS.md)
 - [Public RFC discussion](https://github.com/Neixen-labs/trama/issues/1)
 
+### Install
+
+Nothing is published yet — the release workflow is written and waits on a tag and an `NPM_TOKEN`. When it runs:
+
+```bash
+npm install @trama/core            # the browser runtime, no runtime dependencies
+```
+
+and `trama`, the compiler and command line, arrives as a binary for Linux, macOS (Intel and Apple silicon) and Windows on the [releases page](https://github.com/Neixen-labs/trama/releases). Until then, build it:
+
 ### Run it
 
 ```bash

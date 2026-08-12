@@ -1,0 +1,102 @@
+# SPDX-License-Identifier: Apache-2.0
+# Publishes on a tag, and only on a tag. Nothing here runs on a push to main: releasing is a
+# decision, not a consequence of merging.
+#
+# Needs one secret the repository owner sets: NPM_TOKEN, an automation token for the @trama
+# scope. Without it the npm job fails and the binaries still build, which is the right way round.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  npm:
+    name: "@trama/core to npm"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # provenance: npm records which workflow and commit built the tarball
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Install
+        run: npm ci
+        working-directory: engine
+      - name: Test before publishing anything
+        run: npm test
+        working-directory: engine
+      - name: Check the tag matches the version in package.json
+        # A tag that disagrees with the manifest publishes a version nobody asked for, and npm
+        # will not let it be taken back.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared="$(node -p "require('./package.json').version")"
+          if [ "$tagged" != "$declared" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package version $declared" >&2
+            exit 1
+          fi
+        working-directory: engine
+      - name: Publish
+        run: npm publish --access public --provenance
+        working-directory: engine
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  cli:
+    name: trama ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # one platform failing should not deny the others their binary
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p trama-cli
+        working-directory: core
+      - name: Package
+        shell: bash
+        run: |
+          binary="core/target/${{ matrix.target }}/release/trama"
+          [ -f "$binary.exe" ] && binary="$binary.exe"
+          # The licence travels with the binary: this is source-available, not public domain.
+          cp LICENSE "$(dirname "$binary")/LICENSE"
+          cd "$(dirname "$binary")"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$GITHUB_WORKSPACE/trama-${{ matrix.target }}.zip" trama.exe LICENSE
+          else
+            tar czf "$GITHUB_WORKSPACE/trama-${{ matrix.target }}.tar.gz" trama LICENSE
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trama-${{ matrix.target }}
+          path: trama-${{ matrix.target }}.*
+
+  attach:
+    name: Attach binaries to the release
+    needs: cli
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
