@@ -1,24 +1,36 @@
 {
   "name": "@trama/core",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Read a TRAMA container in the browser and render network state over time on the GPU.",
+  "keywords": ["trama", "network", "graph", "maplibre", "webgl", "gis", "binary-format"],
+  "homepage": "https://trama.build",
+  "repository": { "type": "git", "url": "git+https://github.com/Neixen-labs/trama.git", "directory": "engine" },
+  "bugs": "https://github.com/Neixen-labs/trama/issues",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./*": { "types": "./dist/*.d.ts", "default": "./dist/*.js" }
+  },
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "LICENSE", "README.md"],
+  "engines": { "node": ">=20" },
   "scripts": {
     "test": "tsx --test test/*.test.ts",
     "check": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "demo": "npm run build && node demo/serve.mjs",
-    "bench": "node bench/frames.mjs"
+    "bench": "node bench/frames.mjs",
+    "prepack": "cp ../LICENSE LICENSE && npm run build"
   },
   "devDependencies": {
     "@bjorn3/browser_wasi_shim": "^0.4.2",
     "@types/node": "^20.17.0",
+    "fzstd": "^0.1.1",
     "maplibre-gl": "^6.2.0",
     "playwright": "^1.62.1",
     "tsx": "^4.23.1",
     "typescript": "^6.0.3"
-  },
-  "dependencies": {
-    "fzstd": "^0.1.1"
   }
 }
