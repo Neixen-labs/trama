@@ -183,3 +183,13 @@ Cross-origin requests pass straight through. A solver on another host is a live 
 **Consequence:** Install fetches about 5.4 MB, all of it, before the worker activates — a partial precache is an offline page that fails halfway through a task, which is worse than one that never claimed to work. Registration happens after the compiler is ready, so precaching does not compete with the first load, and it is skipped entirely where `navigator.serviceWorker` is absent. `demo/sw.js` is a build artefact and gitignored beside `vendor/`, so a checkout without a build has no worker at all rather than a stale one.
 
 Three of my own test harnesses were wrong before this was proven: Playwright's `setOffline` rejects a navigation before the worker sees it, so it cannot test one; `waitForFunction` with an async page function passes immediately, since a pending promise is truthy, which reported an empty cache as full; and a probe server returning `application/octet-stream` made the browser download the page instead of opening it.
+
+## 2026-08-12 — What the playground compiles, it hands back
+
+**Decision:** Once a network compiles, the playground offers the `.trama` itself and its GeoJSON export as downloads. The export is two files, `nodes` and `edges`, and `trama-wasm` grew `export_nodes` and `export_edges` over the `trama_format::export` the command line already used.
+
+**Why:** the first pillar says the container is one portable file, and until now the page was the only place it existed. Compiling a network and being unable to keep it makes the playground a demonstration rather than a tool — and the file is the product, not the picture of it.
+
+Two files because SPEC 9 says an export is two FeatureCollections. One mixed collection would have been friendlier to a browser that saves one file at a time, and would have been the page inventing format, which rule 2 forbids. Two functions rather than one returning both for the same reason: the shape follows the spec, not the download dialog.
+
+**Consequence:** The round trip closes inside the browser. Verified on the Madrid extract: 806 edges out, 686 of them carrying `_trama_directed`, and dropping `madrid.edges.geojson` straight back on the page recompiles to the same 617 nodes and 806 edges — the nodes are not in that file at all, they come back from the section 4.2 quantization cell, which is the identity rule doing exactly what it was written for. The container on disk is byte-identical to the one the page reported. Nothing is uploaded to produce any of it.
