@@ -206,3 +206,123 @@ fn a_channel_the_container_never_declared_is_refused() {
 
     assert!(refused.is_err(), "a solver may only write where the file says it may");
 }
+
+/// A ring with a tail, undirected: the ring has a spare route everywhere, the tail has none.
+///
+/// ```text
+///   b ----- c
+///   |       |          ring: ab, bc, cd, da
+///   a ----- d --- t    tail: dt
+/// ```
+fn ring_with_tail() -> Vec<Value> {
+    let a = [-3.7040, 40.4160];
+    let b = [-3.7040, 40.4200];
+    let c = [-3.7000, 40.4200];
+    let d = [-3.7000, 40.4160];
+    let t = [-3.6960, 40.4160];
+    vec![
+        line("ab", json!([a, b]), false),
+        line("bc", json!([b, c]), false),
+        line("cd", json!([c, d]), false),
+        line("da", json!([d, a]), false),
+        line("dt", json!([d, t]), false),
+    ]
+}
+
+#[test]
+fn only_the_tail_is_critical_in_a_ring() {
+    let container = container_of(&ring_with_tail());
+    let graph = graph_of(&container);
+
+    let bridges = trama_trace::critical(&graph);
+
+    assert_eq!(bridges.iter().filter(|is| **is).count(), 1, "the ring is its own spare; the tail is not");
+    // The critical one is the edge touching the node of degree one.
+    let lonely = (0..graph.nodes.len())
+        .find(|node| {
+            graph.edges.iter().filter(|edge| edge.source as usize == *node || edge.target as usize == *node).count()
+                == 1
+        })
+        .unwrap();
+    let tail =
+        graph.edges.iter().position(|edge| edge.source as usize == lonely || edge.target as usize == lonely).unwrap();
+    assert!(bridges[tail]);
+}
+
+#[test]
+fn cutting_a_ring_edge_costs_nothing_and_cutting_the_tail_costs_the_tail() {
+    let container = container_of(&ring_with_tail());
+    let graph = graph_of(&container);
+    let costs = hops(&graph);
+    let bridges = trama_trace::critical(&graph);
+    let tail = bridges.iter().position(|is| *is).unwrap();
+    let ring_edge = bridges.iter().position(|is| !*is).unwrap();
+    // Serve the network from the far end of the ring, away from the tail.
+    let source = graph.edges[ring_edge].source as usize;
+
+    let cut_ring = trama_trace::isolation(&graph, &costs, &[ring_edge], &[source], Direction::Both).unwrap();
+    let cut_tail = trama_trace::isolation(&graph, &costs, &[tail], &[source], Direction::Both).unwrap();
+
+    assert_eq!(
+        cut_ring.iter().filter(|lost| **lost).count(),
+        1,
+        "only the cut edge itself: the ring goes round the other way"
+    );
+    assert_eq!(cut_tail.iter().filter(|lost| **lost).count(), 1, "the tail, and nothing beyond it to lose");
+    assert!(cut_tail[tail]);
+}
+
+#[test]
+fn a_cut_that_severs_a_branch_takes_everything_past_it() {
+    let container = container_of(&fork()[..3]);
+    let graph = graph_of(&container);
+    let costs = hops(&graph);
+    let head = sources(&graph)[0];
+    let trunk = graph.edges.iter().position(|edge| edge.source as usize == head).unwrap();
+
+    let lost = trama_trace::isolation(&graph, &costs, &[trunk], &[head], Direction::Forward).unwrap();
+
+    assert_eq!(lost.iter().filter(|lost| **lost).count(), 3, "cutting the trunk loses the trunk and both branches");
+}
+
+#[test]
+fn each_edge_goes_to_the_source_that_reaches_it_first() {
+    let container = container_of(&ring_with_tail());
+    let graph = graph_of(&container);
+    let costs = hops(&graph);
+    let ends: Vec<usize> = (0..graph.nodes.len())
+        .filter(|node| {
+            graph.edges.iter().filter(|edge| edge.source as usize == *node || edge.target as usize == *node).count()
+                == 1
+        })
+        .collect();
+    let corners: Vec<usize> = (0..graph.nodes.len()).filter(|node| !ends.contains(node)).collect();
+
+    let owners = trama_trace::allocation(&graph, &costs, &[corners[0], corners[1]], Direction::Both).unwrap();
+
+    assert!(owners.iter().all(Option::is_some), "a connected network leaves no edge unserved");
+    let first = owners.iter().filter(|owner| **owner == Some(0)).count();
+    let second = owners.iter().filter(|owner| **owner == Some(1)).count();
+    assert!(first > 0 && second > 0, "two sources split the network between them, {first} and {second}");
+}
+
+#[test]
+fn an_edge_no_source_reaches_belongs_to_nobody() {
+    let container = container_of(&fork());
+    let graph = graph_of(&container);
+    let costs = hops(&graph);
+
+    let owners = trama_trace::allocation(&graph, &costs, &[sources(&graph)[0]], Direction::Forward).unwrap();
+
+    assert!(owners.iter().any(Option::is_none), "the separate network is served by nothing");
+}
+
+#[test]
+fn isolation_refuses_a_cut_that_is_not_in_the_graph() {
+    let container = container_of(&fork());
+    let graph = graph_of(&container);
+
+    let refused = trama_trace::isolation(&graph, &hops(&graph), &[graph.edges.len()], &[0], Direction::Both);
+
+    assert!(refused.is_err());
+}

@@ -50,6 +50,15 @@ pub enum Operation {
     /// Every edge labelled with the connected component it belongs to, direction ignored. The
     /// answer to "is this one network or twelve", which a rendered map hides.
     Components,
+    /// What loses service when `cut` is removed: every edge no longer reachable from `seeds`,
+    /// the cut edges included. Closing a valve, closing a street — the same question.
+    Isolation { cut: Vec<usize>, seeds: Vec<usize>, direction: Direction },
+    /// The edges that are the only way through: cutting one splits the network in two. Bridges,
+    /// and the shortest answer to "where is this network fragile".
+    Critical,
+    /// Which of `sources` serves each edge, by cost. The label is a position in `sources`, so a
+    /// network with two reservoirs or two depots comes back split between them.
+    Allocation { sources: Vec<usize>, direction: Direction },
 }
 
 pub struct Parameters {
@@ -101,9 +110,30 @@ pub fn solve(container: &[u8], parameters: &Parameters, t0: f32, t1: f32) -> Res
                 .map(|reached| (reached.edge_index, reached.at))
                 .collect()
         }
-        // A component label is not a progression: every edge carries its answer from the start.
+        // A label is not a progression: every edge carries its answer from the start.
         Operation::Components => {
             components(&graph).into_iter().enumerate().map(|(edge, label)| (edge, label as f64)).collect()
+        }
+        Operation::Isolation { cut, seeds, direction } => {
+            let costs = costs_of(container, &graph, &parameters.cost)?;
+            isolation(&graph, &costs, cut, seeds, *direction)?
+                .into_iter()
+                .enumerate()
+                .map(|(edge, lost)| (edge, if lost { 1.0 } else { 0.0 }))
+                .collect()
+        }
+        Operation::Critical => critical(&graph)
+            .into_iter()
+            .enumerate()
+            .map(|(edge, bridge)| (edge, if bridge { 1.0 } else { 0.0 }))
+            .collect(),
+        Operation::Allocation { sources, direction } => {
+            let costs = costs_of(container, &graph, &parameters.cost)?;
+            allocation(&graph, &costs, sources, *direction)?
+                .into_iter()
+                .enumerate()
+                .filter_map(|(edge, owner)| owner.map(|owner| (edge, owner as f64)))
+                .collect()
         }
     };
 
@@ -141,8 +171,20 @@ pub fn trace(
     direction: Direction,
     budget: Option<f64>,
 ) -> Result<Vec<Reached>, String> {
+    search(graph, costs, seeds, direction, budget, &vec![false; graph.edges.len()])
+}
+
+/// The search itself, with a set of edges it may not cross.
+fn search(
+    graph: &Graph,
+    costs: &[f64],
+    seeds: &[usize],
+    direction: Direction,
+    budget: Option<f64>,
+    blocked: &[bool],
+) -> Result<Vec<Reached>, String> {
     if seeds.is_empty() {
-        return Err("a trace needs at least one seed node".into());
+        return Err("a search needs at least one seed node".into());
     }
     if let Some(node) = seeds.iter().find(|node| **node >= graph.nodes.len()) {
         return Err(format!("seed node {node} is outside the graph"));
@@ -168,6 +210,9 @@ pub fn trace(
             continue;
         }
         for (edge_index, next) in &steps[node] {
+            if blocked[*edge_index] {
+                continue;
+            }
             let crossing = (costs[*edge_index] * scale).round() as i64;
             let arrival = spent.saturating_add(crossing);
             if ceiling.is_some_and(|limit| arrival > limit) {
@@ -189,6 +234,115 @@ pub fn trace(
         .enumerate()
         .filter_map(|(edge_index, at)| at.map(|at| Reached { edge_index, at: at as f64 / scale }))
         .collect())
+}
+
+/// Which edges lose service when `cut` is removed, the cut edges among them.
+///
+/// The same search as `trace`, with a set of edges that may not be crossed, and the answer read
+/// the other way round: what the search failed to reach. A network with no seeds has nothing to
+/// lose service from, which is why they are required rather than defaulted.
+pub fn isolation(
+    graph: &Graph,
+    costs: &[f64],
+    cut: &[usize],
+    seeds: &[usize],
+    direction: Direction,
+) -> Result<Vec<bool>, String> {
+    if let Some(edge) = cut.iter().find(|edge| **edge >= graph.edges.len()) {
+        return Err(format!("cut edge {edge} is outside the graph"));
+    }
+    let mut blocked = vec![false; graph.edges.len()];
+    for edge in cut {
+        blocked[*edge] = true;
+    }
+    let mut survives = vec![false; graph.edges.len()];
+    for reached in search(graph, costs, seeds, direction, None, &blocked)? {
+        survives[reached.edge_index] = true;
+    }
+    // A cut edge is out of service by construction: the search refuses to cross it, so it is
+    // never reached, and `!survives` already covers it.
+    Ok(survives.into_iter().map(|reached| !reached).collect())
+}
+
+/// The edges whose removal splits the network: bridges, found in one pass.
+///
+/// Tarjan's low-link, on the undirected view, because "is this the only way through" is a
+/// question about connectivity and not about which way the arrows point. Parallel edges are
+/// handled by refusing to return along the *edge* just used rather than to the node it came
+/// from — two pipes between the same pair are each other's spare, and neither is critical.
+pub fn critical(graph: &Graph) -> Vec<bool> {
+    let steps = steps_from(graph, Direction::Both);
+    let mut bridge = vec![false; graph.edges.len()];
+    let mut discovered = vec![usize::MAX; graph.nodes.len()];
+    let mut low = vec![usize::MAX; graph.nodes.len()];
+    let mut clock = 0;
+    for start in 0..graph.nodes.len() {
+        if discovered[start] != usize::MAX {
+            continue;
+        }
+        discovered[start] = clock;
+        low[start] = clock;
+        clock += 1;
+        // An explicit stack of (node, edge arrived by, how far through its neighbours): a city
+        // network is deeper than a recursive descent is willing to go.
+        let mut stack = vec![(start, usize::MAX, 0usize)];
+        while let Some(&(node, arrived_by, cursor)) = stack.last() {
+            if cursor == steps[node].len() {
+                stack.pop();
+                if let Some(&(parent, _, _)) = stack.last() {
+                    low[parent] = low[parent].min(low[node]);
+                    // Nothing below `node` reaches back past its parent, so the edge between
+                    // them is the only way through.
+                    if low[node] > discovered[parent] {
+                        bridge[arrived_by] = true;
+                    }
+                }
+                continue;
+            }
+            stack.last_mut().expect("just read").2 += 1;
+            let (edge_index, next) = steps[node][cursor];
+            // Refusing the edge just used, not the node it came from: two edges between the same
+            // pair are each other's spare, and neither is critical.
+            if edge_index == arrived_by {
+                continue;
+            }
+            if discovered[next] == usize::MAX {
+                discovered[next] = clock;
+                low[next] = clock;
+                clock += 1;
+                stack.push((next, edge_index, 0));
+            } else {
+                low[node] = low[node].min(discovered[next]);
+            }
+        }
+    }
+    bridge
+}
+
+/// Which source serves each edge, as a position in `sources`.
+///
+/// One search from every source at once, each carrying its own label. An edge belongs to
+/// whichever source reaches it more cheaply, and to nobody where nothing reaches it at all.
+pub fn allocation(
+    graph: &Graph,
+    costs: &[f64],
+    sources: &[usize],
+    direction: Direction,
+) -> Result<Vec<Option<usize>>, String> {
+    if sources.is_empty() {
+        return Err("an allocation needs at least one source".into());
+    }
+    let mut owner: Vec<Option<usize>> = vec![None; graph.edges.len()];
+    let mut best: Vec<f64> = vec![f64::INFINITY; graph.edges.len()];
+    for (label, source) in sources.iter().enumerate() {
+        for reached in trace(graph, costs, &[*source], direction, None)? {
+            if reached.at < best[reached.edge_index] {
+                best[reached.edge_index] = reached.at;
+                owner[reached.edge_index] = Some(label);
+            }
+        }
+    }
+    Ok(owner)
 }
 
 /// The connected component of every edge, counting from zero, direction ignored.
@@ -285,7 +439,8 @@ fn costs_of(container: &[u8], graph: &Graph, cost: &Cost) -> Result<Vec<f64>, St
 
 pub struct TraceSolver;
 
-const KNOWN: [&str; 7] = ["channel", "operation", "seeds", "direction", "budget", "cost", "step_seconds"];
+const KNOWN: [&str; 9] =
+    ["channel", "operation", "seeds", "direction", "budget", "cost", "step_seconds", "cut", "sources"];
 
 impl Solver for TraceSolver {
     fn id(&self) -> &'static str {
@@ -305,26 +460,35 @@ impl Solver for TraceSolver {
         {
             return Err(Rejection::request(format!("unknown parameters: {unknown}")));
         }
+        let indices = |key: &str| -> Result<Vec<usize>, Rejection> {
+            match &request.params[key] {
+                Value::Array(values) => values
+                    .iter()
+                    .map(|value| value.as_u64().map(|index| index as usize).ok_or("must be non-negative indices"))
+                    .collect::<Result<Vec<usize>, &str>>()
+                    .map_err(|error| Rejection::request(format!("{key} {error}"))),
+                Value::Null => Err(Rejection::request(format!("{key} is required"))),
+                _ => Err(Rejection::request(format!("{key} must be an array"))),
+            }
+        };
+        let direction = |default: &str| match request.params["direction"].as_str().unwrap_or(default) {
+            "forward" => Ok(Direction::Forward),
+            "backward" => Ok(Direction::Backward),
+            "both" => Ok(Direction::Both),
+            other => Err(Rejection::request(format!("unknown direction '{other}'"))),
+        };
         let operation = match request.params["operation"].as_str().unwrap_or("trace") {
             "components" => Operation::Components,
-            "trace" => {
-                let seeds = match &request.params["seeds"] {
-                    Value::Array(values) => values
-                        .iter()
-                        .map(|value| value.as_u64().map(|index| index as usize).ok_or("seeds must be node indices"))
-                        .collect::<Result<Vec<usize>, &str>>()
-                        .map_err(Rejection::request)?,
-                    Value::Null => return Err(Rejection::request("seeds is required for a trace".to_string())),
-                    _ => return Err(Rejection::request("seeds must be an array".to_string())),
-                };
-                let direction = match request.params["direction"].as_str().unwrap_or("forward") {
-                    "forward" => Direction::Forward,
-                    "backward" => Direction::Backward,
-                    "both" => Direction::Both,
-                    other => return Err(Rejection::request(format!("unknown direction '{other}'"))),
-                };
-                Operation::Trace { seeds, direction, budget: request.params["budget"].as_f64() }
+            "critical" => Operation::Critical,
+            "isolation" => {
+                Operation::Isolation { cut: indices("cut")?, seeds: indices("seeds")?, direction: direction("both")? }
             }
+            "allocation" => Operation::Allocation { sources: indices("sources")?, direction: direction("both")? },
+            "trace" => Operation::Trace {
+                seeds: indices("seeds")?,
+                direction: direction("forward")?,
+                budget: request.params["budget"].as_f64(),
+            },
             other => return Err(Rejection::request(format!("unknown operation '{other}'"))),
         };
         let cost = match &request.params["cost"] {
