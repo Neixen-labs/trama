@@ -63,9 +63,10 @@
       <p class="lead">Suelta tu red y mírala. Se compila aquí, en tu navegador: el archivo no sale de tu equipo.</p>
 
       <label id="drop">
-        <input id="file" type="file" accept=".geojson,.json,.inp" hidden />
+        <input id="file" type="file" accept=".geojson,.json,.inp,.trama" hidden />
         <strong>Arrastra un archivo o pulsa aquí</strong>
-        <span>GeoJSON de líneas, un <code>.inp</code> de EPANET, o un <code>.osm.json</code> de Overpass</span>
+        <span>GeoJSON de líneas, un <code>.inp</code> de EPANET, un <code>.osm.json</code> de Overpass,
+        o un <code>.trama</code> ya compilado</span>
       </label>
 
       <div class="row" id="crs-row" hidden>
@@ -82,10 +83,8 @@
       <dl class="live" id="stats"><dt>cargando</dt><dd>el compilador y los solvers</dd></dl>
 
       <div class="row" id="download-row" hidden>
-        <span style="color: var(--dim); font-size: 12.5px; flex: 1">llévatelo</span>
-        <button class="ghost" id="save-container" type="button">.trama</button>
-        <button class="ghost" id="save-nodes" type="button">nodos</button>
-        <button class="ghost" id="save-edges" type="button">tramos</button>
+        <button id="save-container" type="button">descargar el <code>.trama</code></button>
+        <output id="download-size" style="color: var(--dim); font-size: 12.5px">—</output>
       </div>
 
       <div class="row live" id="fly-row" hidden>
@@ -118,9 +117,9 @@
         rara vez coincide con la ida.
       </p>
       <p class="note">
-        Lo compilado te lo puedes llevar: el <code>.trama</code> es un archivo portable, y el GeoJSON exportado son
-        dos colecciones —nudos y tramos— que vuelven a compilar aquí mismo si las sueltas de nuevo. Nada de esto
-        pasa por un servidor; tu red no sale de esta pestaña en ningún momento.
+        Un <code>.trama</code> es un archivo y se comporta como tal: descárgalo, mándaselo a quien quieras, y al
+        soltarlo aquí de nuevo se abre sin volver a compilar y sigue calculando sobre él. Nada de esto pasa por un
+        servidor. Y no te ata: <code>trama export</code> lo devuelve a GeoJSON cuando lo necesites.
       </p>
       <p class="note">
         El ejemplo de Madrid son datos de <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>,
@@ -150,17 +149,30 @@
       // --- the compiler ---
       const wasm = await import("./vendor/trama_wasm.js");
       await wasm.default({ module_or_path: "./vendor/trama_wasm_bg.wasm" });
-      const bytesOf = (text) => new TextEncoder().encode(text);
 
-      function compile(name, text) {
+      /**
+        * Bytes in, container out.
+        *
+        * A `.trama` is already a container, so it passes through untouched. That case is the point
+        * of the format — one file anyone can open — and the page could not honour it until now:
+        * the bytes went to the GeoJSON parser and came back as `expected value at line 1 column 1`.
+        */
+      function compile(name, bytes) {
         const started = performance.now();
         const lower = name.toLowerCase();
+        if (lower.endsWith(".trama")) {
+          if (new TextDecoder().decode(bytes.subarray(0, 5)) !== "TRAMA") {
+            throw new Error("esto no es un contenedor TRAMA");
+          }
+          return { container: bytes, elapsed: performance.now() - started, compiled: false };
+        }
+        const text = new TextDecoder().decode(bytes);
         const container = lower.endsWith(".inp")
           ? wasm.compile_inp(text, document.querySelector("#crs").value.trim())
           : lower.endsWith(".osm.json")
             ? wasm.compile_osm(text)
             : wasm.compile_geojson(text);
-        return { container, elapsed: performance.now() - started };
+        return { container, elapsed: performance.now() - started, compiled: true };
       }
 
       /**
@@ -433,24 +445,31 @@
       let parsedContainer = null;
       let stem = "network";
 
-      async function load(name, text) {
+      async function load(name, bytes) {
         try {
           document.querySelector("#crs-row").hidden = !name.toLowerCase().endsWith(".inp");
-          const compiled = compile(name, text);
+          const compiled = compile(name, bytes);
           container = compiled.container;
           stem = name.replace(/\.[^.]+$/, "").replace(/\.osm$/, "") || "network";
           document.querySelector("#download-row").hidden = false;
+          document.querySelector("#download-size").textContent = `${(container.length / 1024).toFixed(1)} kB, y se abre aquí mismo`;
           // On a phone the panel covers the map it just compiled, so it gets out of the way as
           // soon as there is something behind it worth seeing.
           if (narrow.matches) setFolded(true);
           const shape = await display(name, container);
-          show([
-            ["archivo", name],
-            ["compilado en", `${compiled.elapsed.toFixed(0)} ms`],
-            ["contenedor", `${(container.length / 1024).toFixed(1)} kB`],
-            ["desde", `${(bytesOf(text).length / 1024).toFixed(1)} kB`],
-            ["red", `${shape.nodes} nudos · ${shape.edges} tramos · ${shape.tiles} teselas`],
-          ]);
+          const size = `${(container.length / 1024).toFixed(1)} kB`;
+          const network = `${shape.nodes} nudos · ${shape.edges} tramos · ${shape.tiles} teselas`;
+          show(
+            compiled.compiled
+              ? [
+                  ["archivo", name],
+                  ["compilado en", `${compiled.elapsed.toFixed(0)} ms`],
+                  ["contenedor", size],
+                  ["desde", `${(bytes.length / 1024).toFixed(1)} kB`],
+                  ["red", network],
+                ]
+              : [["archivo", name], ["contenedor", size], ["red", network]],
+          );
         } catch (error) {
           show([["error", `<span class="error">${error.message}</span>`]]);
         }
@@ -460,7 +479,7 @@
       const file = document.querySelector("#file");
       drop.addEventListener("click", () => file.click());
       file.addEventListener("change", async () => {
-        if (file.files[0]) await load(file.files[0].name, await file.files[0].text());
+        if (file.files[0]) await load(file.files[0].name, new Uint8Array(await file.files[0].arrayBuffer()));
       });
       for (const [event, over] of [["dragover", true], ["dragleave", false], ["drop", false]]) {
         drop.addEventListener(event, (moment) => {
@@ -470,12 +489,12 @@
       }
       drop.addEventListener("drop", async (moment) => {
         const dropped = moment.dataTransfer.files[0];
-        if (dropped) await load(dropped.name, await dropped.text());
+        if (dropped) await load(dropped.name, new Uint8Array(await dropped.arrayBuffer()));
       });
       for (const button of document.querySelectorAll("[data-example]")) {
         button.addEventListener("click", async () => {
           const name = button.dataset.example;
-          await load(name, await (await fetch(`examples/${name}`)).text());
+          await load(name, new Uint8Array(await (await fetch(`examples/${name}`)).arrayBuffer()));
         });
       }
 
@@ -500,23 +519,11 @@
         setTimeout(() => URL.revokeObjectURL(url), 0);
       }
 
-      // The GeoJSON is two files because SPEC 9 says an export is two FeatureCollections, and
-      // either one dropped back on this page compiles again.
-      const downloads = [
-        ["#save-container", () => [`${stem}.trama`, container, "application/octet-stream"]],
-        ["#save-nodes", () => [`${stem}.nodes.geojson`, wasm.export_nodes(container), "application/geo+json"]],
-        ["#save-edges", () => [`${stem}.edges.geojson`, wasm.export_edges(container), "application/geo+json"]],
-      ];
-      for (const [selector, produce] of downloads) {
-        document.querySelector(selector).addEventListener("click", () => {
-          if (container === null) return;
-          try {
-            save(...produce());
-          } catch (error) {
-            show([["error", `<span class="error">${error.message}</span>`]]);
-          }
-        });
-      }
+      // One file, because that is the claim. Exporting to GeoJSON is a promise the CLI keeps;
+      // offering it here as an equal button says "pick a format", which is the opposite of it.
+      document.querySelector("#save-container").addEventListener("click", () => {
+        if (container !== null) save(`${stem}.trama`, container, "application/octet-stream");
+      });
 
       document.querySelector("#clear-waypoints").addEventListener("click", clearWaypoints);
       document.querySelector("#engine-choice").addEventListener("change", updateWaypointCount);
