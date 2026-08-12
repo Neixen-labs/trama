@@ -117,4 +117,76 @@ fn what_the_published_city_looks_like() {
     );
     println!("components: {pieces}, largest holds {:.1}%", share * 100.0);
     println!("critical edges: {} of {}", bridges.iter().filter(|is| **is).count(), graph.edges.len());
+
+    let water = graph_of(NET3);
+    let costs = vec![1.0; water.edges.len()];
+    let water_bridges = critical(&water);
+    let feed = water
+        .edges
+        .iter()
+        .enumerate()
+        .find(|(edge, _)| !water_bridges[*edge])
+        .map(|(_, edge)| edge.source as usize)
+        .unwrap();
+    let worst = water_bridges
+        .iter()
+        .enumerate()
+        .filter(|(_, is)| **is)
+        .map(|(edge, _)| (edge, trama_trace::isolation(&water, &costs, &[edge], &[feed], Direction::Both).unwrap()))
+        .map(|(edge, lost)| (lost.iter().filter(|lost| **lost).count(), edge))
+        .max()
+        .unwrap();
+    println!(
+        "net3: {} pipes, {} critical, worst single closure loses {} of them",
+        water.edges.len(),
+        water_bridges.iter().filter(|is| **is).count(),
+        worst.0
+    );
+}
+
+const NET3: &[u8] = include_bytes!("../../../fixtures/net3.trama");
+
+#[test]
+fn closing_a_critical_pipe_takes_more_than_the_pipe_itself() {
+    let graph = graph_of(NET3);
+    let costs = vec![1.0; graph.edges.len()];
+    let bridges = critical(&graph);
+    let feed = graph
+        .edges
+        .iter()
+        .enumerate()
+        .find(|(edge, _)| !bridges[*edge])
+        .map(|(_, edge)| edge.source as usize)
+        .expect("a meshed pipe to serve from");
+
+    // Every critical pipe, tried one at a time: at least one of them has customers behind it.
+    let worst = bridges
+        .iter()
+        .enumerate()
+        .filter(|(_, is)| **is)
+        .map(|(edge, _)| trama_trace::isolation(&graph, &costs, &[edge], &[feed], Direction::Both).unwrap())
+        .map(|lost| lost.iter().filter(|lost| **lost).count())
+        .max()
+        .expect("a critical pipe");
+
+    assert!(worst > 1, "the worst single closure loses {worst} pipes, so nothing is ever behind anything");
+}
+
+#[test]
+fn closing_a_meshed_pipe_loses_only_that_pipe() {
+    let graph = graph_of(NET3);
+    let costs = vec![1.0; graph.edges.len()];
+    let bridges = critical(&graph);
+    let (meshed, feed) = graph
+        .edges
+        .iter()
+        .enumerate()
+        .find(|(edge, _)| !bridges[*edge])
+        .map(|(index, edge)| (index, edge.source as usize))
+        .expect("a meshed pipe");
+
+    let lost = trama_trace::isolation(&graph, &costs, &[meshed], &[feed], Direction::Both).unwrap();
+
+    // The point of a ring main: close one pipe and the water arrives the other way round.
+    assert_eq!(lost.iter().filter(|lost| **lost).count(), 1, "a meshed closure should lose only itself");
 }

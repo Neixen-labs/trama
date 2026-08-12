@@ -148,10 +148,19 @@ pub fn channels(document: &inp::Document) -> Result<Vec<Value>, String> {
         return Err(format!("[OPTIONS] Units names '{flow_units}', which is not an EPANET flow unit"));
     }
     let pressure = if US_FLOW_UNITS.contains(&flow_units.as_str()) { "psi" } else { "m" };
-    Ok(vec![
+    let mut channels = vec![
         json!({"name": "pressure", "entity_kind": "node", "unit": pressure}),
         json!({"name": "flow", "entity_kind": "edge", "unit": flow_units}),
-    ])
+    ];
+    // The topological channels, which have nothing to do with water and everything to do with
+    // what a utility asks: close this valve, who loses service. A pipe network and a street
+    // network answer that in the same call, and this is the declaration that lets them.
+    channels.extend(
+        ["reach", "isolated", "critical"]
+            .iter()
+            .map(|name| json!({"name": name, "entity_kind": "edge", "unit": "1", "min": 0, "max": 1})),
+    );
+    Ok(channels)
 }
 
 fn kind_of(section: &str) -> &'static str {

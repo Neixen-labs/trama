@@ -85,6 +85,27 @@ pub fn solve_reach(
     trama_trace::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))
 }
 
+/// What loses service when `cut` is removed, seen from `seeds`.
+///
+/// The question a utility actually asks — close this valve, who runs dry — and a street network
+/// answers it in the same call: close this road, what is cut off.
+#[wasm_bindgen]
+pub fn solve_isolation(container: &[u8], seeds: &[u32], cut: &[u32], t1_seconds: f32) -> Result<Vec<u8>, JsError> {
+    let parameters = trama_trace::Parameters {
+        channel: "isolated".into(),
+        operation: trama_trace::Operation::Isolation {
+            cut: cut.iter().map(|index| *index as usize).collect(),
+            seeds: seeds.iter().map(|index| *index as usize).collect(),
+            // Service reaches wherever the network connects, whichever way a street happens to
+            // run: a one-way street still has water under it.
+            direction: trama_trace::Direction::Both,
+        },
+        cost: trama_trace::Cost::Hops,
+        step_seconds: 60.0,
+    };
+    trama_trace::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))
+}
+
 /// The streets that are the only way through: cutting one splits the network.
 ///
 /// No seeds and no cost — it is a property of the shape alone, which is why it needs nothing
