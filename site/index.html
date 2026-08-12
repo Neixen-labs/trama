@@ -116,6 +116,7 @@
   }
   .sec-lede{color:var(--muted);max-width:58ch;margin-bottom:44px}
   .playground{
+    position:relative;
     border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
     background:var(--ink-2);margin-bottom:44px;
   }
@@ -126,12 +127,22 @@
   .playground-bar a{color:var(--water)}
   /* Tall enough for the map to be worth looking at, short enough to leave the page readable. */
   .playground iframe{display:block;width:100%;height:min(72vh,620px);border:0;background:#0b0f14}
-  .playground-small{display:none;margin:0;padding:20px 16px;color:var(--muted);font-size:.95rem}
+  .playground-small{display:none;margin:0;padding:12px 16px;border-top:1px solid var(--line);color:var(--muted);font-size:.9rem}
   .playground-small a{color:var(--water)}
+  /* A map that fills a phone screen swallows the swipe that was meant to scroll the page. The
+     overlay holds the gesture until it is asked for, which is what every embedded map does. */
+  .playground-tap{
+    display:none;position:absolute;inset:0;z-index:2;align-items:flex-end;justify-content:center;
+    padding-bottom:22px;background:#0b0f1459;color:var(--stroke);font-size:.9rem;cursor:pointer;
+  }
+  .playground-tap span{
+    padding:7px 14px;border:1px solid var(--line);border-radius:999px;background:var(--ink-2);
+  }
   @media (max-width:640px){
-    /* Hidden rather than merely short: display:none also stops the observer from ever loading
-       a few megabytes onto a phone that will not show them. */
-    .playground iframe{display:none}
+    /* Short enough to leave page above and below to scroll by, now that the playground's own
+       panel folds and the map behind it is actually visible. */
+    .playground iframe{height:min(64dvh,520px)}
+    .playground-tap:not([hidden]){display:flex}  /* `:not` or the attribute loses to this rule */
     .playground-small{display:block}
   }
   .sec-lede strong{color:var(--stroke)}
@@ -304,11 +315,9 @@
            so the frame was fetching a few megabytes of compiler before anyone scrolled. The src
            is assigned when the section is genuinely near the viewport. -->
       <iframe data-src="/demo/" title="Playground de TRAMA" loading="lazy" referrerpolicy="no-referrer"></iframe>
-      <!-- On a phone the playground's own panel covers the map, so an embedded frame shows
-           everything except the thing worth seeing. The link is the honest version there. -->
+      <div class="playground-tap" hidden><span>toca para usar el mapa</span></div>
       <p class="playground-small">
-        El playground necesita más pantalla para que se vea el mapa.
-        <a href="/demo/">Ábrelo aquí</a>.
+        ¿Se te queda pequeño? <a href="/demo/">Ábrelo a pantalla completa</a>.
       </p>
     </div>
 
@@ -501,7 +510,15 @@ start();
     (function () {
       var frame = document.querySelector('.playground iframe');
       if (!frame) return;
-      var load = function () { if (!frame.src) frame.src = frame.dataset.src; };
+      // The overlay only makes sense over a frame that has something in it, and it is removed for
+      // good on the first tap: taking the gesture back would be a worse surprise than giving it.
+      var tap = document.querySelector('.playground-tap');
+      if (tap) tap.addEventListener('click', function () { tap.remove(); });
+      var load = function () {
+        if (frame.src) return;
+        frame.src = frame.dataset.src;
+        if (tap) tap.hidden = false;
+      };
       if (!('IntersectionObserver' in window)) return;
       var watcher = new IntersectionObserver(function (entries) {
         if (entries.some(function (entry) { return entry.isIntersecting; })) {

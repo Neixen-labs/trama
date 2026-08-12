@@ -22,6 +22,9 @@
          map — flying, picking points, scrubbing time. Everything else is input, and input is what
          you have already finished doing by the time you want to see the map. */
       #panel.folded > :not(#head):not(.live) { display: none; }
+      /* In a short window — an embedded frame, a phone held sideways — the stats are the first
+         thing the fold gives up. What the network is can wait; seeing it cannot. */
+      @media (max-height: 560px) { #panel.folded > #stats { display: none; } }
       #head { margin-top: 0; }
       h1 { flex: 1; margin: 0 0 2px; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: #7fd1ff; }
       p.lead { margin: 0 0 12px; color: var(--dim); font-size: 13px; }

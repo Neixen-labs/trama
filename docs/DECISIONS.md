@@ -203,3 +203,13 @@ Two files because SPEC 9 says an export is two FeatureCollections. One mixed col
 What survives the fold is what still has a job while you are looking at the map: flying, picking waypoints, scrubbing time, and the stats that say what the network turned out to be. What disappears is input — dropping a file, choosing an example — which by definition you have finished doing.
 
 **Consequence:** Measured at 390x664: the panel goes from 161% of the screen to 49% while simulating, leaving 325px of map, and the scrub still works folded. Folding is remembered by nothing; a new file expands the panel again through the same automatic path. `build.sh` now includes `index.html` in the cache version, without which a page-only change keeps its cache and never reaches anyone with the service worker already installed — verified by changing the file and watching the digest move.
+
+## 2026-08-12 — The phone gets the playground back, behind one tap
+
+**Decision:** The landing shows the embedded playground below 640px again, in a frame of `min(64dvh, 520px)` with an overlay that holds the touch gesture until it is tapped. The full-screen link stays. In a window under 560px tall the folded panel also drops its stats.
+
+**Why:** the frame was hidden on phones because the playground's panel covered the map, which the fold has now fixed. What has not changed is that a map filling a phone screen swallows the swipe meant to scroll the page, and a visitor trapped in an embed is worse off than one who never saw it. The overlay is the ordinary answer, and it costs one tap, removed for good once given — taking the gesture back later would be the greater surprise.
+
+Dropping the stats in a short window is the same reasoning as the fold itself: inside a 425px frame the folded panel was still 323px, leaving 102px of map. What the network turned out to be can wait; seeing it cannot.
+
+**Consequence:** Measured on an iPhone 13 viewport: 0 requests into `/demo/` before the section is reached, the page still scrolls 500px with the pointer over the frame, and after the tap the frame compiles Net3 with the panel at 187px of 425. Desktop is untouched — no overlay, no fold, stats visible. The overlay's rule is written `.playground-tap:not([hidden])` for the reason the last commit found the hard way: a plain `display` rule beats the `hidden` attribute.
