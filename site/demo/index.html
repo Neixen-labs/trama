@@ -253,11 +253,15 @@
         // Where each node sits, read off the ends of the edges that meet there — the same
         // derivation the exporter does, and the only way a map click can name a node.
         nodePositions = new Array(graph.nodes.length);
+        edgeShapes = new Array(graph.edges.length);
         graph.edges.forEach((edge, edgeIndex) => {
           const points = edgePolyline(graph, { edgeIndex, direction: 1 }, geometry);
           if (points.length === 0) return;
           nodePositions[edge.sourceNodeIndex] ??= toLonLat(points[0]);
           nodePositions[edge.targetNodeIndex] ??= toLonLat(points[points.length - 1]);
+          // Kept, not recomputed on every click: naming the edge under the cursor means walking
+          // every segment in the network, and on a city that is 3,649 of them.
+          edgeShapes[edgeIndex] = points.map(toLonLat);
         });
         routableGraph = graph;
         clearWaypoints();
@@ -276,7 +280,7 @@
           choice === "epanet"
             ? { step: 3600, window: 86400 }
             : // A property of the shape has no clock at all: one instant is the whole answer.
-              choice === "critical"
+              ["critical", "isolation"].includes(choice)
               ? { step: 60, window: 60 }
               : { step: 60, window: choice === "routing" ? 1800 : 600 };
         makeState = (choice) => {
@@ -306,7 +310,10 @@
         state = makeState(document.querySelector("#engine-choice").value);
 
         map.on("click", (moment) => {
-          if (["routing", "reach"].includes(document.querySelector("#engine-choice").value)) addWaypoint(moment.lngLat);
+          const picked = document.querySelector("#engine-choice").value;
+          if (["routing", "reach"].includes(picked)) addWaypoint(moment.lngLat);
+          // Isolation needs both: where service comes from, and what is being closed.
+          else if (picked === "isolation") (waypoints.length === 0 ? addWaypoint : addCut)(moment.lngLat);
         });
         map.on("load", () => {
           layer = createTramaLayer({
@@ -334,14 +341,38 @@
         waypoints = [];
         for (const marker of markers) marker.remove();
         markers = [];
+        cutEdges = [];
+        for (const marker of cutMarkers) marker.remove();
+        cutMarkers = [];
+        updateWaypointCount();
+      }
+
+      /** Marks an edge as cut, at the middle of the street rather than at the click. */
+      function addCut(lngLat) {
+        const edgeIndex = nearestEdge(lngLat);
+        if (edgeIndex < 0 || cutEdges.includes(edgeIndex)) return;
+        cutEdges.push(edgeIndex);
+        const points = edgeShapes[edgeIndex];
+        cutMarkers.push(new Marker({ color: "#ff5a5a" }).setLngLat(points[Math.floor(points.length / 2)]).addTo(map));
         updateWaypointCount();
       }
 
       function updateWaypointCount() {
+        const choice = document.querySelector("#engine-choice").value;
         const row = document.querySelector("#route-row");
-        row.hidden = !["routing", "reach"].includes(document.querySelector("#engine-choice").value);
-        document.querySelector("#waypoint-count").textContent =
-          waypoints.length === 0 ? "pulsa sobre la red" : `${waypoints.length} puntos`;
+        row.hidden = !["routing", "reach", "isolation"].includes(choice);
+        const count = document.querySelector("#waypoint-count");
+        if (choice !== "isolation") {
+          count.textContent = waypoints.length === 0 ? "pulsa sobre la red" : `${waypoints.length} puntos`;
+          return;
+        }
+        // Two clicks with different jobs, so the row says which one is next rather than counting.
+        count.textContent =
+          waypoints.length === 0
+            ? "pulsa donde entra el servicio"
+            : cutEdges.length === 0
+              ? "ahora pulsa el tramo que cortas"
+              : `desde 1 punto, cortando ${cutEdges.length} ${cutEdges.length === 1 ? "tramo" : "tramos"}`;
       }
 
       /**
@@ -417,6 +448,37 @@
         return best;
       }
 
+      /**
+        * The edge under a click, by distance to its nearest segment.
+        *
+        * In degrees, not metres: a comparison between candidates a few hundred metres apart, at
+        * one latitude, which the projection's own distortion cannot reorder.
+        */
+      function nearestEdge(lngLat) {
+        let best = -1;
+        let shortest = Infinity;
+        edgeShapes.forEach((points, edgeIndex) => {
+          if (points === undefined) return;
+          for (let at = 0; at + 1 < points.length; at += 1) {
+            const distance = toSegment(lngLat, points[at], points[at + 1]);
+            if (distance < shortest) {
+              shortest = distance;
+              best = edgeIndex;
+            }
+          }
+        });
+        return best;
+      }
+
+      /** Squared distance from a point to a segment, clamped to its ends. */
+      function toSegment(lngLat, start, end) {
+        const dx = end[0] - start[0];
+        const dy = end[1] - start[1];
+        const span = dx * dx + dy * dy;
+        const along = span === 0 ? 0 : Math.max(0, Math.min(1, ((lngLat.lng - start[0]) * dx + (lngLat.lat - start[1]) * dy) / span));
+        return (lngLat.lng - (start[0] + along * dx)) ** 2 + (lngLat.lat - (start[1] + along * dy)) ** 2;
+      }
+
       function addWaypoint(lngLat) {
         const node = nearestNode(lngLat);
         if (node < 0) return;
@@ -428,6 +490,9 @@
       // --- the fly-through ---
       let route = null;
       let geometryTiles = null;
+      let edgeShapes = [];
+      let cutEdges = [];
+      let cutMarkers = [];
       let flightLabel = "sobrevolar la red";
       let flight = null;
 
@@ -586,6 +651,14 @@
           does: "propaga desde el punto que elijas respetando los sentidos, y el reloj de abajo es el presupuesto: arrastra para ver hasta dónde se llega en cada minuto.",
         },
         {
+          value: "isolation",
+          label: "qué se queda sin servicio",
+          channel: "isolated",
+          paints: "isolated",
+          needs: "cualquier red conectada",
+          does: "pulsa primero por dónde entra el servicio y luego los tramos que cierras: el mapa marca todo lo que deja de estar conectado con la entrada. La misma pregunta para una válvula de agua que para una calle cortada. Prueba antes «calles sin alternativa»: los tramos que marca son justo los que dejan a alguien aislado.",
+        },
+        {
           value: "critical",
           label: "calles sin alternativa",
           channel: "critical",
@@ -676,6 +749,10 @@
       document.querySelector("#solve").addEventListener("click", async () => {
         if (container === null || state === null) return;
         const choiceNow = document.querySelector("#engine-choice").value;
+        if (choiceNow === "isolation" && (waypoints.length < 1 || cutEdges.length === 0)) {
+          show([["error", '<span class="error">pulsa un punto de servicio y al menos un tramo que cortar</span>']]);
+          return;
+        }
         const needed = { routing: 2, reach: 1 }[choiceNow] ?? 0;
         if (waypoints.length < needed) {
           const what = needed === 1 ? "un punto" : `al menos ${needed} puntos`;
@@ -702,6 +779,8 @@
             ? await solveWithEpanet(container, Number(scrub.max))
             : choice === "critical"
               ? wasm.solve_critical(container, Number(scrub.max))
+              : choice === "isolation"
+                ? wasm.solve_isolation(container, Uint32Array.from(waypoints.slice(0, 1)), Uint32Array.from(cutEdges), Number(scrub.max))
               : choice === "reach"
                 ? wasm.solve_reach(container, Uint32Array.from(waypoints.slice(0, 1)), 8, "roads:speed_ms", Number(scrub.max))
                 : choice === "routing"

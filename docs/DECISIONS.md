@@ -301,3 +301,15 @@ The correction is per segment at its midpoint, exact to first order and wrong on
 Correcting it also surfaced a test that was checking nothing: `trama-routing`'s suite kept its own copy of the length calculation, so it compared an uncorrected measurement against a corrected solver and failed. A test that measures differently from the code under test is comparing two answers and calling it agreement. It now calls `edge_lengths`.
 
 The container is untouched: this is a reading of stored geometry, not a change to what is stored, so `fixtures/teruel.trama` is byte-identical and no file needs regenerating.
+
+## 2026-08-12 — The same closure question, on water and on streets
+
+**Decision:** The playground asks what loses service when something is closed. In this mode the first click says where service enters and the rest name the sections being closed, found by `nearestEdge` over the polylines the page already keeps. `trama-epanet` declares the topological channels alongside `pressure` and `flow`, so the question works on a pipe network and on a street network without either knowing about the other.
+
+**Why:** it is the question a utility pays for — close this valve, who runs dry — and the one this project can answer in two domains with one call, which is the domain-agnostic claim stated where someone can press it. The engine has existed since the isolation work; what was missing was that the page could find the node under a click and not the edge.
+
+Two clicks with different jobs in the same mode is a small interface risk, taken because the alternative is worse: inventing the source. A network's service point is a fact the operator has and the file does not, and guessing it would make the answer opaque exactly where it needs to be trusted. The row says which click is next rather than counting.
+
+**Consequence:** Measured on the published fixtures. On Net3, 31 of 119 pipes are critical and **the worst single closure takes 25 of them out of service** — a fifth of the network behind one valve. On a meshed pipe the same closure loses only itself, which is what a ring main is for and is now a test. Teruel behaves the same way with streets.
+
+This changed `fixtures/net3.trama`, compared byte for byte by the equivalence test: declaring channels changes the container. Regenerated deliberately. It also caught a test helper reading the channel section by assuming two dictionary strings per channel — three channels sharing the unit `"1"` contribute one entry between them, so the assumption walked off the end. It reads each record's own string id now.

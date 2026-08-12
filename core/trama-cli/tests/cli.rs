@@ -137,7 +137,9 @@ fn an_importer_declares_the_channels_its_format_implies() {
 
     let container = std::fs::read(&out).unwrap();
     let names: Vec<String> = trama_format_channels(&container);
-    assert_eq!(names, ["pressure", "flow"]);
+    // Two from the format, three from topology: what a network reaches and what a cut takes out
+    // are questions about any graph, and a solver may only write where the file says it may.
+    assert_eq!(names, ["pressure", "flow", "reach", "isolated", "critical"]);
 }
 
 fn trama_format_channels(container: &[u8]) -> Vec<String> {
@@ -153,7 +155,16 @@ fn trama_format_channels(container: &[u8]) -> Vec<String> {
         strings.push(String::from_utf8_lossy(&payload[cursor + 4..cursor + 4 + length]).into_owned());
         cursor += 4 + length;
     }
-    (0..count).map(|index| strings[index * 2].clone()).collect()
+    // Each channel record names its own string, and the dictionary deduplicates: three channels
+    // sharing the unit "1" contribute one entry between them, so a two-per-channel assumption
+    // reads past the end. Records start after the dictionary; the name id is at byte 4 of 24.
+    let records_offset = at(8);
+    (0..count)
+        .map(|index| {
+            let record = records_offset + index * 24;
+            strings[at(record + 4)].clone()
+        })
+        .collect()
 }
 
 #[test]
