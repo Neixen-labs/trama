@@ -35,6 +35,24 @@ pub fn compile_osm(source: &str) -> Result<Vec<u8>, JsError> {
         .map_err(|error| JsError::new(&error))
 }
 
+/// The `nodes` FeatureCollection of a container's GeoJSON export, as SPEC 9 defines it.
+///
+/// Two functions rather than one returning both, because SPEC 9 says an export is two
+/// collections and a browser saves one file at a time. The work is parsing a container that has
+/// already been read once, so doing it twice costs nothing worth an API around.
+#[wasm_bindgen]
+pub fn export_nodes(container: &[u8]) -> Result<String, JsError> {
+    let exported = trama_format::export(container).map_err(|error| JsError::new(&error))?;
+    serde_json::to_string_pretty(&exported.nodes).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// The `edges` FeatureCollection of a container's GeoJSON export.
+#[wasm_bindgen]
+pub fn export_edges(container: &[u8]) -> Result<String, JsError> {
+    let exported = trama_format::export(container).map_err(|error| JsError::new(&error))?;
+    serde_json::to_string_pretty(&exported.edges).map_err(|error| JsError::new(&error.to_string()))
+}
+
 /// Route through `waypoints`, given as node indices, and return the packed deltas.
 ///
 /// Unlike EPANET, this solver is Rust with no filesystem in its API, so it needs no WASI: the
