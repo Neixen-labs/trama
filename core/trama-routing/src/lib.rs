@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BinaryHeap};
 
-use trama_format::{Graph, edge_paths, edge_properties, parse_graph, read_sections};
+use trama_format::{Graph, edge_lengths, edge_properties, parse_graph, read_sections};
 use trama_solver::server::{Rejection, Request, Solver};
 use trama_solver::{declared, pack};
 
@@ -133,7 +133,7 @@ pub fn solve(container: &[u8], parameters: &Parameters, t0_seconds: f32, t1_seco
 /// stop agreeing. A row with no usable number falls back to the parameter rather than failing:
 /// half a real city has no speed limit tagged, and refusing to route it would be useless.
 fn traversal_seconds(container: &[u8], graph: &Graph, parameters: &Parameters) -> Result<Vec<f64>, String> {
-    let lengths = lengths_of(container)?;
+    let lengths = edge_lengths(container)?;
     let fallback = parameters.speed_metres_per_second as f64;
     let Some(key) = &parameters.speed_property else {
         return Ok(lengths.iter().map(|length| length / fallback).collect());
@@ -157,14 +157,6 @@ fn traversal_seconds(container: &[u8], graph: &Graph, parameters: &Parameters) -
 
 /// Every edge's length in metres, from the geometry the container already stores.
 ///
-/// Length is what a cost is built from: `traversal_seconds` divides it by a speed.
-fn lengths_of(container: &[u8]) -> Result<Vec<f64>, String> {
-    Ok(edge_paths(container)?
-        .iter()
-        .map(|path| path.windows(2).map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1)).sum())
-        .collect())
-}
-
 /// The cheapest walk visiting every waypoint in order, under whatever `costs` measures.
 pub fn plan(graph: &Graph, costs: &[f64], waypoints: &[usize]) -> Result<Route, String> {
     if waypoints.len() < 2 {

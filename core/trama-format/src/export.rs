@@ -92,6 +92,18 @@ fn feature(geometry: Value, id: u64, row: Option<&BTreeMap<String, Value>>) -> V
 /// This is what a solver costing a traversal needs, and it is the same reconstruction the export
 /// does before projecting to WGS 84 — geometry rather than domain, so it belongs to the format.
 /// Lengths carry the precision the file stores: section 3.1 quantizes to about 4 cm at `z14`.
+/// The length of every edge, in the metres of the projection the container stores.
+///
+/// ponytail: Web Mercator metres, not ground metres — they run long by `1/cos(latitude)`, about
+/// 30% at Madrid's. Every consumer so far compares lengths within one network, where the factor
+/// cancels, and correcting it is #132 rather than silent.
+pub fn edge_lengths(data: &[u8]) -> Result<Vec<f64>, String> {
+    Ok(edge_paths(data)?
+        .iter()
+        .map(|path| path.windows(2).map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1)).sum())
+        .collect())
+}
+
 pub fn edge_paths(data: &[u8]) -> Result<Vec<Vec<(f64, f64)>>, String> {
     let sections = read_sections(data)?;
     let graph = sections.iter().find(|s| &s.kind == b"GRPH").ok_or("container is missing a GRPH section")?;

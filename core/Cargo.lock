@@ -703,6 +703,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trama-trace"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "trama-format",
+ "trama-solver",
+]
+
+[[package]]
 name = "trama-wasm"
 version = "0.1.0"
 dependencies = [

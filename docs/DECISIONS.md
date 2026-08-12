@@ -247,3 +247,17 @@ The requirement is read off the file, not guessed from its extension. A solver w
 **Consequence:** Verified across the matrix: Net3 offers EPANET and the pulse with routing disabled, Madrid offers routing with the other two disabled, and the GeoJSON offers none with a sentence saying why and `simular` disabled. Nothing fails after the click any more. A missing EPANET module — a build made without a WASI SDK — now says so instead of reporting `Failed to execute 'compile' on 'WebAssembly': HTTP status code is 404`.
 
 Not in this change, and the owner's larger point: EPANET exposes none of its own options yet, and upstream/downstream tracing or isolation cuts are not EPANET options at all. They are graph work that belongs in the core and applies to any network, which is what would let one street network serve two domains without inventing hydraulics for it.
+
+## 2026-08-12 — Reach, upstream, downstream and isochrone are one search, in the core
+
+**Decision:** A new crate, `trama-trace`, answers what a network reaches. `Operation::Trace` takes seeds, a direction (`Forward`, `Backward`, `Both`), a cost (hops, length, seconds) and an optional budget; `Operation::Components` labels every edge with its connected component. `edge_lengths` moves into `trama-format`, where `trama-routing` had its own copy.
+
+**Why:** the owner's fourth point, sharpened. Upstream/downstream tracing and isolation cuts are not EPANET options — they need no hydraulics, only topology, and putting them in the water solver would tie them to a `.inp` when their value is that they work on anything. They are also what lets one street network serve two domains honestly: a road has no diameter, but "what does this junction feed" and "what is cut off if I close this" are real questions about it.
+
+They are one algorithm, not four. Direction, cost and budget are the three knobs; downstream is `Forward` with no budget, an isochrone is `Both` costed in seconds with one. Writing them separately would have meant the same loop four times under four domain names — which is precisely how a domain word enters a core that claims to have none. "Upstream" is water's word for `Direction::Backward`.
+
+The forward case needs no direction rule at all: SPEC 4 gives a directed edge a single adjacency entry, at its source, so walking the CSR as written already refuses to cross an arrow backwards. Backward and Both are that list inverted and both lists together. This is the third time the CSR has turned out to encode a rule the caller expected to implement.
+
+**Consequence:** Ten tests, two of them proved to bite by mutation — making `Forward` ignore direction fails `downstream_from_a_tail_reaches_nothing`, and disabling the budget check fails two more. Traces are emitted as a progression, so the scrub unwinds a spread the way it unwinds a route. Components answers "is this one network or twelve", which is the question that cost hours when the first OpenStreetMap extract came back in fragments and the map looked fine.
+
+Moving `edge_lengths` to the core surfaced #132: those are Web Mercator metres, long by `1/cos(latitude)` — about 30% at Madrid's. `trama-routing` has always had it, so the playground's 3.24 km route is nearer 2.5 km on the ground. Fixed separately, because it changes published numbers.
