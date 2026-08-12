@@ -92,16 +92,34 @@ fn feature(geometry: Value, id: u64, row: Option<&BTreeMap<String, Value>>) -> V
 /// This is what a solver costing a traversal needs, and it is the same reconstruction the export
 /// does before projecting to WGS 84 — geometry rather than domain, so it belongs to the format.
 /// Lengths carry the precision the file stores: section 3.1 quantizes to about 4 cm at `z14`.
-/// The length of every edge, in the metres of the projection the container stores.
+/// The length of every edge, in metres on the ground.
 ///
-/// ponytail: Web Mercator metres, not ground metres — they run long by `1/cos(latitude)`, about
-/// 30% at Madrid's. Every consumer so far compares lengths within one network, where the factor
-/// cancels, and correcting it is #132 rather than silent.
+/// Web Mercator is conformal: it keeps angles by stretching distance, by exactly `1/cos(latitude)`
+/// — 31% at Teruel's 40.4°, 55% at 50°, unbounded towards the poles. Projected metres are
+/// therefore not metres, and every one of these numbers reaches a person: an odometer, a travel
+/// time, how far a vehicle gets in ten minutes.
+///
+/// The factor is applied per segment at its midpoint, which is exact to first order and wrong
+/// only where a single segment spans degrees of latitude — a case the tile grid rules out.
 pub fn edge_lengths(data: &[u8]) -> Result<Vec<f64>, String> {
     Ok(edge_paths(data)?
         .iter()
-        .map(|path| path.windows(2).map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1)).sum())
+        .map(|path| {
+            path.windows(2)
+                .map(|pair| {
+                    let projected = (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+                    projected * ground_scale((pair[0].1 + pair[1].1) / 2.0)
+                })
+                .sum()
+        })
         .collect())
+}
+
+/// `cos(latitude)` at a Web Mercator northing: what turns projected metres into ground metres.
+fn ground_scale(northing: f64) -> f64 {
+    let radius = WORLD / std::f64::consts::TAU;
+    let latitude = 2.0 * (northing / radius).exp().atan() - std::f64::consts::FRAC_PI_2;
+    latitude.cos()
 }
 
 pub fn edge_paths(data: &[u8]) -> Result<Vec<Vec<(f64, f64)>>, String> {

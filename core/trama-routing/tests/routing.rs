@@ -37,12 +37,10 @@ fn graph_of(container: &[u8]) -> trama_format::Graph {
     parse_graph(&sections.iter().find(|s| &s.kind == b"GRPH").unwrap().payload).unwrap()
 }
 
+/// The core's own measurement, not a second copy of it: a test that measures differently from
+/// the code under test is comparing two answers and calling it a check.
 fn lengths_of(container: &[u8]) -> Vec<f64> {
-    trama_format::edge_paths(container)
-        .unwrap()
-        .iter()
-        .map(|path| path.windows(2).map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1)).sum())
-        .collect()
+    trama_format::edge_lengths(container).unwrap()
 }
 
 /// The node index nearest a WGS 84 position, so a test can name a corner rather than an index.

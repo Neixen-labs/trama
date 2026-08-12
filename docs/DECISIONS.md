@@ -287,3 +287,17 @@ Shipped compiled because the numbers make the argument: 240 kB against the 1.9 M
 Two things this surfaced. The renderer drew whichever edge channel came first, which was fine with one declared channel and wrong with four: each engine now names the channel it paints, which is not always the one it requires — EPANET needs `pressure` to prove the file came from a `.inp` and draws `flow`. And a real city has stray pieces: two clicks can land in different components, so `no route from node 1619 to node 1790` became a sentence about the network being in pieces rather than about node indices.
 
 The published fixture has its own test — one component holding over 90%, crossable end to end, critical streets present but not everywhere. The first extract this project shipped was in fragments and rendered perfectly.
+
+## 2026-08-12 — Metres on the ground, not metres on the projection
+
+**Decision:** `edge_lengths` multiplies each segment by `cos(latitude)` at its midpoint, turning Web Mercator metres into ground metres. Everything costed by length — routes, travel times, isochrones, the odometer — changes with it.
+
+**Why:** Mercator is conformal. It keeps angles by stretching distance, by exactly `1/cos(latitude)`: 31% at Teruel's 40.4°, 55% at 50°, unbounded towards the poles. `trama-routing` measured this way from its first commit and `trama-trace` inherited it, so every number the demo showed a visitor was long by a third. The reason it survived this long is that the factor is near-constant across one city and cancels in any comparison — which route is shorter was always right; how long it is never was.
+
+The correction is per segment at its midpoint, exact to first order and wrong only where one segment spans degrees of latitude, which the tile grid rules out.
+
+**Consequence:** The published example goes from 611.3 km of street to 465.8 km. A route across Teruel is 25 minutes rather than 28. The ten-minute isochrone *grows* — 5,214 deltas to 6,017 — because streets stopped costing a third more than they do. Critical edges are unchanged, being a property of shape and not of distance.
+
+Correcting it also surfaced a test that was checking nothing: `trama-routing`'s suite kept its own copy of the length calculation, so it compared an uncorrected measurement against a corrected solver and failed. A test that measures differently from the code under test is comparing two answers and calling it agreement. It now calls `edge_lengths`.
+
+The container is untouched: this is a reading of stored geometry, not a change to what is stored, so `fixtures/teruel.trama` is byte-identical and no file needs regenerating.

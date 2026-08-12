@@ -360,3 +360,61 @@ fn edge_paths_measures_a_segment_against_its_known_ground_length() {
     let length: f64 = path.windows(2).map(|pair| (pair[1].1 - pair[0].1).abs()).sum();
     assert!((length - 146.0).abs() < 2.0, "length {length}");
 }
+
+/// A degree of longitude on the sphere the projection is built on: `2πR / 360`, times `cos φ`.
+/// A degree of latitude is the same arc without the cosine. Both are what a tape measure would
+/// find, and neither is what Web Mercator reports.
+const DEGREE: f64 = 40075016.68557849 / 360.0;
+
+fn length_of(coordinates: Value) -> f64 {
+    let container = compile(&[line("l", coordinates, json!({}))], &[], &[]).unwrap();
+    trama_format::edge_lengths(&container).unwrap()[0]
+}
+
+#[test]
+fn lengths_are_metres_on_the_ground_and_not_metres_on_the_projection() {
+    // A hundredth of a degree of longitude at Teruel's latitude.
+    let latitude: f64 = 40.34;
+    let expected = DEGREE * 0.01 * latitude.to_radians().cos();
+
+    let measured = length_of(json!([[-1.1100, latitude], [-1.1000, latitude]]));
+
+    assert!(
+        (measured - expected).abs() / expected < 0.005,
+        "measured {measured:.1} m against {expected:.1} m on the ground"
+    );
+}
+
+#[test]
+fn the_projection_would_have_run_a_third_long_there() {
+    let latitude: f64 = 40.34;
+    let ground = DEGREE * 0.01 * latitude.to_radians().cos();
+    let projected = DEGREE * 0.01;
+
+    let measured = length_of(json!([[-1.1100, latitude], [-1.1000, latitude]]));
+
+    // The bug this replaces, stated as a number so the fix cannot quietly regress: at Teruel the
+    // projection reports 31% more street than exists.
+    assert!((projected / ground - 1.311).abs() < 0.01, "the inflation there is {:.3}", projected / ground);
+    assert!(measured < projected * 0.8, "measured {measured:.1} m, projected would be {projected:.1} m");
+}
+
+#[test]
+fn a_north_south_span_is_not_stretched_by_latitude() {
+    // On the sphere a degree of latitude is the same arc everywhere, which the correction must
+    // not undo: the scale factor is isotropic, so it applies to the segment and not to its axis.
+    let expected = DEGREE * 0.01;
+
+    let measured = length_of(json!([[-1.1100, 40.3400], [-1.1100, 40.3500]]));
+
+    assert!((measured - expected).abs() / expected < 0.005, "measured {measured:.1} m against {expected:.1} m");
+}
+
+#[test]
+fn the_equator_needs_no_correction_at_all() {
+    let expected = DEGREE * 0.01;
+
+    let measured = length_of(json!([[0.0000, 0.0], [0.0100, 0.0]]));
+
+    assert!((measured - expected).abs() / expected < 0.005, "measured {measured:.1} m against {expected:.1} m");
+}
