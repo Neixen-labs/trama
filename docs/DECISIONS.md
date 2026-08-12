@@ -234,4 +234,4 @@ Rebuilding the path from deltas rather than asking the solver for it keeps the l
 
 **Consequence:** Measured on the same session: routing two points across Madrid gives a 3.24 km flight, where the old tour of that network was 114.87 km of doubling back; Net3's pulse still tours its 425 m. The fly row is hidden after compiling and appears only after a solve. Direction inference has no ground truth to check against — a route that revisits an edge in both directions would chain wrong — which costs nothing for a camera and would matter for anything measuring.
 
-Found while testing, and left as #129: the demo pulse on a street network answers `the container declares no edge channel named 'flow'`. The picker offers three solvers with no sign of which network each one applies to.
+Found while testing, and left as #130: the demo pulse on a street network answers `the container declares no edge channel named 'flow'`. The picker offers three solvers with no sign of which network each one applies to.
