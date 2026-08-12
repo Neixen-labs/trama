@@ -2,12 +2,14 @@
 /**
  * Frame-time benchmark for the phase 4 criterion: 100k segments with animated state.
  *
- *   uv run --project ../compiler python ../compiler/benchmarks/grid_container.py --side 224 --out /tmp/bench.trama
+ *   cargo run --release -p trama-cli --bin grid -- --side 224 --channels --out /tmp/bench.trama
  *   node bench/frames.mjs --container /tmp/bench.trama
  *
  * The budget is the environment's: FRAME_BUDGET_MS, 16.7 by default. A machine without a GPU
  * renders through SwiftShader and will not meet it — that is a fact about the machine, so the
- * exit code is a failure only when a budget was asked for explicitly.
+ * exit code is a failure only when a budget was asked for explicitly. Such a machine is also
+ * slow enough that the default frame count outlives the timeout, which is what --frames and
+ * --warmup are for.
  */
 
 import { createReadStream, statSync } from "node:fs";
@@ -47,7 +49,10 @@ const browser = await chromium.launch({ args: ["--enable-gpu", "--ignore-gpu-blo
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const failures = [];
 page.on("pageerror", (error) => failures.push(error.message));
-await page.goto(`http://127.0.0.1:${port}/engine/bench/index.html`);
+const knobs = new URLSearchParams(
+  [["frames", argument("frames", null)], ["warmup", argument("warmup", null)]].filter(([, value]) => value !== null),
+);
+await page.goto(`http://127.0.0.1:${port}/engine/bench/index.html?${knobs}`);
 const result = await page.waitForFunction(() => window.__bench, null, { timeout: 120000 }).then((handle) => handle.jsonValue());
 // A benchmark that draws nothing is very fast. --screenshot is how that stays disprovable.
 const shot = argument("screenshot", null);

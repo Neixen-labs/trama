@@ -39,7 +39,9 @@ jobs:
           npm run build
       - name: Measure
         working-directory: engine
-        run: npm run bench -- --container "${RUNNER_TEMP}/bench.trama" --screenshot "${RUNNER_TEMP}/frame.png"
+        # Fewer frames than a local run: SwiftShader spends hundreds of milliseconds on each
+        # one, and 360 of them outlive the harness timeout. Enough to bind state and draw.
+        run: npm run bench -- --container "${RUNNER_TEMP}/bench.trama" --frames 60 --warmup 10 --screenshot "${RUNNER_TEMP}/frame.png"
       - uses: actions/upload-artifact@v4
         with:
           name: frame
