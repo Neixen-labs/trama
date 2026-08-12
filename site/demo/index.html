@@ -98,23 +98,17 @@
       </div>
 
       <div class="row live" id="time-row" hidden>
-        <select id="engine-choice">
-          <option value="epanet">EPANET</option>
-          <option value="routing">ruta más rápida</option>
-          <option value="example">pulso de demostración</option>
-        </select>
+        <select id="engine-choice"></select>
         <button id="solve" type="button">simular</button>
         <input id="scrub" type="range" min="0" max="600" step="60" value="0" disabled />
         <output id="clock" style="color: var(--dim); min-width: 4em; text-align: right">—</output>
       </div>
+      <p class="live" id="engine-note" style="margin: 6px 0 0; color: var(--dim); font-size: 12px"></p>
 
       <p class="note" id="note">
         EPANET se ejecuta aquí mismo, compilado a WebAssembly sobre WASI, que es lo que le da el sistema de archivos
-        que su API necesita. Solo funciona con redes importadas de un <code>.inp</code>; para un GeoJSON queda el pulso
-        de demostración, que difunde sobre la topología y sirve para ver el tiempo moverse, no para calcular nada.
-        La ruta más rápida necesita una red de calles: elige dos puntos o más sobre el mapa. Mide en tiempo, no en
-        distancia, leyendo el límite de velocidad de cada calle, y respeta los sentidos únicos, así que la vuelta
-        rara vez coincide con la ida.
+        que su API necesita. Cada cálculo escribe en un canal que la red tiene que declarar, así que lo que no se
+        puede ejecutar sobre la red cargada aparece desactivado, con el motivo, en vez de fallar al pulsar.
       </p>
       <p class="note">
         Un <code>.trama</code> es un archivo y se comporta como tal: descárgalo, mándaselo a quien quieras, y al
@@ -202,7 +196,11 @@
             directory,
           ],
         );
-        const module = await WebAssembly.compileStreaming(fetch("vendor/trama-epanet-wasi.wasm"));
+        // A build made without a WASI SDK ships no EPANET at all, and `compileStreaming` reports
+        // that as a WebAssembly error about an HTTP status code, which explains nothing.
+        const response = await fetch("vendor/trama-epanet-wasi.wasm");
+        if (!response.ok) throw new Error("esta versión del playground no incluye el módulo de EPANET");
+        const module = await WebAssembly.compileStreaming(response);
         const instance = await WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport });
         let code = 0;
         try {
@@ -292,6 +290,7 @@
             timeSeconds: () => Number(document.querySelector("#scrub").value),
           };
         };
+        offerEngines(new Set(channels.map((candidate) => candidate.name)));
         state = makeState(document.querySelector("#engine-choice").value);
 
         map.on("click", (moment) => {
@@ -309,7 +308,7 @@
           });
           map.addLayer(layer);
         });
-        document.querySelector("#time-row").hidden = state === null;
+        document.querySelector("#time-row").hidden = false;
         return { tiles: geometry.size, nodes: graph.nodes.length, edges: graph.edges.length };
       }
 
@@ -541,6 +540,68 @@
         });
       }
 
+      /**
+       * What each solver computes, and the channel a container must declare for it to run.
+       *
+       * The requirement is read off the file rather than guessed from its extension: a solver
+       * writes into a declared channel, so a container that declares none is a container that
+       * solver cannot touch. This is what stops the page offering a calculation that answers
+       * `the container declares no edge channel named 'flow'` after the click.
+       */
+      const ENGINES = [
+        {
+          value: "epanet",
+          label: "EPANET · presión y caudal",
+          channel: "pressure",
+          needs: "una red importada de un .inp de EPANET",
+          does: "resuelve la hidráulica con el toolkit de EPANET 2.3 y escribe presión en los nudos y caudal en los tramos, 24 horas en pasos de una hora.",
+        },
+        {
+          value: "routing",
+          label: "ruta más rápida",
+          channel: "on_route",
+          needs: "una red de calles con sentidos y velocidades",
+          does: "busca el camino más rápido entre los puntos que elijas, midiendo en tiempo y respetando los sentidos únicos, y marca por dónde va el vehículo en cada instante.",
+        },
+        {
+          value: "example",
+          label: "pulso de demostración",
+          channel: "flow",
+          needs: "un canal de tramo llamado flow",
+          does: "no calcula nada real: difunde un pulso por la topología para ver el tiempo moverse sobre la red.",
+        },
+      ];
+
+      /** Rebuilds the picker for the container in hand, and returns whether anything can run. */
+      function offerEngines(declared) {
+        const select = document.querySelector("#engine-choice");
+        select.replaceChildren();
+        for (const engine of ENGINES) {
+          const option = document.createElement("option");
+          option.value = engine.value;
+          option.disabled = !declared.has(engine.channel);
+          option.textContent = option.disabled ? `${engine.label} — necesita ${engine.needs}` : engine.label;
+          select.append(option);
+        }
+        const usable = ENGINES.find((engine) => declared.has(engine.channel));
+        if (usable !== undefined) select.value = usable.value;
+        document.querySelector("#solve").disabled = usable === undefined;
+        describeEngine();
+        return usable !== undefined;
+      }
+
+      /** One line under the picker saying what the chosen solver will do, or why it cannot. */
+      function describeEngine() {
+        const select = document.querySelector("#engine-choice");
+        const engine = ENGINES.find((candidate) => candidate.value === select.value);
+        const note = document.querySelector("#engine-note");
+        if (engine === undefined) {
+          note.textContent = "Esta red no declara ningún canal de estado, así que no hay nada que simular sobre ella.";
+          return;
+        }
+        note.textContent = engine.does;
+      }
+
       const panel = document.querySelector("#panel");
       const foldButton = document.querySelector("#fold");
       const narrow = window.matchMedia("(max-width: 640px)");
@@ -569,7 +630,10 @@
       });
 
       document.querySelector("#clear-waypoints").addEventListener("click", clearWaypoints);
-      document.querySelector("#engine-choice").addEventListener("change", updateWaypointCount);
+      document.querySelector("#engine-choice").addEventListener("change", () => {
+        updateWaypointCount();
+        describeEngine();
+      });
 
       document.querySelector("#fly").addEventListener("click", () => {
         if (flight !== null) stopFlight();

@@ -235,3 +235,15 @@ Rebuilding the path from deltas rather than asking the solver for it keeps the l
 **Consequence:** Measured on the same session: routing two points across Madrid gives a 3.24 km flight, where the old tour of that network was 114.87 km of doubling back; Net3's pulse still tours its 425 m. The fly row is hidden after compiling and appears only after a solve. Direction inference has no ground truth to check against — a route that revisits an edge in both directions would chain wrong — which costs nothing for a camera and would matter for anything measuring.
 
 Found while testing, and left as #130: the demo pulse on a street network answers `the container declares no edge channel named 'flow'`. The picker offers three solvers with no sign of which network each one applies to.
+
+## 2026-08-12 — A solver is offered only where its channel exists
+
+**Decision:** The engine picker is built from the container. Each solver declares the channel it writes — `pressure` for EPANET, `on_route` for routing, `flow` for the pulse — and an option whose channel the file does not declare is disabled, saying what it would need. The first usable solver is selected, a line under the picker says what it will do, and a network that declares nothing keeps the row with the reason visible instead of hiding it.
+
+**Why:** of the nine combinations of three examples and three solvers, three worked. The other six failed *after* the click, with `the container declares no edge channel named 'flow'` — a sentence about the format's internals offered to someone who wanted to see a network. Worse, the GeoJSON example could not reach any solver at all because the row disappeared, while the panel's own note promised the pulse for exactly that case.
+
+The requirement is read off the file, not guessed from its extension. A solver writes into a declared channel, so a container that declares none is one it cannot touch, and that is a fact the file states rather than something the page infers. It also means a new importer that declares `on_route` gets routing offered with no change here.
+
+**Consequence:** Verified across the matrix: Net3 offers EPANET and the pulse with routing disabled, Madrid offers routing with the other two disabled, and the GeoJSON offers none with a sentence saying why and `simular` disabled. Nothing fails after the click any more. A missing EPANET module — a build made without a WASI SDK — now says so instead of reporting `Failed to execute 'compile' on 'WebAssembly': HTTP status code is 404`.
+
+Not in this change, and the owner's larger point: EPANET exposes none of its own options yet, and upstream/downstream tracing or isolation cuts are not EPANET options at all. They are graph work that belongs in the core and applies to any network, which is what would let one street network serve two domains without inventing hydraulics for it.
