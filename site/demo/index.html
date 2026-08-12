@@ -246,11 +246,12 @@
         });
 
         const graph = parseGraph(readSection(bufferOf(container), parsed.sections.find((s) => s.type === "GRPH"), inflate));
-        // The flight path: one connected walk from an endpoint, chained into a measurable polyline.
+        // No flight until something has been computed: a camera touring a network with nothing on
+        // it is a screensaver, and on 806 streets it reads as one.
         stopFlight();
-        route = buildRoute(graph, walk(graph, startNode(graph), 5000), geometry);
-        document.querySelector("#fly-row").hidden = route.length === 0;
-        document.querySelector("#odometer").textContent = metres(route.length);
+        route = null;
+        geometryTiles = geometry;
+        document.querySelector("#fly-row").hidden = true;
         // Where each node sits, read off the ends of the edges that meet there — the same
         // derivation the exporter does, and the only way a map click can name a node.
         nodePositions = new Array(graph.nodes.length);
@@ -338,6 +339,45 @@
        * The solver reports progress against a clock the caller chose, so only the stream knows
        * when the journey actually ends. Each record is the 18 bytes SPEC's contract defines.
        */
+      /**
+       * The edges a route visited, in the order it reached them, as flight steps.
+       *
+       * The deltas say when each edge was entered and nothing about which way; direction comes
+       * from chaining, since an edge whose source is not where the last one ended is being
+       * travelled backwards. This is what makes the camera follow the answer rather than tour
+       * the graph.
+       */
+      function routeSteps(graph, deltas) {
+        const view = new DataView(deltas.buffer, deltas.byteOffset, deltas.byteLength);
+        const firstReached = new Map();
+        for (let at = 0; at + 18 <= deltas.byteLength; at += 18) {
+          if (view.getFloat32(at + 14, true) !== 1) continue;
+          const id = view.getBigUint64(at, true);
+          const t = view.getFloat32(at + 10, true);
+          if (!firstReached.has(id) || t < firstReached.get(id)) firstReached.set(id, t);
+        }
+        const indexOf = new Map(graph.edges.map((edge, index) => [edge.id, index]));
+        const ordered = [...firstReached.entries()]
+          .sort((a, b) => a[1] - b[1])
+          .map(([id]) => indexOf.get(id))
+          .filter((index) => index !== undefined);
+        if (ordered.length === 0) return [];
+        // The first edge has no predecessor to chain against, so the second one decides it.
+        const first = graph.edges[ordered[0]];
+        const second = ordered.length > 1 ? graph.edges[ordered[1]] : undefined;
+        const startsAtSource =
+          second === undefined ||
+          first.targetNodeIndex === second.sourceNodeIndex ||
+          first.targetNodeIndex === second.targetNodeIndex;
+        let at = startsAtSource ? first.sourceNodeIndex : first.targetNodeIndex;
+        return ordered.map((edgeIndex) => {
+          const edge = graph.edges[edgeIndex];
+          const direction = at === edge.sourceNodeIndex ? 1 : -1;
+          at = direction === 1 ? edge.targetNodeIndex : edge.sourceNodeIndex;
+          return { edgeIndex, direction };
+        });
+      }
+
       function arrivalOf(deltas, step) {
         const view = new DataView(deltas.buffer, deltas.byteOffset, deltas.byteLength);
         const firstReached = new Map();
@@ -376,6 +416,8 @@
 
       // --- the fly-through ---
       let route = null;
+      let geometryTiles = null;
+      let flightLabel = "sobrevolar la red";
       let flight = null;
 
       /**
@@ -393,10 +435,11 @@
         if (flight === null) return;
         cancelAnimationFrame(flight.frame);
         flight = null;
-        document.querySelector("#fly").textContent = "sobrevolar la red";
+        document.querySelector("#fly").textContent = flightLabel;
       }
 
       function startFlight() {
+        flightLabel = document.querySelector("#fly").textContent;
         const speed = route.length / FLIGHT_SECONDS;
         const zoom = zoomFor(route, map.getCanvas().clientWidth);
         const odometer = document.querySelector("#odometer");
@@ -573,6 +616,15 @@
           // these streets are two. Without this the whole journey happens in the first inch of
           // the slider and dragging it does nothing visible.
           if (choice === "routing") scrub.max = String(arrivalOf(deltas, Number(scrub.step)));
+          // The flight follows what was computed: the route itself when there is one, and
+          // otherwise a tour of the network, which now has state on it worth looking at.
+          route =
+            choice === "routing"
+              ? buildRoute(routableGraph, routeSteps(routableGraph, deltas), geometryTiles)
+              : buildRoute(routableGraph, walk(routableGraph, startNode(routableGraph), 5000), geometryTiles);
+          document.querySelector("#fly").textContent = choice === "routing" ? "sobrevolar la ruta" : "sobrevolar la red";
+          document.querySelector("#fly-row").hidden = route.length === 0;
+          document.querySelector("#odometer").textContent = metres(route.length);
           scrub.disabled = false;
           scrub.value = "0";
           clock.textContent = `${scrub.value} s`;

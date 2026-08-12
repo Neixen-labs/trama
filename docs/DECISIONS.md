@@ -223,3 +223,15 @@ Dropping the stats in a short window is the same reasoning as the fold itself: i
 Three equal buttons also said the wrong thing. They read as "pick a format" when the claim is that the container *is* the format, and the GeoJSON was 599 kB against the container's 43 kB — offering the same map fourteen times larger. Export is still a real promise, and a promise about not being trapped is better kept by the command line than by a button competing with the thing being demonstrated. Removing the two WASM exports saved 19,411 bytes, under 1%: the weight was never the argument.
 
 **Consequence:** Verified end to end — Madrid compiles to 43 kB, downloads as 44,069 bytes, reopens with no compile step at 617 nodes and 806 edges, and *routes on the reopened file*, 1,705 deltas from a container the page never compiled. A file renamed to `.trama` is refused by its magic with a sentence rather than a stack trace. This is the minimum for the format to exist for anyone but its author; published binaries and a published package are still missing.
+
+## 2026-08-12 — The camera follows the answer, not the graph
+
+**Decision:** No flight is offered until a solver has run. With a route, the camera flies the route, reconstructed from the delta stream: edges ordered by when each was first reached, direction inferred by chaining. With a field simulation it tours the network as before.
+
+**Why:** the flight path was built at compile time from a depth-first walk, so it existed before there was any result, and it retraced its own steps at every dead end — on 806 streets that is a camera turning around every few seconds. The owner's objection was sharper than the symptom: flying over a network with nothing computed on it is a screensaver. A camera is for travelling a result.
+
+Rebuilding the path from deltas rather than asking the solver for it keeps the layer boundary the contract draws: a solver emits `(entity_id, channel, t, value)` and nothing else, and the page derives a path from those alone. The deltas say when each edge was entered and never which way it was crossed, so direction comes from chaining — an edge whose source is not where the previous one ended is being travelled backwards.
+
+**Consequence:** Measured on the same session: routing two points across Madrid gives a 3.24 km flight, where the old tour of that network was 114.87 km of doubling back; Net3's pulse still tours its 425 m. The fly row is hidden after compiling and appears only after a solve. Direction inference has no ground truth to check against — a route that revisits an edge in both directions would chain wrong — which costs nothing for a camera and would matter for anything measuring.
+
+Found while testing, and left as #129: the demo pulse on a street network answers `the container declares no edge channel named 'flow'`. The picker offers three solvers with no sign of which network each one applies to.
