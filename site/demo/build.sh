@@ -62,7 +62,10 @@ echo "service worker"
 # is in it depends on whether this build had a WASI SDK. The version is the bytes themselves, so
 # a deploy that changes nothing keeps the same cache and one that changes anything replaces it.
 assets="$(cd "$here" && find vendor examples -type f ! -name "*.tsbuildinfo" ! -name "*.map" | LC_ALL=C sort | sed 's|^|"./|; s|$|",|' | tr -d '\n')"
-version="$(cd "$here" && find vendor examples -type f ! -name "*.tsbuildinfo" ! -name "*.map" | LC_ALL=C sort | xargs shasum | shasum | cut -c1-12)"
+# index.html is in the version even though the list names it `./`: it is the one asset the build
+# does not produce, so a page-only change would otherwise keep its cache and never reach anyone
+# who already has the worker installed.
+version="$(cd "$here" && { find vendor examples -type f ! -name "*.tsbuildinfo" ! -name "*.map"; echo index.html; } | LC_ALL=C sort | xargs shasum | shasum | cut -c1-12)"
 sed -e "s|__ASSETS__|[\"./\", ${assets%,}]|" -e "s|__VERSION__|$version|" \
   "$here/sw.template.js" > "$here/sw.js"
 

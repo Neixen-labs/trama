@@ -193,3 +193,13 @@ Three of my own test harnesses were wrong before this was proven: Playwright's `
 Two files because SPEC 9 says an export is two FeatureCollections. One mixed collection would have been friendlier to a browser that saves one file at a time, and would have been the page inventing format, which rule 2 forbids. Two functions rather than one returning both for the same reason: the shape follows the spec, not the download dialog.
 
 **Consequence:** The round trip closes inside the browser. Verified on the Madrid extract: 806 edges out, 686 of them carrying `_trama_directed`, and dropping `madrid.edges.geojson` straight back on the page recompiles to the same 617 nodes and 806 edges — the nodes are not in that file at all, they come back from the section 4.2 quantization cell, which is the identity rule doing exactly what it was written for. The container on disk is byte-identical to the one the page reported. Nothing is uploaded to produce any of it.
+
+## 2026-08-12 — The panel folds, and `hidden` was never hiding anything
+
+**Decision:** `.row:not([hidden])` replaces `.row` in the playground's stylesheet, the panel is bounded by the viewport with its own scroll, and it folds to its header, its stats and the rows that act on the map. On a screen under 640px it folds itself as soon as there is something behind it worth seeing.
+
+**Why:** on a phone the panel was 144% of the screen at rest and 161% while simulating, with the map entirely behind it. The cause was not the layout: `.row { display: flex }` is an author rule and `[hidden]` comes from the browser's own stylesheet, so the author rule won and every row the page believed it was hiding had been visible all along, on every screen. The panel was carrying five rows it thought were gone. Fixing the attribute is the root-cause fix; it shortens the panel everywhere, not only on phones.
+
+What survives the fold is what still has a job while you are looking at the map: flying, picking waypoints, scrubbing time, and the stats that say what the network turned out to be. What disappears is input — dropping a file, choosing an example — which by definition you have finished doing.
+
+**Consequence:** Measured at 390x664: the panel goes from 161% of the screen to 49% while simulating, leaving 325px of map, and the scrub still works folded. Folding is remembered by nothing; a new file expands the panel again through the same automatic path. `build.sh` now includes `index.html` in the cache version, without which a page-only change keeps its cache and never reaches anyone with the service worker already installed — verified by changing the file and watching the digest move.
