@@ -273,3 +273,17 @@ Two of the three are the search that was already there, read differently: isolat
 **Consequence:** Sixteen tests. Mutation found something better than a weak test — flipping `>` to `>=` in the bridge condition fails as it should, but removing `blocked[edge] ||` from isolation failed nothing, because a blocked edge is never crossed and so never reached: the clause was dead. It is gone, and the comment now says why the result is right without it.
 
 The ring-with-a-tail fixture is the shape that makes all three legible at once: cutting a ring edge loses only itself because the ring is its own spare, cutting the tail loses the tail, and two sources on opposite corners split the ring between them.
+
+## 2026-08-12 — One small city, shipped compiled, answering questions that are not about water
+
+**Decision:** `fixtures/madrid.osm.json` is replaced by `fixtures/teruel.trama`: the whole street network of Teruel, 2,770 nodes and 3,649 edges, shipped as a container rather than as source. The playground offers two more calculations over it — an isochrone from one clicked point, and the streets that are the only way through — and `trama-roads` declares the channels they write.
+
+**Why:** the owner's third point. A slice of a large city is a demo; a whole small one is a network, and the questions asked of it are real. The honest part is which questions: a street has no diameter, so a hydraulic simulation over it would be a lie an engineer spots in ten seconds. What it does have is topology, and "how far do I get in ten minutes" and "which streets are the only access to something" are true questions with true answers — the same call a pipe network would make.
+
+Shipped compiled because the numbers make the argument: 240 kB against the 1.9 MB of Overpass JSON, opening in under 300 ms with no compile step. Now that the page can open a `.trama`, the example is the first pillar demonstrated rather than described.
+
+**Consequence:** Verified in the browser: opens in 292 ms, picker offers routing, reach and critical with EPANET and the pulse disabled, critical marks 685 of 3,649 streets, an isochrone from one point spreads with the scrub, and a route across town takes 28 minutes. The critical map is the one that argues by itself — the ring roads and the outlying spurs come back orange, the meshed centre stays blue.
+
+Two things this surfaced. The renderer drew whichever edge channel came first, which was fine with one declared channel and wrong with four: each engine now names the channel it paints, which is not always the one it requires — EPANET needs `pressure` to prove the file came from a `.inp` and draws `flow`. And a real city has stray pieces: two clicks can land in different components, so `no route from node 1619 to node 1790` became a sentence about the network being in pieces rather than about node indices.
+
+The published fixture has its own test — one component holding over 90%, crossable end to end, critical streets present but not everywhere. The first extract this project shipped was in fragments and rendered perfectly.

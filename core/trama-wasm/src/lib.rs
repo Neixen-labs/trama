@@ -60,6 +60,46 @@ pub fn solve_route(
     trama_routing::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))
 }
 
+/// How far a vehicle gets from `seeds` within the window, as a spreading progression.
+///
+/// An isochrone is the same search as a route, stopped by a budget instead of a destination, and
+/// the budget here is the scrub's own window: the spread and the clock are the same number.
+#[wasm_bindgen]
+pub fn solve_reach(
+    container: &[u8],
+    seeds: &[u32],
+    speed: f32,
+    speed_property: Option<String>,
+    t1_seconds: f32,
+) -> Result<Vec<u8>, JsError> {
+    let parameters = trama_trace::Parameters {
+        channel: "reach".into(),
+        operation: trama_trace::Operation::Trace {
+            seeds: seeds.iter().map(|index| *index as usize).collect(),
+            direction: trama_trace::Direction::Forward,
+            budget: Some(t1_seconds as f64),
+        },
+        cost: trama_trace::Cost::Seconds { metres_per_second: speed as f64, speed_property },
+        step_seconds: 60.0,
+    };
+    trama_trace::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))
+}
+
+/// The streets that are the only way through: cutting one splits the network.
+///
+/// No seeds and no cost — it is a property of the shape alone, which is why it needs nothing
+/// clicked on the map.
+#[wasm_bindgen]
+pub fn solve_critical(container: &[u8], t1_seconds: f32) -> Result<Vec<u8>, JsError> {
+    let parameters = trama_trace::Parameters {
+        channel: "critical".into(),
+        operation: trama_trace::Operation::Critical,
+        cost: trama_trace::Cost::Hops,
+        step_seconds: 60.0,
+    };
+    trama_trace::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))
+}
+
 /// Run the example solver over a container and return its packed deltas.
 #[wasm_bindgen]
 pub fn solve(container: &[u8], t1_seconds: f32) -> Result<Vec<u8>, JsError> {

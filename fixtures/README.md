@@ -3,21 +3,30 @@
 Test and demo data. `network.geojson` and `network.trama` are the pair the byte-for-byte
 equivalence test compares, so neither changes without a deliberate reason.
 
-## `madrid.osm.json`
+## `teruel.trama`
 
-An OpenStreetMap extract of central Madrid, 556 ways, as Overpass writes it for `out geom;`.
-Reduced to the tags the road importer reads and rounded to six decimals, which is about 11 cm —
-well under the roughly 4 cm the format quantizes to anyway.
+The whole street network of Teruel, Spain — 2,770 nodes, 3,649 edges — shipped **compiled**.
+That is the point of it: 240 kB as a container against the 1.9 MB of Overpass JSON it came from,
+and the playground opens it without a compile step. The example is the first pillar's claim in
+the one place a visitor can weigh it.
+
+A whole small city rather than a slice of a large one, so the questions asked of it are real:
+a route across town, how far you get in ten minutes, and which streets are the only way through.
+Nothing in it is hydraulic and nothing needed to be invented for it.
 
 **© OpenStreetMap contributors**, licensed under the
 [Open Database License](https://opendatacommons.org/licenses/odbl/) (ODbL). ODbL governs this
 file and any database derived from it; it does not extend to TRAMA's own source, which stays
 under the repository's licence. Anything published from this data must keep the attribution.
 
-Regenerate it with:
+Regenerate it with `teruel.overpassql` and the compiler, both of which are deterministic:
 
 ```bash
-curl -s -X POST https://overpass-api.de/api/interpreter --data-urlencode \
-  'data=[out:json][timeout:80];way["highway"~"^(residential|primary|secondary|tertiary|unclassified|living_street)$"](40.4100,-3.7120,40.4230,-3.6950);out geom;' \
-  -o madrid.osm.json
+curl -s -X POST -d @fixtures/teruel.overpassql https://overpass-api.de/api/interpreter -o teruel.osm.json
+cargo run --release -p trama-cli -- compile --importer roads teruel.osm.json fixtures/teruel.trama
 ```
+
+`core/trama-trace/tests/fixture.rs` checks what the published file has to be true of: one
+connected network holding over 90% of the streets, crossable end to end, with critical streets
+but not made only of them. The first extract this project shipped was in fragments and rendered
+perfectly, which is exactly the failure a screenshot cannot show.
