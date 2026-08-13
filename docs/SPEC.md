@@ -355,7 +355,7 @@ Export creates `nodes` and `edges` feature layers in `EPSG:3857`, with `trama_id
 
 ### EPANET
 
-Import and export of EPANET `.inp` are defined by `docs/EPANET_BOUNDARY.md` and implemented in `solvers/epanet/`, not in the core. The core's obligations are these:
+Import and export of EPANET `.inp` are defined by `docs/EPANET_BOUNDARY.md` and implemented in `core/trama-epanet`, not in the core format crate. The core's obligations are these:
 
 - Junctions, reservoirs, and tanks become nodes; pipes, pumps, and valves become edges. Per-entity scalars become `PROP` columns under opaque string keys, and the entity's EPANET name is one of them, since the rest of the file refers to entities by name.
 - An `.inp` declares no coordinate reference system, so an importer MUST require the caller to state one and MUST NOT infer it from the coordinate ranges. Section 4.2 explains why an inferred spatial answer is the wrong kind of wrong: it is invisible in a rendered map.
