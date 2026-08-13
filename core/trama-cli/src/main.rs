@@ -9,6 +9,8 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 use trama_format::{Import, Importer, parse_options, read_sections};
 
+mod gpkg;
+
 /// Formats the core does not know are read by the crates that own them. The seam is the same
 /// one a plugin would use; linking them here only decides which are present in this binary.
 fn importers() -> Vec<Box<dyn Importer>> {
@@ -88,6 +90,9 @@ fn run(arguments: Arguments) -> Result<(), String> {
                     write(&destination.join("nodes.geojson"), &pretty(&exported.nodes))?;
                     write(&destination.join("edges.geojson"), &pretty(&exported.edges))
                 }
+                // SPEC 9 stores GeoPackage layers in EPSG:3857, so this export skips the
+                // projection to WGS 84 the GeoJSON one ends with.
+                "gpkg" => gpkg::write(&trama_format::export_projected(&container)?, &destination),
                 "inp" => {
                     let options = parse_options(&options)?;
                     let crs = options

@@ -15,6 +15,9 @@ trama-epanet = { path = "../trama-epanet" }
 trama-roads = { path = "../trama-roads" }
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [dev-dependencies]
 trama-format = { path = "../trama-format" }
+# The GeoPackage test reads the file back through SQLite rather than through the writer.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
