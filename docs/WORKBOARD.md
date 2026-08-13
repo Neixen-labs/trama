@@ -34,10 +34,4 @@ A task is unclaimed until its GitHub Issue comment exists. Do not use this file 
 
 ## Ready lanes
 
-| Issue | Lane | Claimed paths | Depends on |
-|---|---|---|---|
-| #9 | Compiler: nullable typed properties for multi-edge GeoJSON | `compiler/**` | none |
-| #10 | Runtime: TypeScript container header/directory reader | `engine/**` | no code dependency; follow `docs/SPEC.md` |
-| #11 | Spec: EPANET import/export boundary proposal | `docs/**` | owner decision before implementation |
-
-These lanes do not overlap. Do not begin EPANET compiler code until its format decision is approved.
+Open GitHub Issues are the lanes. This file used to list three of them by number; they were closed long ago and the table outlived them, which is the failure mode the claim protocol above exists to avoid — a status board in git goes stale silently, while an issue cannot.

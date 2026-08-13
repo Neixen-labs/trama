@@ -3,6 +3,7 @@
 **Status:** Accepted 2026-08-11. The owner took the recommendation on all three decisions.
 **Issue:** [#11](https://github.com/Neixen-labs/trama/issues/11)
 **Affects:** `docs/SPEC.md` section 8, `compiler/`, `solvers/epanet/`
+**Since renamed:** the migration to Rust on 2026-08-11 moved `compiler/` into `core/trama-cli` and `solvers/epanet/` into `core/trama-epanet`. The boundary this decision draws is unchanged and holds today; the directory names below are historical.
 
 | Decision | Answer |
 |---|---|
