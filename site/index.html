@@ -202,7 +202,7 @@
   .spec{
     background:var(--ink-2);border:1px solid var(--line);border-radius:var(--radius);
     padding:22px;font-family:'IBM Plex Mono',monospace;font-size:.78rem;line-height:1.75;
-    color:var(--muted);overflow-x:auto;
+    color:var(--muted);overflow-x:auto;white-space:pre;
   }
   .spec .k{color:var(--water)}
   .spec .v{color:var(--stroke)}
@@ -241,9 +241,10 @@
       <div class="brand">TRAMA <small>// motor de mapas de red</small></div>
       <h1>Tu red, viva en el navegador. <span class="hl">Sin GIS. Sin lock-in.</span></h1>
       <p class="lede">
-        Un formato abierto con el <strong>grafo de tu infraestructura</strong>, render GPU con
-        <strong>eje temporal tipo vídeo</strong> y simulación por <strong>plugins</strong> — hidráulica,
-        rutas, VRP. Todo offline si quieres. Por una fracción del coste de las herramientas enterprise.
+        Sube el modelo que ya tienes — <strong>EPANET, GeoJSON, OpenStreetMap</strong> — y en menos
+        de un minuto lo ves simulado, con el tiempo <strong>como un vídeo</strong>. Es un archivo
+        tuyo, no una cuenta en la nube de nadie: se comparte con un enlace, funciona sin internet
+        y sale a formatos estándar cuando tú digas.
       </p>
 
       <form class="wl" id="wl1" novalidate>
@@ -252,6 +253,7 @@
         <button type="submit">Unirme a la lista</button>
       </form>
       <p class="wl-note mono">Acceso anticipado por orden de lista · sin spam, solo hitos del proyecto</p>
+      <p class="wl-note mono"><a href="/demo/?open=teruel.trama" style="color:var(--water)">▶ o mira una ciudad real ahora — sin registro, en tu navegador</a></p>
       <div class="wl-status" id="status1" role="status" aria-live="polite"></div>
 
 
@@ -261,30 +263,34 @@
   <!-- ============ PILARES ============ -->
   <section>
     <p class="eyebrow"><span class="tick">01</span> // por qué existe</p>
-    <h2>Tres piezas que nadie había unido</h2>
+    <h2>Lo que hoy no puedes hacer</h2>
     <p class="sec-lede">
-      Los formatos abiertos no tienen grafo. Los motores GPU no tienen tiempo. Las plataformas
-      con simulación cuestan decenas de miles al año. <strong>TRAMA une los tres</strong> en un
-      núcleo disponible bajo BSL 1.1.
+      Las herramientas que simulan tu red cuestan <strong>de 6.000 a 15.000 € al año</strong>, por
+      asiento y por dominio. Los formatos abiertos no tienen grafo; los motores de mapas no tienen
+      tiempo. TRAMA une las piezas en un núcleo abierto bajo BSL 1.1.
     </p>
     <div class="pillars">
       <div class="card" style="--accent:var(--water)">
         <span class="tag">formato</span>
-        <h3>Un archivo, toda tu red</h3>
-        <p>Binario pre-teselado con grafo e IDs estables. Se sirve por HTTP range desde cualquier
-        CDN o funciona 100% offline. Exportable a GeoJSON, GeoPackage y MVT: tus datos nunca quedan atrapados.</p>
+        <h3>Tu red es un archivo</h3>
+        <p>Hoy tu modelo vive preso en una licencia, en el PC del técnico que sabe usarla.
+        Un <code>.trama</code> se abre en cualquier navegador, hasta en el móvil: se comparte
+        <strong>con un enlace</strong>, se sirve desde cualquier CDN y funciona 100% offline.</p>
       </div>
       <div class="card" style="--accent:var(--telecom)">
         <span class="tag">render</span>
         <h3>El tiempo como eje</h3>
-        <p>WebGPU con fallback WebGL2. El estado vive en la GPU como ring buffer temporal:
-        recorre 24 h de presiones o tráfico como si fuera un vídeo, y vuela en 3D por la red.</p>
+        <p>Un SIG enseña dónde están las tuberías. Ninguno enseña <strong>qué pasa dentro</strong>
+        a las tres de la tarde. Aquí recorres 24 h de presiones o tráfico como un vídeo y vuelas
+        en 3D por la red — fluido con cien mil tramos, medido, no prometido.</p>
       </div>
       <div class="card" style="--accent:var(--sewer)">
         <span class="tag">solvers</span>
-        <h3>Simulación por plugins</h3>
-        <p>Contrato abierto de solvers: en local (WASM, hasta en móvil) o en servidor. EPANET
-        primero; SWMM, pandapower y VRP detrás. La comunidad puede publicar los suyos.</p>
+        <h3>Un motor, todos los dominios</h3>
+        <p>Cada dominio tiene hoy su silo de software. Aquí el contrato es uno: EPANET escribe
+        presiones, un router escribe rutas, y <strong>«¿quién pierde servicio si corto aquí?»</strong>
+        es la misma pregunta para una válvula que para una calle. SWMM y pandapower encajan sin
+        tocar el núcleo.</p>
       </div>
     </div>
 
@@ -324,8 +330,8 @@
     <div class="steps">
       <div class="step">
         <h3>Sube tus datos</h3>
-        <p>GeoJSON, <code>.inp</code> de EPANET o CSV de paradas. El compilador WASM los convierte
-        al formato TRAMA sin tocar ningún servidor.</p>
+        <p>GeoJSON, <code>.inp</code> de EPANET, un extracto de OpenStreetMap o un <code>.trama</code>
+        ya compilado. El compilador WASM los convierte en tu navegador: nada sale de tu máquina.</p>
       </div>
       <div class="step">
         <h3>Elige un solver</h3>
@@ -346,9 +352,11 @@
     <div class="open">
       <div>
         <h2>La especificación es pública. La salida, siempre libre.</h2>
+        <p class="sec-lede">Si TRAMA desapareciera mañana, tus datos se abren pasado mañana en
+        cualquier GIS del mundo. Ese es el trato, y está medido.</p>
         <ul>
+          <li><strong>Salida verificada</strong> — GeoJSON, GeoPackage y teselas MVT, comprobados con GDAL y lectores independientes, no con nuestra propia herramienta</li>
           <li><strong>BSL 1.1</strong> en núcleo, formato y compilador — uso interno permitido; servicio alojado a terceros requiere licencia</li>
-          <li><strong>Exportadores de ida y vuelta</strong> a formatos estándar desde el día uno</li>
           <li><strong>Self-hosted primero</strong> — el cloud gestionado será opcional, nunca obligatorio</li>
           <li><strong>Registry de solvers</strong> comunitario con verificación y versionado</li>
         </ul>
@@ -372,8 +380,31 @@
   </section>
 
   <!-- ============ CTA FINAL ============ -->
+  <!-- ============ DEVELOPERS ============ -->
+  <section>
+    <p class="eyebrow"><span class="tick">04</span> // para developers</p>
+    <h2>PMTiles lo hizo con los mapas. TRAMA lo hace con las redes.</h2>
+    <p class="sec-lede">
+      Un archivo estático servido por HTTP range requests, sin servidor de tiles. La diferencia:
+      dentro hay un <strong>grafo con IDs estables</strong>, propiedades tipadas y canales de estado
+      que los solvers escriben en runtime — y un runtime TypeScript <strong>sin dependencias</strong>
+      que lo pinta sobre MapLibre con eje temporal.
+    </p>
+    <div class="spec" aria-label="Cómo empezar como developer">
+<span class="c"># hoy: clona y compila — todo el código es público</span>
+git clone https://github.com/Neixen-labs/trama
+
+<span class="c"># al lanzamiento — la lista de espera avisa</span>
+npm install @trama/core    <span class="c"># runtime, 25 kB, cero dependencias</span>
+
+<span class="c"># tu red, fuera, cuando quieras</span>
+trama export red.trama salida/ --to geojson|gpkg|mvt
+    </div>
+  </section>
+
+  <!-- ============ CTA ============ -->
   <section class="cta">
-    <p class="eyebrow"><span class="tick">04</span> // acceso anticipado</p>
+    <p class="eyebrow"><span class="tick">05</span> // acceso anticipado</p>
     <h2>Sé de los primeros en abrir tu red</h2>
     <p class="sec-lede" style="margin-left:auto;margin-right:auto">
       Buscamos utilities, ingenierías y developers para el programa de acceso anticipado.
