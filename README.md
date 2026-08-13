@@ -19,7 +19,7 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 | Piece | What works today | Not yet |
 |---|---|---|
 | `core/trama-format` (Rust) | The container: writer, reader, GeoJSON export in WGS 84 or in projected metres. Byte-identical output for identical input, typed node and edge properties, declared state channels, and opaque records it carries without reading. | polygons, deferred to v1 |
-| `core/trama-cli` (Rust) | `trama compile`, `validate`, `export --to geojson|gpkg|inp`, and the grid generator behind the benchmarks. The GeoPackage carries stable IDs, typed columns and the difference between a null and a zero, and GDAL opens it: 3,649 LineStrings, 2,770 Points, `EPSG:3857` read back from the file's own definition. | CSV points |
+| `core/trama-cli` (Rust) | `trama compile`, `validate`, `export --to geojson|gpkg|inp`, and the grid generator behind the benchmarks. The GeoPackage carries stable IDs, typed columns and the difference between a null and a zero, and GDAL opens it: 3,649 LineStrings, 2,770 Points, `EPSG:3857` read back from the file's own definition. `--points` joins a CSV of coordinates to the nodes they land on. | — |
 | `core/trama-epanet` (Rust) | `.inp` import and export, and a solver that runs the EPANET 2.3 toolkit and streams pressure and flow, natively or in the browser through WASI. Round trip verified by simulation on Net1 and Net3. | — |
 | `core/trama-trace` (Rust) | What a network reaches and what a cut takes out: downstream, upstream, reach, isochrone, isolation, critical edges, source allocation. One search with three knobs for the first four. Nothing in it knows what an edge is. | polygon cuts |
 | `core/trama-roads` (Rust) | Reads an OpenStreetMap extract: translates every spelling of `oneway`, normalises `maxspeed` into a speed column, splits ways at the junctions they cross, and declares the channel a router writes. | turn restrictions |
@@ -68,6 +68,14 @@ cd core && cargo build --release
 ./target/release/trama compile ../fixtures/network.geojson out.trama
 ./target/release/trama validate out.trama
 ```
+
+What another system knows about a place arrives as a CSV, joined to the network by location. Each row's columns become properties of the node its coordinates land on, typed as the values allow and keeping an empty cell distinct from a zero:
+
+```bash
+./target/release/trama compile red.geojson red.trama --points contadores.csv
+```
+
+A row whose coordinates match no node stops the compile and says where it was. That is deliberate: the join is on the quantization cell the file stores, about 4 cm, so a meter measured three metres from the junction is a mismatch — and a compiler that quietly dropped it would report success while losing the row.
 
 Your data leaves the same way it came in. GeoJSON exports as two FeatureCollections in WGS 84; GeoPackage exports as one SQLite database of `nodes` and `edges` layers in `EPSG:3857`, which is what QGIS and anything built on GDAL read:
 

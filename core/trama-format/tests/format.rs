@@ -418,3 +418,39 @@ fn the_equator_needs_no_correction_at_all() {
 
     assert!((measured - expected).abs() / expected < 0.005, "measured {measured:.1} m against {expected:.1} m");
 }
+
+#[test]
+fn a_point_that_matches_no_node_is_rejected_rather_than_dropped() {
+    // The failure this replaces reported success and lost the row: three features in, two
+    // entities out, no message. A compiler may refuse data it cannot represent; it may not
+    // accept it and then not carry it.
+    let outcome = compile(
+        &[
+            line("pipe", json!([[-3.750, 40.350], [-3.749, 40.350]]), json!({})),
+            point(json!([-3.700, 40.300]), json!({"meter": "adrift"})),
+        ],
+        &[],
+        &[],
+    );
+
+    let error = outcome.unwrap_err();
+    assert!(error.contains("-3.7"), "the message must name where the point was: {error}");
+    assert!(error.contains("no node"), "{error}");
+}
+
+#[test]
+fn a_point_on_a_node_still_annotates_it() {
+    let container = compile(
+        &[
+            line("pipe", json!([[-3.750, 40.350], [-3.749, 40.350]]), json!({})),
+            point(json!([-3.750, 40.350]), json!({"meter": "A"})),
+        ],
+        &[],
+        &[],
+    )
+    .unwrap();
+
+    // One node column, from the point that landed on an endpoint.
+    assert_eq!(columns(&container).0, 1);
+    assert_eq!(graph_of(&container).nodes.len(), 2);
+}

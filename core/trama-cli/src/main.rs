@@ -10,6 +10,7 @@ use serde_json::Value;
 use trama_format::{Import, Importer, parse_options, read_sections};
 
 mod gpkg;
+mod points;
 
 /// Formats the core does not know are read by the crates that own them. The seam is the same
 /// one a plugin would use; linking them here only decides which are present in this binary.
@@ -38,6 +39,9 @@ enum Command {
         /// Read the source with this importer instead of deciding by suffix.
         #[arg(long)]
         importer: Option<String>,
+        /// A CSV of points in WGS 84, whose columns annotate the nodes they land on.
+        #[arg(long)]
+        points: Option<PathBuf>,
         /// key=value passed to the importer.
         #[arg(long = "option", short = 'o')]
         options: Vec<String>,
@@ -68,13 +72,18 @@ fn main() -> ExitCode {
 
 fn run(arguments: Arguments) -> Result<(), String> {
     match arguments.command {
-        Command::Compile { source, destination, channels, importer, options } => {
+        Command::Compile { source, destination, channels, importer, points, options } => {
             let declared: Vec<Value> = match &channels {
                 Some(path) => serde_json::from_str(&read(path)?).map_err(|error| error.to_string())?,
                 None => Vec::new(),
             };
             let options = parse_options(&options)?;
-            let imported = load(&source, importer.as_deref(), &options)?;
+            let mut imported = load(&source, importer.as_deref(), &options)?;
+            // The CSV joins to the network by location, so it is compiled with it rather than
+            // separately: a point on its own has no node to attach to.
+            if let Some(path) = &points {
+                imported.features.extend(points::read(&read(path)?)?);
+            }
             // An explicit --channels wins: the caller may know more than the format does.
             let channels = if declared.is_empty() { &imported.channels } else { &declared };
             let bytes = trama_format::compile(&imported.features, channels, &imported.extras)?;
