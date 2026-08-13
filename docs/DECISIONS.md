@@ -347,3 +347,29 @@ Two facts worth recording while they were visible. The page makes no third-party
 That is a large, fragile change bought for performance we do not need. The frame benchmark draws 103,040 segments with animated state in 0.6 ms against a 16.7 ms budget, on integrated graphics from 2017. There is twenty times the headroom, so the honest reason to want WebGPU is compute shaders and a future workload, not this one.
 
 **Consequence:** `KICKOFF.md` pillar two is met in part — GPU state textures, the temporal ring buffer, in-shader interpolation and the fly-through all exist — with the API choice left open. The cost of waiting is a dependency on someone else's roadmap; the cost of not waiting is owning a map camera. We chose the pillar we can revisit cheaply: only three of the twelve modules in `engine/src` name a graphics API at all — `line-renderer.ts`, `state-texture.ts` and the `maplibre.ts` adapter, 422 lines between them against 1,482 — so the day MapLibre offers the context, the port is small and local.
+
+## 2026-08-13 — SQLite enters, but only through the command line
+
+**Decision:** `trama export --to gpkg` writes a real GeoPackage, and `rusqlite` with its bundled SQLite is added to `trama-cli` and to nothing else. `trama-format` keeps its three dependencies and stays free of C.
+
+**Why:** SPEC 9 has declared GeoPackage export mandatory since the format was written, and it was the one promise in the anti-lock-in claim with no implementation behind it. A `.gpkg` is a SQLite database with the tables OGC requires, so there is no version of this that avoids SQLite: hand-rolling the file format means writing b-trees to reimplement something that already exists correctly.
+
+Where it lives matters more than which crate it is. `trama-format` compiles to WebAssembly for the browser, and a C database engine has no business riding along to compile a network in a page. Confining the writer to the command line keeps the wasm module at 399 kB and gives the dependency a boundary that a build failure will enforce if anyone moves it.
+
+The export needed one thing from the format: coordinates in `EPSG:3857`, because the GeoJSON export ends in WGS 84 and GeoPackage layers store metres. Rather than un-projecting on the way out — a second implementation of arithmetic this repository has already been bitten by duplicating — `export` was split into `export` and `export_projected` over one shared reconstruction.
+
+**Consequence:** Teruel exports to a 1.1 MB GeoPackage from a 234 kB container, with 3,649 edges, 2,770 nodes, 75 columns of OpenStreetMap tags and `roads:speed_ms` as a REAL. The cost of leaving is now a measured number rather than a promise.
+
+Two properties were kept deliberately. `last_change` is written as the epoch instead of the wall clock, so the same container exports the same bytes and two people can diff their exports — GeoPackage requires the column, not that it be truthful. And absence survives: the fixture carries a string, an f64, an i64, a bool and, on two of three edges, the *lack* of some of them, which arrive as SQL NULL rather than as `0` or `""`, the distinction SPEC 5 insists on.
+
+**Unverified:** no GDAL-based reader has opened one of these files yet — there is none on the machine that wrote it. Every assertion goes through SQLite reading the database back, which is structural evidence, not interoperability evidence. Opening one in QGIS is the outstanding check.
+
+## 2026-08-13 — Polygons wait for v1, and the reason is the graph
+
+**Decision:** v0 stays lines and points. Polygons are not added to the format now, and this is the record of the decision rather than of an oversight.
+
+**Why:** the question polygons ask is not "can `GEOM` hold a mesh" — it can, and §3.3 already explains why the mesh fields exist and stay zero for lines. It is "what is a polygon in a graph". `PROP` and `STCH` both declare `entity_kind: 1=node, 2=edge`, so a pressure zone or a service area — the polygons this product would actually want — has nowhere to hang an ID, a property or a state channel. Adding a third kind means a spec change touching two sections, the compiler, the exporters and a triangle path in a renderer that has never drawn one.
+
+That is the largest change available in v0, and nothing in the product asks for it today. `KICKOFF.md` already deferred everything that is not the network itself — labels, raster, complex symbology — to v1, and an area is in that family. The demo that would justify it, colouring a service area by what a closure does to it, does not exist yet; when it does, it will also say what the area needs to store, which is a better position to design from than this one.
+
+**Consequence:** the README's "not yet" for polygons now points at a decision. When it is revisited, the shape to weigh is a third entity kind against a polygon as an existing entity's footprint — the first is a model change, the second reuses node identity and cannot express a zone that is not a node.

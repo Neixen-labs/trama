@@ -10,7 +10,7 @@ mod import;
 mod read;
 mod write;
 
-pub use export::{Export, Rows, edge_lengths, edge_paths, edge_properties, export};
+pub use export::{Export, Rows, edge_lengths, edge_paths, edge_properties, export, export_projected};
 pub use import::{Import, Importer, parse_options};
 pub use read::{Adjacency, Edge, GeometryReference, Graph, Node, Section, parse_graph, read_sections};
 pub use write::{Extra, compile};

@@ -21,8 +21,21 @@ pub struct Export {
     pub edges: Value,
 }
 
-/// Node and edge FeatureCollections, ready to write beside each other.
+/// Node and edge FeatureCollections in WGS 84, ready to write beside each other.
 pub fn export(data: &[u8]) -> Result<Export, String> {
+    export_as(data, wgs84)
+}
+
+/// The same features in `EPSG:3857` metres, which is what SPEC 9's GeoPackage layers store.
+///
+/// One reconstruction, two projections: exporting metres by un-projecting the WGS 84 export
+/// would be a second implementation of the same arithmetic, and this repository has already
+/// paid once for measuring the same thing two ways.
+pub fn export_projected(data: &[u8]) -> Result<Export, String> {
+    export_as(data, |point| point)
+}
+
+fn export_as(data: &[u8], project: fn((f64, f64)) -> (f64, f64)) -> Result<Export, String> {
     let sections = read_sections(data)?;
     let graph = sections.iter().find(|s| &s.kind == b"GRPH").ok_or("container is missing a GRPH section")?;
     let properties = sections.iter().find(|s| &s.kind == b"PROP").ok_or("container is missing a PROP section")?;
@@ -42,7 +55,7 @@ pub fn export(data: &[u8]) -> Result<Export, String> {
         let start = edge.reference_start as usize;
         let references = &parsed.references[start..start + edge.reference_count as usize];
         let metres = edge_coordinates(references, &geometry)?;
-        let coordinates: Vec<(f64, f64)> = metres.iter().map(|point| wgs84(*point)).collect();
+        let coordinates: Vec<(f64, f64)> = metres.iter().map(|point| project(*point)).collect();
         positions.insert(edge.source, coordinates[0]);
         positions.insert(edge.target, coordinates[coordinates.len() - 1]);
         let mut exported = feature(
