@@ -179,7 +179,18 @@ fn edge_coordinates(references: &[GeometryReference], geometry: &Tiles) -> Resul
     Ok(coordinates)
 }
 
-fn parse_geometry(payload: &[u8]) -> Result<Vec<Vec<(u16, u16)>>, String> {
+/// One `GEOM` path: the edge it belongs to, and its vertices in this tile's quantized space.
+pub struct TilePath {
+    pub edge_index: u32,
+    pub vertices: Vec<(u16, u16)>,
+}
+
+/// Every path in a `GEOM` payload, per SPEC 3.2.
+///
+/// Public because a tile is a unit anyone exporting tiles needs — the MVT writer emits one file
+/// per record — and because a second parser of this layout somewhere else would be a second
+/// thing to keep in step with the spec.
+pub fn parse_tile(payload: &[u8]) -> Result<Vec<TilePath>, String> {
     let u32_at = |at: usize| u32::from_le_bytes(payload[at..at + 4].try_into().unwrap());
     if payload.len() < 32 {
         return Err("geometry section is shorter than its header".into());
@@ -199,17 +210,25 @@ fn parse_geometry(payload: &[u8]) -> Result<Vec<Vec<(u16, u16)>>, String> {
             if start + vertex_count * 4 > payload.len() {
                 return Err("geometry vertices run past the section".into());
             }
-            Ok((0..vertex_count)
-                .map(|vertex| {
-                    let at = start + vertex * 4;
-                    (
-                        u16::from_le_bytes(payload[at..at + 2].try_into().unwrap()),
-                        u16::from_le_bytes(payload[at + 2..at + 4].try_into().unwrap()),
-                    )
-                })
-                .collect())
+            Ok(TilePath {
+                edge_index: u32_at(at),
+                vertices: (0..vertex_count)
+                    .map(|vertex| {
+                        let at = start + vertex * 4;
+                        (
+                            u16::from_le_bytes(payload[at..at + 2].try_into().unwrap()),
+                            u16::from_le_bytes(payload[at + 2..at + 4].try_into().unwrap()),
+                        )
+                    })
+                    .collect(),
+            })
         })
         .collect()
+}
+
+/// The vertices alone, which is all the GeoJSON reconstruction needs.
+fn parse_geometry(payload: &[u8]) -> Result<Vec<Vec<(u16, u16)>>, String> {
+    Ok(parse_tile(payload)?.into_iter().map(|path| path.vertices).collect())
 }
 
 pub type Rows = Vec<BTreeMap<String, Value>>;
@@ -223,6 +242,13 @@ pub fn edge_properties(data: &[u8]) -> Result<Rows, String> {
     let sections = read_sections(data)?;
     let properties = sections.iter().find(|s| &s.kind == b"PROP").ok_or("container is missing a PROP section")?;
     Ok(parse_properties(&properties.payload)?.1)
+}
+
+/// Every node property row, addressed by a node's `property_row`.
+pub fn node_properties(data: &[u8]) -> Result<Rows, String> {
+    let sections = read_sections(data)?;
+    let properties = sections.iter().find(|s| &s.kind == b"PROP").ok_or("container is missing a PROP section")?;
+    Ok(parse_properties(&properties.payload)?.0)
 }
 
 fn parse_properties(payload: &[u8]) -> Result<(Rows, Rows), String> {

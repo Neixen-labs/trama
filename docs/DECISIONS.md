@@ -391,3 +391,17 @@ Reading the CSV needs no dependency. Quoting is the only rule RFC 4180 really ha
 It is now an error naming the coordinates the author wrote, not the projected cell they have never seen. The join is on the SPEC 4.2 quantization cell — about 4 cm — so a meter surveyed three metres from its junction does not match, and says so. Snapping within a tolerance is a real feature and a separate decision; guessing which node the author meant is not something a compiler should do by default.
 
 This is a behaviour change for anyone whose GeoJSON carries points that sit on nothing: hydrants, labels, points of interest. They now get an error instead of a map. That is the right trade for a format whose entire claim is that a file says what it contains, and it is consistent with the rest of the writer, which already refuses duplicate IDs and non-boolean `_trama_directed` rather than interpreting them.
+
+## 2026-08-13 — Vector tiles, written by hand
+
+**Decision:** `trama export red.trama tiles/ --to mvt` writes one `{z}/{x}/{y}.mvt` per `GEOM` record, encoding the protobuf directly rather than generating it from the Mapbox schema.
+
+**Why:** MVT is the exit that needs no TRAMA at the other end. GeoJSON and GeoPackage hand the data to a GIS; a tile pyramid hands the *map* to any MapLibre or Mapbox client already deployed, with nobody installing anything of ours. That is the anti-lock-in claim stated in a stack we do not control, and until now it was a line in the README with no code behind it — the same shape of gap GeoPackage had that morning.
+
+Writing the protobuf by hand is the smaller of the two options. The slice MVT uses is varints, length-delimited fields and packed `uint32` arrays; a generator would add a build-time dependency and a schema file to emit four message types. It is about sixty lines, and the parts with a real chance of being wrong — varint growth, zigzag, the command integers, the extent conversion — are unit-tested against values from the specification.
+
+The tile-local geometry was already in the file: SPEC 3.2's `Path` record names its `edge_index`, so a tile knows which edges it holds without consulting anything. That reading moved into `trama-format` as `parse_tile` rather than being written a second time in the command line, which is the mistake this repository has already paid for once with length arithmetic.
+
+**Consequence:** Teruel becomes 107 tiles, 604 kB against the container's 234 kB and the GeoPackage's 1.1 MB. Verified by decoding the whole pyramid with an unrelated MVT reader and reassembling it: all 3,649 edges and all 2,770 nodes present, and across 21,230 tile vertices **no vertex moved more than 0.32 m** from what the container says. That number is the format's own quantization meeting MVT's: 4,096 units per tile against the 65,535 SPEC 3.1 stores, so half a unit at `z14` is about 30 cm, and the measurement lands exactly where the arithmetic says it should.
+
+What does not survive is in SPEC 9 and is not small: CSR topology, traversal order across tiles, nullable typing, channel declarations. A tile is a picture of a network, not a network — which is why MVT is export-only and always will be.

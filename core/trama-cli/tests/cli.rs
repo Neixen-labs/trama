@@ -280,3 +280,39 @@ fn a_csv_row_that_lands_on_no_node_names_itself_instead_of_vanishing() {
     assert!(message.contains("-3.6"), "{message}");
     assert!(message.contains("no node"), "{message}");
 }
+
+#[test]
+fn exports_one_vector_tile_per_geometry_record() {
+    let directory = workspace("mvt");
+    let out = directory.join("tiles");
+
+    let result = trama(&[
+        "export",
+        repository().join("fixtures/network.trama").to_str().unwrap(),
+        out.to_str().unwrap(),
+        "--to",
+        "mvt",
+    ]);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+
+    // One file per GEOM record, laid out the way a tile server addresses them.
+    let container = std::fs::read(repository().join("fixtures/network.trama")).unwrap();
+    let expected: Vec<(u32, u32, u32)> = trama_format::read_sections(&container)
+        .unwrap()
+        .iter()
+        .filter(|section| &section.kind == b"GEOM")
+        .map(|section| section.key)
+        .collect();
+    assert!(!expected.is_empty(), "the fixture must have tiles for this to test anything");
+
+    for (z, x, y) in &expected {
+        let tile = out.join(z.to_string()).join(x.to_string()).join(format!("{y}.mvt"));
+        let bytes = std::fs::read(&tile).unwrap_or_else(|_| panic!("no tile at {}", tile.display()));
+        assert!(!bytes.is_empty(), "{} is empty", tile.display());
+        // Layer names are length-delimited strings in the protobuf, so they are literally there:
+        // enough to tell a written tile from a plausible-looking pile of bytes.
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("edges"), "{} names no edges layer", tile.display());
+        assert!(text.contains("nodes"), "{} names no nodes layer", tile.display());
+    }
+}
