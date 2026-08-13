@@ -225,3 +225,58 @@ fn an_unknown_importer_name_lists_the_installed_ones() {
     assert!(message.contains("no installed importer is named 'osm'"), "{message}");
     assert!(message.contains("roads"), "the message names what is available: {message}");
 }
+
+#[test]
+fn a_csv_of_points_annotates_the_nodes_it_lands_on() {
+    let directory = workspace("points");
+    let csv = directory.join("meters.csv");
+    // Two of the network's own node coordinates, with the columns some other system knows.
+    std::fs::write(
+        &csv,
+        "lon,lat,meter,customers,billed\n-3.67,40.416,\"M-1, north\",42,true\n-3.668,40.417,M-2,7,false\n",
+    )
+    .unwrap();
+    let out = directory.join("annotated.trama");
+
+    let result = trama(&[
+        "compile",
+        repository().join("fixtures/network.geojson").to_str().unwrap(),
+        out.to_str().unwrap(),
+        "--points",
+        csv.to_str().unwrap(),
+    ]);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+
+    let exported = trama_format::export(&std::fs::read(&out).unwrap()).unwrap();
+    let nodes = exported.nodes["features"].as_array().unwrap();
+    let annotated: Vec<&serde_json::Value> =
+        nodes.iter().filter(|node| node["properties"].get("meter").is_some()).collect();
+    assert_eq!(annotated.len(), 2, "both rows should have found a node");
+
+    let first = annotated
+        .iter()
+        .find(|node| node["properties"]["meter"] == "M-1, north")
+        .expect("the quoted comma must survive as one cell");
+    assert_eq!(first["properties"]["customers"], 42);
+    assert_eq!(first["properties"]["billed"], true);
+}
+
+#[test]
+fn a_csv_row_that_lands_on_no_node_names_itself_instead_of_vanishing() {
+    let directory = workspace("points-adrift");
+    let csv = directory.join("meters.csv");
+    std::fs::write(&csv, "lon,lat,meter\n-3.67,40.416,on-a-node\n-3.60,40.30,adrift\n").unwrap();
+
+    let result = trama(&[
+        "compile",
+        repository().join("fixtures/network.geojson").to_str().unwrap(),
+        directory.join("out.trama").to_str().unwrap(),
+        "--points",
+        csv.to_str().unwrap(),
+    ]);
+
+    assert!(!result.status.success(), "a row with nowhere to attach must not compile silently");
+    let message = String::from_utf8_lossy(&result.stderr);
+    assert!(message.contains("-3.6"), "{message}");
+    assert!(message.contains("no node"), "{message}");
+}

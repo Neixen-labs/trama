@@ -57,13 +57,18 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
         }
     }
     let mut node_properties: BTreeMap<(u64, u64), BTreeMap<String, Value>> = BTreeMap::new();
+    // Where a point lands, in source coordinates, so a rejected one can be named by the numbers
+    // its author wrote rather than by a projected cell they have never seen.
+    let mut point_cells: Vec<((u64, u64), (f64, f64))> = Vec::with_capacity(points.len());
     for feature in &points {
         let coordinates = feature["geometry"]["coordinates"].as_array().ok_or("Point requires coordinates")?;
-        let cell = node_cell(web_mercator(number(&coordinates[0]), number(&coordinates[1])));
+        let source = (number(&coordinates[0]), number(&coordinates[1]));
+        let cell = node_cell(web_mercator(source.0, source.1));
         if let Some(declared) = declared_id(feature)? {
             node_ids.insert(cell, declared);
         }
         node_properties.insert(cell, row_of(feature));
+        point_cells.push((cell, source));
     }
 
     // Edges are sorted by stable id, as SPEC 4 requires of the array they become.
@@ -91,6 +96,27 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
         identities.into_iter().collect()
     };
     let node_index: BTreeMap<u64, u32> = node_order.iter().enumerate().map(|(index, id)| (*id, index as u32)).collect();
+
+    // A Point annotates a node an edge endpoint already created; it does not create one, because
+    // v0 has no entity for a place with nothing running through it. One that matches no node used
+    // to be dropped here without a word, which is the worst of the three available behaviours:
+    // the compile reports success and the data is gone.
+    let adrift: Vec<(f64, f64)> = point_cells
+        .iter()
+        .filter(|(cell, _source)| !node_ids.get(cell).is_some_and(|id| node_index.contains_key(id)))
+        .map(|(_cell, source)| *source)
+        .collect();
+    if !adrift.is_empty() {
+        let named: Vec<String> = adrift.iter().take(3).map(|(x, y)| format!("({x}, {y})")).collect();
+        return Err(format!(
+            "{} Point feature(s) match no node: {}{}. A point attaches its properties to a node an \
+             edge endpoint already made, joined on the SPEC 4.2 quantization cell — about 4 cm — so \
+             its coordinates must be a node's, not merely near one.",
+            adrift.len(),
+            named.join(", "),
+            if adrift.len() > 3 { ", …" } else { "" }
+        ));
+    }
     let rows_by_id: BTreeMap<u64, &BTreeMap<String, Value>> =
         node_properties.iter().filter_map(|(cell, row)| node_ids.get(cell).map(|id| (*id, row))).collect();
     let empty = BTreeMap::new();

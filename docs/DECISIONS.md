@@ -375,3 +375,19 @@ It also handed back an unexpected confirmation. GDAL measures the street network
 That is the largest change available in v0, and nothing in the product asks for it today. `KICKOFF.md` already deferred everything that is not the network itself — labels, raster, complex symbology — to v1, and an area is in that family. The demo that would justify it, colouring a service area by what a closure does to it, does not exist yet; when it does, it will also say what the area needs to store, which is a better position to design from than this one.
 
 **Consequence:** the README's "not yet" for polygons now points at a decision. When it is revisited, the shape to weigh is a third entity kind against a polygon as an existing entity's footprint — the first is a model change, the second reuses node identity and cannot express a zone that is not a node.
+
+## 2026-08-13 — A CSV of points annotates a network; it is not one
+
+**Decision:** `trama compile red.geojson red.trama --points meters.csv` reads KICKOFF's third v0 input. Each row becomes a `Point` feature carrying its other columns, joined to the node its coordinates land on. A CSV is never compiled alone, and a row that matches no node stops the compile.
+
+**Why:** "CSV of points" had two readings and they are different products. A standalone cloud of points would need the format to accept a network with no edges — which the renderer cannot draw, since it builds ribbons from consecutive vertex pairs, and no solver can traverse. A network without topology is not a network, and every part of this format is built on that sentence.
+
+The other reading is the one with a customer behind it: a utility has meters, sensors, elevations or customer counts in a spreadsheet, and a network somewhere else. Joining them by location is the ordinary shape of that work, and it is exactly what the format's `Point` already meant.
+
+Reading the CSV needs no dependency. Quoting is the only rule RFC 4180 really has, and it is thirty lines: commas separate, quotes protect, a doubled quote inside quotes is one. Types come from the text — an integer, then a float, then `true`/`false`, then a string — and **an empty cell is an absent value, not an empty string**, because SPEC 5 keeps those apart and a spreadsheet is mostly blanks.
+
+**Consequence, and the defect it uncovered:** a `Point` that matched no node used to be dropped in silence. Compiling three features produced two entities, reported success, and lost the third — verified before the fix on a file with a point 5 km off the network. That is the worst of the three available behaviours, worse than refusing and much worse than warning, because nothing downstream can tell that anything is missing.
+
+It is now an error naming the coordinates the author wrote, not the projected cell they have never seen. The join is on the SPEC 4.2 quantization cell — about 4 cm — so a meter surveyed three metres from its junction does not match, and says so. Snapping within a tolerance is a real feature and a separate decision; guessing which node the author meant is not something a compiler should do by default.
+
+This is a behaviour change for anyone whose GeoJSON carries points that sit on nothing: hydrants, labels, points of interest. They now get an error instead of a map. That is the right trade for a format whose entire claim is that a file says what it contains, and it is consistent with the rest of the writer, which already refuses duplicate IDs and non-boolean `_trama_directed` rather than interpreting them.
