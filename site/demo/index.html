@@ -842,6 +842,14 @@
       // Everything above ran after the module resolved, so the page is only usable now.
       for (const button of document.querySelectorAll("[data-example]")) button.disabled = false;
       show([["listo", "suelta un archivo o prueba un ejemplo"]]);
+
+      // `?open=<example>` lets the landing link straight into a loaded network. Only the shipped
+      // examples: this must not become a way to make the page fetch an arbitrary URL.
+      const requested = new URLSearchParams(location.search).get("open");
+      const known = [...document.querySelectorAll("[data-example]")].map((button) => button.dataset.example);
+      if (requested !== null && known.includes(requested)) {
+        await load(requested, new Uint8Array(await (await fetch(`examples/${requested}`)).arrayBuffer()));
+      }
     </script>
   </body>
 </html>
