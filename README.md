@@ -19,7 +19,7 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 | Piece | What works today | Not yet |
 |---|---|---|
 | `core/trama-format` (Rust) | The container: writer, reader, GeoJSON export in WGS 84 or in projected metres. Byte-identical output for identical input, typed node and edge properties, declared state channels, and opaque records it carries without reading. | polygons, deferred to v1 |
-| `core/trama-cli` (Rust) | `trama compile`, `validate`, `export --to geojson|gpkg|inp`, and the grid generator behind the benchmarks. The GeoPackage carries stable IDs, typed columns and the difference between a null and a zero, and GDAL opens it: 3,649 LineStrings, 2,770 Points, `EPSG:3857` read back from the file's own definition. `--points` joins a CSV of coordinates to the nodes they land on. | — |
+| `core/trama-cli` (Rust) | `trama compile`, `validate`, `export --to geojson|gpkg|mvt|inp`, and the grid generator behind the benchmarks. The GeoPackage carries stable IDs, typed columns and the difference between a null and a zero, and GDAL opens it: 3,649 LineStrings, 2,770 Points, `EPSG:3857` read back from the file's own definition. `--points` joins a CSV of coordinates to the nodes they land on. | — |
 | `core/trama-epanet` (Rust) | `.inp` import and export, and a solver that runs the EPANET 2.3 toolkit and streams pressure and flow, natively or in the browser through WASI. Round trip verified by simulation on Net1 and Net3. | — |
 | `core/trama-trace` (Rust) | What a network reaches and what a cut takes out: downstream, upstream, reach, isochrone, isolation, critical edges, source allocation. One search with three knobs for the first four. Nothing in it knows what an edge is. | polygon cuts |
 | `core/trama-roads` (Rust) | Reads an OpenStreetMap extract: translates every spelling of `oneway`, normalises `maxspeed` into a speed column, splits ways at the junctions they cross, and declares the channel a router writes. | turn restrictions |
@@ -82,9 +82,12 @@ Your data leaves the same way it came in. GeoJSON exports as two FeatureCollecti
 ```bash
 ./target/release/trama export out.trama out-geojson/ --to geojson
 ./target/release/trama export ../fixtures/teruel.trama teruel.gpkg --to gpkg
+./target/release/trama export ../fixtures/teruel.trama tiles/ --to mvt
 ```
 
-A whole city is 234 kB as a container against 1.1 MB as the GeoPackage it exports to — the anti-lock-in promise costs something to leave with, which is the point of measuring it.
+The third is the exit that needs no TRAMA at the other end: one `{z}/{x}/{y}.mvt` per stored tile, which a plain MapLibre or Mapbox client already knows how to draw. Teruel becomes 107 tiles. Decoded and reassembled by an unrelated MVT reader, all 3,649 edges and 2,770 nodes are present and no vertex has moved more than **0.32 m** — the cost of MVT's 4,096-unit tile space against the 65,535 the container stores. Topology does not survive: a tile is a picture of a network, and `docs/SPEC.md` §9 lists exactly what is lost.
+
+A whole city is 234 kB as a container against 1.1 MB as the GeoPackage and 604 kB as the tile pyramid it exports to — the anti-lock-in promise costs something to leave with, which is the point of measuring it.
 
 An EPANET network needs a coordinate reference system, because a `.inp` declares none:
 

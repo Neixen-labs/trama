@@ -10,6 +10,7 @@ use serde_json::Value;
 use trama_format::{Import, Importer, parse_options, read_sections};
 
 mod gpkg;
+mod mvt;
 mod points;
 
 /// Formats the core does not know are read by the crates that own them. The seam is the same
@@ -102,6 +103,24 @@ fn run(arguments: Arguments) -> Result<(), String> {
                 // SPEC 9 stores GeoPackage layers in EPSG:3857, so this export skips the
                 // projection to WGS 84 the GeoJSON one ends with.
                 "gpkg" => gpkg::write(&trama_format::export_projected(&container)?, &destination),
+                // One file per GEOM record, in the z/x/y layout a tile server expects to find.
+                "mvt" => {
+                    let sections = read_sections(&container)?;
+                    let graph = sections
+                        .iter()
+                        .find(|section| &section.kind == b"GRPH")
+                        .ok_or_else(|| "container is missing a GRPH section".to_string())
+                        .and_then(|section| trama_format::parse_graph(&section.payload))?;
+                    let written = mvt::write(
+                        &sections,
+                        &graph,
+                        &trama_format::node_properties(&container)?,
+                        &trama_format::edge_properties(&container)?,
+                        &destination,
+                    )?;
+                    println!("{written} tiles under {}", destination.display());
+                    Ok(())
+                }
                 "inp" => {
                     let options = parse_options(&options)?;
                     let crs = options
