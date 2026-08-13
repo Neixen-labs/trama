@@ -362,7 +362,9 @@ The export needed one thing from the format: coordinates in `EPSG:3857`, because
 
 Two properties were kept deliberately. `last_change` is written as the epoch instead of the wall clock, so the same container exports the same bytes and two people can diff their exports — GeoPackage requires the column, not that it be truthful. And absence survives: the fixture carries a string, an f64, an i64, a bool and, on two of three edges, the *lack* of some of them, which arrive as SQL NULL rather than as `0` or `""`, the distinction SPEC 5 insists on.
 
-**Unverified:** no GDAL-based reader has opened one of these files yet — there is none on the machine that wrote it. Every assertion goes through SQLite reading the database back, which is structural evidence, not interoperability evidence. Opening one in QGIS is the outstanding check.
+**Verified against GDAL**, which was the check the tests could not make: SQLite reading the database back is structural evidence, not interoperability evidence. GDAL 3.12 opens `teruel.gpkg` as two layers — 3,649 LineStrings and 2,770 Points — reads `EPSG:3857` from the file's own WKT rather than being told, types `roads:speed_ms` as a float and `osm:name` as text, and reports `osm:surface` present on 1,012 of 3,649 edges, so the nulls arrived as nulls.
+
+It also handed back an unexpected confirmation. GDAL measures the street network at **611.3 km**, which is exactly the projected figure the 2026-08-12 entry recorded before correcting for Web Mercator distortion, against 465.8 km on the ground. An independent reader arriving at the same wrong number from the same geometry is the strongest evidence available that the file says precisely what this repository thinks it says — and a reminder that a GIS will happily add up projected metres and call them metres.
 
 ## 2026-08-13 — Polygons wait for v1, and the reason is the graph
 
