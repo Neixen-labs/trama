@@ -26,20 +26,23 @@ TRAMA packages a network graph, pre-tessellated geometry, and typed properties i
 | `core/trama-routing` (Rust) | Fastest paths over the graph, costed by a speed column or by distance, honouring one-way edges, written into a state channel as a vehicle's progress. The second domain, and the evidence the core is not shaped around water. | VRP |
 | `core/trama-example` (Rust) | Reference solver over HTTP + Server-Sent Events, to keep the contract under a real implementation. | — |
 | `core/trama-wasm` (Rust) | The compiler in a browser, byte-identical to the command line: GeoJSON, EPANET `.inp` and OpenStreetMap extracts, plus the routing solver. 319 kB brotli. | — |
-| `engine/` — `@trama/core` (TypeScript) | Range reader for header, directory, and sections, each checked against its CRC-32C; instanced WebGL2 line renderer with screen-constant width; MapLibre custom layer; state ring buffer feeding an R32F texture; SSE client for solver deltas; fly-through camera that tours the graph; OPFS cache so a container read once needs no network again | WebGPU |
+| `engine/` — `@trama/core` (TypeScript) | Range reader for header, directory, and sections, each checked against its CRC-32C; instanced WebGL2 line renderer with screen-constant width; MapLibre custom layer; state ring buffer feeding an R32F texture; SSE client for solver deltas; fly-through camera that tours the graph; OPFS cache so a container read once needs no network again | WebGPU, deferred until MapLibre can hand a custom layer that context |
 | `site/` | Landing page at [trama.build](https://trama.build), and a playground that compiles a network in the browser and solves it: EPANET over WASI, or a fastest path between points picked on the map. A service worker precaches it, so it compiles and routes with the server switched off, and the compiled container and its GeoJSON export download straight from the page. | — |
 
 ### Measured
 
-Numbers from `compiler/benchmarks/synthetic_grid.py` and `engine/bench/`, not estimates:
+Numbers from `cargo run --release -p trama-cli --bin grid -- --report` and `engine/bench/`, not estimates:
 
 | | Result | Criterion |
 |---|---|---|
 | Compile 49,612 edges | 3.0 s | under 30 s |
 | Container size | 12.1% of the equivalent export, 20.9% of a compact hand-written source | under 20% |
 | Draw 103,040 segments with animated state | 0.6 ms per frame, p95 0.8 ms | under 16.7 ms |
+| Land on the site, drop an EPANET `.inp`, watch it simulated | 1.6 s, or 6.3 s on a throttled phone | under 60 s |
 
 The frame budget has twenty times the headroom it needs on integrated graphics from 2017. Loading state is where a large network first costs anything: filling sixteen ring slots for 99,904 edges is about 470 ms, or 290 ns per delta.
+
+The last row is the one the launch depends on, so `engine/bench/journey.mjs` walks it against the deployed site rather than a local build: arrive cold with no cache and no service worker, drop `Net3.inp`, let EPANET run over WASI, and scrub. `--slow` throttles to four times the CPU cost and a 1.6 Mbps link with 150 ms of latency, which is where the 6.3 s comes from. At that speed the network's size stops mattering — a 3,649-edge city takes 6.6 s, three tenths more than a 119-pipe one — because what a visitor waits for is 707 kB arriving, 399 of them the compiler itself.
 
 The size criterion has two honest answers because "the equivalent GeoJSON" is ambiguous. Against the export — same entities, same IDs, full precision — the container is 12.1%. Against a compact hand-written source, which omits nodes and rounds coordinates, it is 20.9% and misses the target.
 

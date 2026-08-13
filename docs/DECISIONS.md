@@ -325,3 +325,25 @@ Preparing without publishing is the split that matters. Publishing is irreversib
 **Consequence:** `npm pack` produces 25.5 kB over 27 files, with the licence and README in it and no source maps or build info. The workflow refuses to publish when the tag disagrees with the manifest version, because a mismatch publishes a version nobody asked for and cannot be undone.
 
 The fact worth advertising, found while writing this: nothing in `src` imports anything. Not `maplibre-gl`, not `fzstd`. The adapter describes the host map it needs with a type and decompression is a parameter, so **the published package has no runtime dependencies at all** — `fzstd` was in `dependencies` and only tests ever used it.
+
+## 2026-08-13 — The sixty-second criterion, walked with a stopwatch
+
+**Decision:** Phase 5's done criterion — *a stranger arrives, uploads their `.inp`, and sees their network simulated in under 60 seconds* — is measured by `engine/bench/journey.mjs` against the deployed site, not against a local build, and it is measured twice: once as the machine finds it, once through a throttled profile standing in for a mid-range phone on mobile data.
+
+**Why:** the criterion had never been timed. It was plausible that it passed, which is exactly the state in which a launch gate quietly stops being one. Measuring the deployment rather than a local server is deliberate: a visitor waits for Cloudflare, for a cold cache and for the WASI module too, and a number that excludes them is answering a question nobody asked. The throttled run exists for the same reason the frame benchmark separates frame cost from frame cadence — an unthrottled desktop on fibre measures the desk it sits on.
+
+**Consequence:** it passes with room to spare. Cold, no service worker, no HTTP cache: **1.6 s** to arrive, compile `Net3.inp`, run EPANET 2.3 over WASI and scrub time. Throttled to four times the CPU cost on a 1.6 Mbps link with 150 ms of latency: **6.3 s**. The criterion allows 60.
+
+The interesting part is what the throttled run says about where the time goes. A 3,649-edge city takes 6.6 s against a 119-pipe network's 6.3 — three tenths of a second for thirty times the network. Compiling `Net3.inp` costs 47 ms on the desktop and 201 ms throttled; what a visitor actually waits for is 707 kB arriving, of which 399 are the compiler. **The playground's latency is a download, not a computation**, which means the lever that matters is the size of `trama_wasm_bg.wasm` and nothing about the solver or the format.
+
+Two facts worth recording while they were visible. The page makes no third-party request at all: MapLibre is mounted on an empty style with a background colour (`site/demo/index.html:241`), so there is no basemap provider watching who opens which network — the privacy claim is structural, not a promise. And the harness asserts on the scrub actually moving, not on a slider becoming enabled, because a page that draws nothing is very fast.
+
+## 2026-08-13 — WebGPU waits for MapLibre, and says so
+
+**Decision:** The engine stays WebGL2-only. The WebGPU half of pillar two is deferred until MapLibre can hand a custom layer a WebGPU context, and this entry is the record that it was decided rather than forgotten.
+
+**Why:** the renderer is mounted as a MapLibre custom layer, which is what buys us a basemap, a camera and a projection we do not maintain. MapLibre 6.2 hands that layer a WebGL2 context and only that one; its own typing says so — `contextType` is *"restricted to `'webgl2'`. This option is kept as a forward-looking API for future WebGPU support"*. Adopting WebGPU today therefore means leaving the custom-layer contract: our own canvas over the map, with the camera synchronised by hand every frame, and two renderers to keep in agreement.
+
+That is a large, fragile change bought for performance we do not need. The frame benchmark draws 103,040 segments with animated state in 0.6 ms against a 16.7 ms budget, on integrated graphics from 2017. There is twenty times the headroom, so the honest reason to want WebGPU is compute shaders and a future workload, not this one.
+
+**Consequence:** `KICKOFF.md` pillar two is met in part — GPU state textures, the temporal ring buffer, in-shader interpolation and the fly-through all exist — with the API choice left open. The cost of waiting is a dependency on someone else's roadmap; the cost of not waiting is owning a map camera. We chose the pillar we can revisit cheaply: only three of the twelve modules in `engine/src` name a graphics API at all — `line-renderer.ts`, `state-texture.ts` and the `maplibre.ts` adapter, 422 lines between them against 1,482 — so the day MapLibre offers the context, the port is small and local.
