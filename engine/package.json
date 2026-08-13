@@ -22,6 +22,7 @@
     "build": "tsc -p tsconfig.build.json",
     "demo": "npm run build && node demo/serve.mjs",
     "bench": "node bench/frames.mjs",
+    "journey": "node bench/journey.mjs",
     "prepack": "cp ../LICENSE LICENSE && npm run build"
   },
   "devDependencies": {
