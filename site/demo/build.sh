@@ -47,6 +47,7 @@ if [ -n "${WASI_SDK:-}" ]; then
   echo "epanet"
   (cd "$root/core" && ./wasi/build.sh)
   cp "$root/core/target/wasm32-wasip1/release/trama-epanet-wasi.wasm" "$vendor/"
+  cp "$root/core/target/wasm32-wasip1/release/trama-swmm-wasi.wasm" "$vendor/"
 else
   echo "epanet: skipped, set WASI_SDK to include the hydraulic solver"
 fi

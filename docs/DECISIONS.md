@@ -429,3 +429,13 @@ Three API differences from EPANET mattered. The 5.2 API is a single global proje
 **Consequence:** the round trip now meets the same standard as EPANET's — defined by simulation, not by bytes. The fixture's 58 hours simulate identically from the same container twice, and the exported `.inp` agrees with the original per entity, per channel, per timestep. The first delta the server ever streamed was a junction reporting depth in feet at t = 3600 s, which is three claims — the graph, the units, the clock — agreeing in fourteen bytes.
 
 What is deliberately not here: WASI. The build needs the same shim treatment EPANET's got in `core/wasi/`, and the playground needs a second module and an engine choice. That is its own change, on a crate that is now ready for it.
+
+## 2026-08-14 — SWMM reaches the browser through the door EPANET opened
+
+**Decision:** the SWMM solver ships as a second WASI command, `trama-swmm-wasi`, built by the same `core/wasi/build.sh`; `trama-wasm` gains `compile_swmm`; and the playground compiles a SWMM `.inp` and simulates it in the page, no server involved.
+
+**Why it was cheap, and why that is the point:** the entire integration reuses decisions already paid for. The `mkstemp` shim EPANET needed turns out to be the only libc gap SWMM has too — one flag in `trama-swmm-sys`'s build script for the WASI target. The page's WASI runner was EPANET-shaped in name only; its module name became a parameter and both toolkits go through it. And the suffix dance is the compiler's own redirect message driving a retry: the page tries EPANET, and when the error names SWMM it compiles as SWMM — the browser equivalent of `--importer swmm`, decided by the file rather than by the user.
+
+**Consequence:** verified end to end with a real browser before merging: the pyswmm fixture compiles in 35 ms, the page selects SWMM by itself — EPANET is offered disabled because the container declares no `pressure`, which is the channel system doing its job — and simulating returns 10,080 deltas: 24 hours at the file's own 60-second report step times seven entities, exactly. The WASI module also ran under Node's own WASI against the full 58-hour window as a second, browser-free witness.
+
+The playground now holds the whole commercial claim in one page: water, drainage, and streets, compiled and solved locally, on three solvers that share one contract and a core that cannot tell them apart.

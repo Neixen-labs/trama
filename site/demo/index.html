@@ -65,7 +65,7 @@
       <label id="drop">
         <input id="file" type="file" accept=".geojson,.json,.inp,.trama" hidden />
         <strong>Arrastra un archivo o pulsa aquí</strong>
-        <span>GeoJSON de líneas, un <code>.inp</code> de EPANET, un <code>.osm.json</code> de Overpass,
+        <span>GeoJSON de líneas, un <code>.inp</code> de EPANET o SWMM, un <code>.osm.json</code> de Overpass,
         o un <code>.trama</code> ya compilado</span>
       </label>
 
@@ -106,8 +106,8 @@
       <p class="live" id="engine-note" style="margin: 6px 0 0; color: var(--dim); font-size: 12px"></p>
 
       <p class="note" id="note">
-        EPANET se ejecuta aquí mismo, compilado a WebAssembly sobre WASI, que es lo que le da el sistema de archivos
-        que su API necesita. Cada cálculo escribe en un canal que la red tiene que declarar, así que lo que no se
+        EPANET y SWMM se ejecutan aquí mismo, compilados a WebAssembly sobre WASI, que es lo que les da el sistema
+        de archivos que sus APIs necesitan. Cada cálculo escribe en un canal que la red tiene que declarar, así que lo que no se
         puede ejecutar sobre la red cargada aparece desactivado, con el motivo, en vez de fallar al pulsar.
       </p>
       <p class="note">
@@ -161,8 +161,19 @@
           return { container: bytes, elapsed: performance.now() - started, compiled: false };
         }
         const text = new TextDecoder().decode(bytes);
+        // Both EPA dialects share the suffix. EPANET goes first because it was here first, and
+        // its redirect message is the signal to retry as SWMM — the same dance the command line
+        // does with --importer swmm.
+        const compileInp = (source, crs) => {
+          try {
+            return wasm.compile_inp(source, crs);
+          } catch (error) {
+            if (!String(error?.message ?? error).includes("SWMM")) throw error;
+            return wasm.compile_swmm(source, crs);
+          }
+        };
         const container = lower.endsWith(".inp")
-          ? wasm.compile_inp(text, document.querySelector("#crs").value.trim())
+          ? compileInp(text, document.querySelector("#crs").value.trim())
           : lower.endsWith(".osm.json")
             ? wasm.compile_osm(text)
             : wasm.compile_geojson(text);
@@ -170,11 +181,11 @@
       }
 
       /**
-       * EPANET, through WASI. It is C with a file-based API, so it gets a filesystem: the
-       * container goes in as a file, the deltas come out as one. Nothing here is a shim around
-       * that shape — it is the shape the toolkit already had.
+       * An EPA toolkit, through WASI. Both are C with file-based APIs, so each gets a
+       * filesystem: the container goes in as a file, the deltas come out as one. Nothing here
+       * is a shim around that shape — it is the shape the toolkits already had.
        */
-      async function solveWithEpanet(container, seconds) {
+      async function solveWithWasi(binary, container, seconds) {
         const { WASI, File, OpenFile, PreopenDirectory, ConsoleStdout } = await import("./vendor/wasi/index.js");
         const output = new File(new Uint8Array());
         const messages = [];
@@ -187,7 +198,7 @@
           ["tmp", new Directory(new Map())],
         ]));
         const wasi = new WASI(
-          ["trama-epanet-wasi", "/network.trama", "/deltas.bin", String(seconds)],
+          [binary, "/network.trama", "/deltas.bin", String(seconds)],
           [],
           [
             new OpenFile(new File(new Uint8Array())),
@@ -198,8 +209,8 @@
         );
         // A build made without a WASI SDK ships no EPANET at all, and `compileStreaming` reports
         // that as a WebAssembly error about an HTTP status code, which explains nothing.
-        const response = await fetch("vendor/trama-epanet-wasi.wasm");
-        if (!response.ok) throw new Error("esta versión del playground no incluye el módulo de EPANET");
+        const response = await fetch(`vendor/${binary}.wasm`);
+        if (!response.ok) throw new Error("esta versión del playground no incluye este solver");
         const module = await WebAssembly.compileStreaming(response);
         const instance = await WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport });
         let code = 0;
@@ -277,7 +288,7 @@
         // A solver's own clock decides the ring: EPANET reports hourly over a day, the pulse
         // every minute, and a ring sized for one holds a single instant of the other.
         const clockOf = (choice) =>
-          choice === "epanet"
+          ["epanet", "swmm"].includes(choice)
             ? { step: 3600, window: 86400 }
             : // A property of the shape has no clock at all: one instant is the whole answer.
               ["critical", "isolation"].includes(choice)
@@ -635,6 +646,14 @@
           does: "resuelve la hidráulica con el toolkit de EPANET 2.3 y escribe presión en los nudos y caudal en los tramos, 24 horas en pasos de una hora.",
         },
         {
+          value: "swmm",
+          label: "SWMM · saneamiento y pluviales",
+          channel: "depth",
+          paints: "flow",
+          needs: "una red importada de un .inp de SWMM",
+          does: "resuelve el drenaje con EPA SWMM 5.2 y escribe calado en los nudos y caudal en los tramos, 24 horas de simulación.",
+        },
+        {
           value: "routing",
           label: "ruta más rápida",
           channel: "on_route",
@@ -776,7 +795,9 @@
           });
           map.addLayer(layer);
           const deltas = choice === "epanet"
-            ? await solveWithEpanet(container, Number(scrub.max))
+            ? await solveWithWasi("trama-epanet-wasi", container, Number(scrub.max))
+            : choice === "swmm"
+            ? await solveWithWasi("trama-swmm-wasi", container, Number(scrub.max))
             : choice === "critical"
               ? wasm.solve_critical(container, Number(scrub.max))
               : choice === "isolation"
