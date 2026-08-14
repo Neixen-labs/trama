@@ -26,5 +26,12 @@ channel = "flow"
 entity_kind = "edge"
 units = ["cfs", "gpm", "mgd", "cms", "lps", "mld"]
 
+# The overflow rate at each node — where the system floods. Zero almost everywhere almost
+# always, which is exactly why the exceptions matter.
+[[outputs]]
+channel = "flooding"
+entity_kind = "node"
+units = ["cfs", "gpm", "mgd", "cms", "lps", "mld"]
+
 [params]
-schema = { "type" = "object", "additionalProperties" = false, "properties" = { "depth_channel" = { "type" = "string", "default" = "depth" }, "flow_channel" = { "type" = "string", "default" = "flow" } } }
+schema = { "type" = "object", "additionalProperties" = false, "properties" = { "depth_channel" = { "type" = "string", "default" = "depth" }, "flow_channel" = { "type" = "string", "default" = "flow" }, "flooding_channel" = { "type" = "string", "default" = "flooding" } } }

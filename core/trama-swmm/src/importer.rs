@@ -168,6 +168,10 @@ pub fn channels(document: &inp::Document) -> Result<Vec<Value>, String> {
     let mut channels = vec![
         json!({"name": "depth", "entity_kind": "node", "unit": depth}),
         json!({"name": "flow", "entity_kind": "edge", "unit": flow_units}),
+        // The rate at which a node's inflow exceeds what it can pass or store: where the
+        // system floods, which is the question stormwater exists to answer. Zero almost
+        // everywhere almost always, which is exactly why the exceptions matter.
+        json!({"name": "flooding", "entity_kind": "node", "unit": flow_units}),
     ];
     // The topological channels: close this conduit, what stops draining. Same declaration, and
     // the same solver, as a pipe network or a street network.

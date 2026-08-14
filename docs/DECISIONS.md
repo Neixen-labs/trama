@@ -451,3 +451,11 @@ The playground now holds the whole commercial claim in one page: water, drainage
 **The compatibility rule that fell out of it:** age is an offer, not a demand. The solver writes it only where the container declares it, so every `.trama` compiled before this change solves exactly as it did. `fixtures/net3.trama` regenerates because declaring a channel changes the container — the 2026-08-12 precedent — and the equivalence suite re-verified identity across both compilers.
 
 Chlorine decay and source tracing are the same loop with a different `EN_setqualtype` argument, and are recorded here as the natural next two.
+
+## 2026-08-14 — Flooding, by the same rule age set
+
+**Decision:** the SWMM importer declares a `flooding` node channel in the file's flow units, and the solver reads `swmm_NODE_OVERFLOW` in the loop it already runs — one more `getValue` per node per report step, written only where the container declares the channel.
+
+**Why:** where the system floods is the question stormwater modelling exists to answer, and it was one enum constant away. The channel is zero almost everywhere almost always, which is exactly why the exceptions matter and why a scrub over it reads instantly: the map lights up where and when the network gives up.
+
+**Consequence:** the offer-not-demand rule set by EPANET's age channel is now a convention rather than a case — two solvers follow it, and old containers keep solving untouched by either. The test demanded more than shape: the fixture's storm must actually overwhelm something (`peak > 0`), because a flooding channel no fixture can light is untestable and the storm decorative. It does.
