@@ -47,11 +47,26 @@ mod toolkit {
         pub fn EN_getlinkid(project: Project, index: c_int, id: *mut c_char) -> c_int;
         pub fn EN_getnodevalue(project: Project, index: c_int, property: c_int, value: *mut f64) -> c_int;
         pub fn EN_getlinkvalue(project: Project, index: c_int, property: c_int, value: *mut f64) -> c_int;
+        pub fn EN_setqualtype(
+            project: Project,
+            kind: c_int,
+            chemical: *const c_char,
+            units: *const c_char,
+            trace_node: *const c_char,
+        ) -> c_int;
+        pub fn EN_openQ(project: Project) -> c_int;
+        pub fn EN_initQ(project: Project, flag: c_int) -> c_int;
+        pub fn EN_runQ(project: Project, now: *mut c_long) -> c_int;
+        pub fn EN_nextQ(project: Project, step: *mut c_long) -> c_int;
+        pub fn EN_closeQ(project: Project) -> c_int;
     }
 }
 
 const PRESSURE: c_int = 11;
 const FLOW: c_int = 8;
+const QUALITY: c_int = 12;
+/// EN_AGE: the toolkit computes each node's water age itself; no chemical involved.
+const AGE_ANALYSIS: c_int = 2;
 const NODE_COUNT: c_int = 0;
 const LINK_COUNT: c_int = 2;
 const SAVE: c_int = 1;
@@ -72,7 +87,8 @@ impl Solver for EpanetSolver {
     fn solve(&self, request: &Request) -> Result<Vec<u8>, Rejection> {
         let pressure_channel = request.params["pressure_channel"].as_str().unwrap_or("pressure");
         let flow_channel = request.params["flow_channel"].as_str().unwrap_or("flow");
-        solve(&request.container, pressure_channel, flow_channel, request.t0_seconds, request.t1_seconds)
+        let age_channel = request.params["age_channel"].as_str().unwrap_or("age");
+        solve(&request.container, pressure_channel, flow_channel, age_channel, request.t0_seconds, request.t1_seconds)
             .map_err(Rejection::input)
     }
 }
@@ -82,6 +98,7 @@ pub fn solve(
     container: &[u8],
     pressure_channel: &str,
     flow_channel: &str,
+    age_channel: &str,
     t0_seconds: f32,
     t1_seconds: f32,
 ) -> Result<Vec<u8>, String> {
@@ -90,6 +107,9 @@ pub fn solve(
     }
     let pressure = declared(container, pressure_channel, 1)?;
     let flow = declared(container, flow_channel, 2)?;
+    // Age is written only where the container declares it, so files compiled before the
+    // channel existed keep solving exactly as they did.
+    let age = declared(container, age_channel, 1).ok();
     let (nodes, links) = entity_ids(container)?;
 
     // A counter rather than a process id: WASI has no processes, and asking for one traps.
@@ -100,7 +120,7 @@ pub fn solve(
     let network = workspace.join("network.inp");
     std::fs::write(&network, export_inp(container, WORKING_CRS)?).map_err(|error| error.to_string())?;
     let result =
-        simulate(&network, &workspace.join("report.rpt"), &nodes, &links, pressure, flow, t0_seconds, t1_seconds);
+        simulate(&network, &workspace.join("report.rpt"), &nodes, &links, pressure, flow, age, t0_seconds, t1_seconds);
     let _ = std::fs::remove_dir_all(&workspace);
     result
 }
@@ -156,6 +176,7 @@ fn simulate(
     links: &BTreeMap<String, u64>,
     pressure: u16,
     flow: u16,
+    age: Option<u16>,
     t0_seconds: f32,
     t1_seconds: f32,
 ) -> Result<Vec<u8>, String> {
@@ -209,7 +230,34 @@ fn simulate(
                     break;
                 }
             }
-            check(toolkit::EN_closeH(project))
+            check(toolkit::EN_closeH(project))?;
+            // The quality pass rides on the hydraulics EN_initH(SAVE) just recorded. EN_AGE is
+            // switched on here so the user's .inp needs no [QUALITY] section, and EN_nextQ
+            // advances by hydraulic events, which keeps age on the cadence pressure reports at.
+            let Some(age) = age else { return Ok(()) };
+            check(toolkit::EN_setqualtype(project, AGE_ANALYSIS, empty.as_ptr(), empty.as_ptr(), empty.as_ptr()))?;
+            check(toolkit::EN_openQ(project))?;
+            check(toolkit::EN_initQ(project, SAVE))?;
+            loop {
+                let mut now: c_long = 0;
+                check(toolkit::EN_runQ(project, &mut now))?;
+                let seconds = now as f32;
+                if seconds >= t0_seconds && seconds <= t1_seconds {
+                    for index in 1..=node_count {
+                        if let Some(identity) = nodes.get(&identifier(project, index, true)?) {
+                            // EN_AGE reports in hours already, matching the declared unit.
+                            let hours = value(project, index, QUALITY, true)?;
+                            records.extend_from_slice(&pack(*identity, age, seconds, hours));
+                        }
+                    }
+                }
+                let mut step: c_long = 0;
+                check(toolkit::EN_nextQ(project, &mut step))?;
+                if step == 0 {
+                    break;
+                }
+            }
+            check(toolkit::EN_closeQ(project))
         })();
         toolkit::EN_close(project);
         toolkit::EN_deleteproject(project);
