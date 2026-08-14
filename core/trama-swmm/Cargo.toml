@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: LicenseRef-BSL-1.1
+[package]
+name = "trama-swmm"
+description = "SWMM .inp import and export for TRAMA: the drainage network as a graph."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+trama-format = { path = "../trama-format" }
+serde_json.workspace = true
+# For `inp` (the bracketed-section text shape both EPA formats share) and `Reprojection`.
+# Without default features there is no C in this: the EPANET engine stays behind its feature
+# gate. If a third .inp-family crate ever appears, that shared code moves to its own crate;
+# until then a dependency beats a copy.
+trama-epanet = { path = "../trama-epanet", default-features = false }
