@@ -163,6 +163,25 @@ pub fn channels(document: &inp::Document) -> Result<Vec<Value>, String> {
         // map of pressures.
         json!({"name": "age", "entity_kind": "node", "unit": "h"}),
     ];
+    // The file's own chemistry, when `[OPTIONS] Quality` names a chemical rather than one of
+    // the toolkit's analyses. Its [QUALITY]/[SOURCES]/[REACTIONS] travel through XTRA, so the
+    // channel is real the moment the file declares it. The `chem:` prefix is what lets a
+    // solver manifest promise a family it does not get to name (contract 2.2).
+    if let Some(row) = document.rows("OPTIONS").into_iter().find(|row| row[0].eq_ignore_ascii_case("quality"))
+        && let Some(chemical) = row.get(1)
+        && !["none", "age", "trace"].contains(&chemical.to_lowercase().as_str())
+    {
+        let unit = row.get(2).cloned().unwrap_or_else(|| "mg/L".into());
+        channels
+            .push(json!({"name": format!("chem:{}", chemical.to_lowercase()), "entity_kind": "node", "unit": unit}));
+    }
+    // One tracing channel per source: what share of each node's water arrived from that
+    // reservoir. EN_TRACE asks nothing of the file, so every reservoir is an offer.
+    for row in document.rows("RESERVOIRS") {
+        channels.push(
+            json!({"name": format!("trace:{}", row[0]), "entity_kind": "node", "unit": "%", "min": 0, "max": 100}),
+        );
+    }
     // The topological channels, which have nothing to do with water and everything to do with
     // what a utility asks: close this valve, who loses service. A pipe network and a street
     // network answer that in the same call, and this is the declaration that lets them.

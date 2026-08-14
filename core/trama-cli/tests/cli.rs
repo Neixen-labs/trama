@@ -137,9 +137,10 @@ fn an_importer_declares_the_channels_its_format_implies() {
 
     let container = std::fs::read(&out).unwrap();
     let names: Vec<String> = trama_format_channels(&container);
-    // Three from the format, three from topology: what a network reaches and what a cut takes
-    // out are questions about any graph, and a solver may only write where the file says it may.
-    assert_eq!(names, ["pressure", "flow", "age", "reach", "isolated", "critical"]);
+    // Three from the format, one traced source per reservoir, three from topology: what a
+    // network reaches and what a cut takes out are questions about any graph, and a solver may
+    // only write where the file says it may.
+    assert_eq!(names, ["pressure", "flow", "age", "trace:River", "trace:Lake", "reach", "isolated", "critical"]);
 }
 
 fn trama_format_channels(container: &[u8]) -> Vec<String> {

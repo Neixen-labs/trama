@@ -3,7 +3,7 @@
 id = "epanet"
 version = "0.1.0"
 license = "LicenseRef-BSL-1.1"
-contract_versions = ["0.1.0", "0.2.0"]
+contract_versions = ["0.1.0", "0.2.0", "0.3.0"]
 # Server only under contract section 5.2. This crate does have a WASI build, which the playground
 # runs, but WASI is a different shape from the WASM ABI section 5.2 defines: a command with a
 # virtual filesystem rather than the exported `init`/`step`/`run`.
@@ -36,6 +36,22 @@ units = ["cfs", "gpm", "mgd", "imgd", "afd", "lps", "lpm", "mld", "cmh", "cmd"]
 channel = "age"
 entity_kind = "node"
 units = ["h"]
+
+# The file's own chemical, named by its [OPTIONS] Quality line: chem:chlorine in one network,
+# chem:tce in another. A prefix because the name is the input's to choose (contract 2.2), run
+# with the file's own [QUALITY]/[SOURCES]/[REACTIONS] rather than a setting of this solver's.
+[[outputs]]
+channel_prefix = "chem:"
+entity_kind = "node"
+units = ["mg/L", "ug/L"]
+
+# One channel per reservoir — trace:Lake, trace:River — carrying the share of each node's
+# water that arrived from that source. EN_TRACE asks nothing of the file, so the importer
+# offers the family for every network with a reservoir.
+[[outputs]]
+channel_prefix = "trace:"
+entity_kind = "node"
+unit = "%"
 
 [params]
 schema = { "type" = "object", "additionalProperties" = false, "properties" = { "pressure_channel" = { "type" = "string", "default" = "pressure" }, "flow_channel" = { "type" = "string", "default" = "flow" }, "age_channel" = { "type" = "string", "default" = "age" }, "closed_edges" = { "type" = "array", "items" = { "type" = "string" }, "default" = [] } } }
