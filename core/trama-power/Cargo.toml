@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: LicenseRef-BSL-1.1
+[package]
+name = "trama-power"
+description = "Reads an electrical network out of a pandapower JSON, expressing buses, lines and transformers for the core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+trama-format = { path = "../trama-format" }
+serde_json.workspace = true
+
+[dev-dependencies]
+trama-solver = { path = "../trama-solver" }

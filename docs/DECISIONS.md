@@ -499,3 +499,15 @@ The natural next: the playground offers `chem:` and `trace:` channels dynamicall
 **The playground grows a layer picker** fed by measurement, not by declaration alone: after a run it offers exactly the channels the delta stream wrote, labelled in Spanish with the file's own units — presión (psi), edad del agua (h), % desde Lake — and a channel with no declared range gets the run's own maximum as its ramp, so a 130 psi network and a 30 psi one both use the whole scale. Switching layers re-mounts the MapLibre layer over the same ring: no re-solve, no re-fetch.
 
 **Consequence:** verified with Playwright over a local build — Net3 solves and offers five layers; pressure paints visible gradients with a hot spot at the pump; % desde Lake is uniformly zero at t=0, which is not a bug but the physics (no lake water has arrived yet), and moves with the scrub. Zero page errors. What #166 put in the binary, a visitor can now see.
+
+## 2026-08-15 — A substation is one point on the map and two nodes in the network
+
+**Decision:** `trama-power` imports a pandapower network — buses as nodes, lines and transformers as edges, every column as a `power:` property, the rest of the tables in one `XTRA` record. When two buses are drawn at the same coordinate, the importer separates them by ten metres eastward, deterministically, first-one-stays.
+
+**Why the separation exists:** SPEC 4.2 identifies a node by where it is, which is right for a pipe network and wrong for a substation. pandapower's own `mv_oberrhein` draws each transformer's 110 kV and 20 kV buses at one coordinate, because that is the truth — they are in the same building. Compiled as they arrive, the two collapse into one node, and a collapsed transformer is a short circuit: the network loses a voltage level and every load flow over it is wrong. The failure is silent, which is what makes it worth a mechanism rather than a note. Ten metres is below what a network-scale view resolves and far above the quantization floor, so the map is unchanged and the graph is correct. This is the same kind of translation `trama-roads` does for `oneway`: domain knowledge the core must never learn.
+
+**What is in `XTRA` and why it is not a duplicate:** the loads, generators, external grid, switches and standard types travel whole, as EPANET's non-entity sections do. The three expressed tables keep their column order and lose their rows — the schema is what a reader needs to put the rows back, and the rows are in `GRPH` and `PROP` already, so SPEC 330 holds.
+
+**Neither channel declares a range.** A bus under 0.9 p.u. and a line over 100% loading are the two answers an operator runs the study to find. A declared range would have the host reject exactly those deltas as invalid: the failure state is not an invalid state.
+
+**Consequence:** 283 kB of pandapower JSON compile to a 48 kB container that `trama validate` accepts, exporting 179 nodes and 183 edges — the same counts the source has, with both transformer sides intact. The Python solver that reads this container back over the HTTP contract is the follow-up, and is the part that will prove the format is legible outside Rust.
