@@ -511,3 +511,21 @@ The natural next: the playground offers `chem:` and `trace:` channels dynamicall
 **Neither channel declares a range.** A bus under 0.9 p.u. and a line over 100% loading are the two answers an operator runs the study to find. A declared range would have the host reject exactly those deltas as invalid: the failure state is not an invalid state.
 
 **Consequence:** 283 kB of pandapower JSON compile to a 48 kB container that `trama validate` accepts, exporting 179 nodes and 183 edges — the same counts the source has, with both transformer sides intact. The Python solver that reads this container back over the HTTP contract is the follow-up, and is the part that will prove the format is legible outside Rust.
+
+## 2026-08-15 — The format is open because someone else read it
+
+**Decision:** `solvers/pandapower` is a Python package, in a new top-level `solvers/` directory, holding a reader for the TRAMA format written from `docs/SPEC.md` alone — header, section directory, CRC-32C, zstd frames, `GRPH` with its LEB128 identity blocks, `PROP` with its dictionaries and presence bitmaps, `STCH`, `XTRA` — with nothing imported from `trama-format`, plus a server implementing SOLVER_CONTRACT section 6.
+
+**Why it is worth its weight:** every solver until now was a Rust crate linking the reference implementation, so nothing had ever tested the claim the project is built on. "Open format" is not a licence and not a published document; it is the property that a second implementer can decode a file without the first implementer's code. That property is either demonstrated or assumed, and it was assumed.
+
+Writing the reader found three things the specification had never said: the width of a string's length prefix (`u32`), the bit order within a presence bitmap (least significant first, so a reasonable reader could have attributed every property to the wrong entity and still decoded without error), and the layout of column values per `value_type`. All three are now in SPEC 0.4.1. This is the return on the exercise, and it arrived exactly where it was expected to: not in the parts under test, but in the parts only one implementation had ever exercised.
+
+**No web framework**, following the Rust runtime's own reasoning: a solver is a plugin, not the product's backend. `http.server` and a loop means running this needs pandapower and nothing else — the owner's FastAPI constraint is for a backend, and this is not one.
+
+**A load flow is one instant**, so the solver writes one by default rather than inventing a daily curve. `load_scaling` turns it into a series — one real load flow per multiplier, spread across the interval, never an interpolation between two. A solver that supplied a demand profile of its own would be reporting a modelling assumption as a measurement.
+
+**The access policy is documented because section 6 requires it**: HTTPS only, no credentials, 64 MB cap, `sha256` verified before parsing, and `--allow-http` restricted to loopback so a development convenience cannot become a way into an intranet.
+
+**Consequence:** the network survives the round trip to the resolution an `f32` delta has — worst deviation 5.8e-8 p.u. on bus voltage and 2.7e-6 % on transformer loading, against `pandapower.networks.mv_oberrhein()` solved directly. 11 tests, including the full client path: fetch over HTTP, solve, read `ready`/`delta`/`complete` back. `solver-checks.yml` now gates it.
+
+**One thing to hold onto:** the independence of that reader is the whole point of it. A decoding bug there must never be fixed by copying what the Rust does. Read the spec; when the spec is silent, amend the spec.

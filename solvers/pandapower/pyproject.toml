@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: LicenseRef-BSL-1.1
+[project]
+name = "trama-pandapower"
+version = "0.1.0"
+description = "A TRAMA solver that runs pandapower load flows, and a reader for the format written from the specification."
+requires-python = ">=3.10"
+license = { text = "LicenseRef-BSL-1.1" }
+dependencies = ["pandapower>=3.0", "zstandard>=0.22"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+trama-solver-pandapower = "trama_pandapower.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["trama_pandapower*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
