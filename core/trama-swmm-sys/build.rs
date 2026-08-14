@@ -14,6 +14,13 @@ fn main() {
 
     let mut build = cc::Build::new();
     build.files(sources).include("SWMM").include("SWMM/include").warnings(false);
+    // EPANET and SWMM share EPA ancestry, and both define these utility functions with global
+    // linkage. Any binary linking both engines — the CLI does — collides on them, so SWMM's
+    // get a prefix. None are part of the swmm5.h API; macOS's linker shrugged, Linux's lld
+    // refused, and lld is right.
+    for symbol in ["match", "findmatch", "strcomp"] {
+        build.define(symbol, format!("swmm_{symbol}").as_str());
+    }
     // The engine reads text with the C locale's functions; nothing here needs more than that.
     build.flag_if_supported("-fno-fast-math");
     // WASI's libc has no mkstemp, and SWMM wants one for its scratch files (swmm5.c). The same
