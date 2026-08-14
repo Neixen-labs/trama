@@ -1,6 +1,6 @@
 # TRAMA File Format Specification
 
-**Specification version:** 0.4.0
+**Specification version:** 0.4.1
 **Status:** Draft
 **Normative language:** The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in RFC 2119.
 
@@ -268,7 +268,11 @@ PropertyColumn[node_column_count + edge_column_count]
   u32 values_offset
 ```
 
-Each dictionary is `u32 count` followed by that many length-prefixed UTF-8 strings. Keys are globally unique. Columns are ordered by entity kind then `key_id`. A presence bitmap has one bit per entity; `1` means a value is present. Present values are dense and ordered by entity-array index. Strings are `u32` indexes into the string dictionary; enums are `u32` indexes into the enum dictionary; booleans are packed bits. `f64` values MUST be finite. Absence is distinct from `false`, `0`, and an empty string.
+Each dictionary is `u32 count` followed by that many strings, each a `u32` byte length followed by that many UTF-8 bytes. Keys are globally unique. Columns are ordered by entity kind then `key_id`.
+
+A presence bitmap has one bit per entity and occupies `ceil(entity_count / 8)` bytes: entity `i` is bit `i mod 8` of byte `i div 8`, counting from the least significant bit, and `1` means a value is present. Trailing bits of the last byte are zero. Present values are dense and ordered by entity-array index, so a reader walks the bitmap to learn which entity each value belongs to.
+
+A column's values begin at `values_offset` and are stored by `value_type`: `1` is `f64` and `2` is `i64`, both little-endian and one per present value; `3` and `5` are `u32` indexes into the string and enum dictionaries; `4` is a bitmap over the *present* values, packed exactly as the presence bitmap is, where `1` means `true`. A column mixing integer and fractional numbers is written as `f64`. `f64` values MUST be finite. Absence is distinct from `false`, `0`, and an empty string.
 
 ## 6. `STCH`: state-channel declarations
 
@@ -291,7 +295,7 @@ StateChannel[channel_count]
   u32 flags                    # bit 0: range_present; bit 1: linear_interpolation
 ```
 
-`strings_offset` points to `u32 count` followed by length-prefixed UTF-8 strings. A channel applies to exactly one entity kind. When `range_present` is set, `declared_min <= declared_max`. v0 supports scalar `f32` only, matching the GPU texture representation.
+`strings_offset` points to a string table encoded exactly as section 5's dictionaries are: `u32 count`, then each string as a `u32` byte length followed by its UTF-8 bytes. A channel applies to exactly one entity kind. When `range_present` is set, `declared_min <= declared_max`. v0 supports scalar `f32` only, matching the GPU texture representation.
 
 The solver delta tuple is:
 
