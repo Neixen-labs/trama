@@ -52,7 +52,8 @@ function recordingContext(overrides: Record<string, unknown> = {}) {
     getProgramParameter: record("getProgramParameter", true),
     getShaderInfoLog: record("getShaderInfoLog", ""),
     getProgramInfoLog: record("getProgramInfoLog", ""),
-    getAttribLocation: (_program: unknown, name: string) => ({ a_start: 0, a_end: 1, a_edge_index: 2 })[name] ?? -1,
+    getAttribLocation: (_program: unknown, name: string) =>
+      ({ a_start: 0, a_end: 1, a_edge_index: 2, a_nodes: 3, a_along: 4 })[name] ?? -1,
     getUniformLocation: (_program: unknown, name: string) => name,
     getError: () => 0,
     useProgram: record("useProgram"),
@@ -133,15 +134,16 @@ test("wires every attribute to the instance layout", () => {
     [
       [0, 2, constants.UNSIGNED_SHORT, true, twoSegments.strideBytes, twoSegments.layout.start],
       [1, 2, constants.UNSIGNED_SHORT, true, twoSegments.strideBytes, twoSegments.layout.end],
+      [4, 2, constants.UNSIGNED_SHORT, true, twoSegments.strideBytes, twoSegments.layout.along],
     ],
   );
-  assert.deepEqual(callsNamed(calls, "vertexAttribIPointer")[0]?.args, [
-    2,
-    1,
-    constants.UNSIGNED_INT,
-    twoSegments.strideBytes,
-    twoSegments.layout.edgeIndex,
-  ]);
+  assert.deepEqual(
+    callsNamed(calls, "vertexAttribIPointer").map((call) => call.args),
+    [
+      [2, 1, constants.UNSIGNED_INT, twoSegments.strideBytes, twoSegments.layout.edgeIndex],
+      [3, 2, constants.UNSIGNED_INT, twoSegments.strideBytes, twoSegments.layout.nodes],
+    ],
+  );
 });
 
 test("advances every attribute once per instance, not once per vertex", () => {
@@ -154,7 +156,9 @@ test("advances every attribute once per instance, not once per vertex", () => {
     [
       [0, 1],
       [1, 1],
+      [4, 1],
       [2, 1],
+      [3, 1],
     ],
   );
 });
@@ -235,8 +239,26 @@ test("binds the state texture and the rows to blend", () => {
       ["u_state", 0],
       ["u_row_a", 2],
       ["u_row_b", 3],
+      ["u_node_state", 0],
     ],
   );
   assert.deepEqual(callsNamed(calls, "uniform1f").at(-1)?.args, ["u_mix", 0.25]);
   assert.deepEqual(callsNamed(calls, "uniform2f").at(-1)?.args, ["u_range", 0, 100]);
+});
+
+test("a node channel switches the shader to endpoint columns", () => {
+  const { gl, calls } = recordingContext();
+
+  createLineRenderer(gl).draw(twoSegments, {
+    ...style,
+    state: {
+      texture: "state-texture" as unknown as WebGLTexture,
+      rows: { rowA: 2, rowB: 3, mix: 0.25 },
+      range: [0, 100],
+      highColor: [0, 0, 1, 1],
+      entityKind: 1,
+    },
+  });
+
+  assert.deepEqual(callsNamed(calls, "uniform1i").at(-1)?.args, ["u_node_state", 1]);
 });

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-BSL-1.1
 import type { Container, Section } from "./container.js";
 import { createLineRenderer, type LineRenderer, type LineStyle } from "./line-renderer.js";
-import { buildLineInstances, type LineInstances } from "./lines.js";
+import { buildLineInstances, type EdgeEndpoints, type LineInstances } from "./lines.js";
 import { fetchSection, type RangeReader } from "./range.js";
 import { parseGeometry, type Decompress } from "./sections.js";
 import { createStateTexture, type StateTexture } from "./state-texture.js";
@@ -30,6 +30,11 @@ export type LayerState = Readonly<{
   highColor: readonly [number, number, number, number];
   /** The scrub position, read every frame. */
   timeSeconds: () => number;
+  /**
+   * The channel's entity kind, 2 (edge, the default) or 1 (node). Painting a node channel
+   * needs the layer's `edgeEndpoints`, since a line only knows its nodes through it.
+   */
+  entityKind?: 1 | 2;
 }>;
 
 /**
@@ -62,6 +67,8 @@ export type TramaLayerOptions = Readonly<{
   /** Drawing-buffer size in pixels; the width uniform is in pixels, so the layer must be told. */
   resolutionPixels: () => readonly [number, number];
   state?: LayerState;
+  /** Each edge's node indices from GRPH, required only to paint a node channel. */
+  edgeEndpoints?: EdgeEndpoints;
 }>;
 
 /**
@@ -127,7 +134,13 @@ export function createTramaLayer(options: TramaLayerOptions): CustomLayer {
     if (state === undefined || stateTexture === null) return undefined;
     const rows = state.ring.sampleRows(state.timeSeconds(), state.channelId);
     if (rows === null) return undefined;
-    return { texture: stateTexture.texture, rows, range: state.range, highColor: state.highColor };
+    return {
+      texture: stateTexture.texture,
+      rows,
+      range: state.range,
+      highColor: state.highColor,
+      entityKind: state.entityKind,
+    };
   };
 
   const request = (section: Section) => {
@@ -135,7 +148,7 @@ export function createTramaLayer(options: TramaLayerOptions): CustomLayer {
     requested.add(section);
     fetchSection(options.read, section, options.decompress)
       .then((payload) => {
-        loaded.set(section, buildLineInstances(parseGeometry(payload)));
+        loaded.set(section, buildLineInstances(parseGeometry(payload), options.edgeEndpoints));
         host?.triggerRepaint();
       })
       .catch(() => {

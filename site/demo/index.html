@@ -103,6 +103,10 @@
         <input id="scrub" type="range" min="0" max="600" step="60" value="0" disabled />
         <output id="clock" style="color: var(--dim); min-width: 4em; text-align: right">—</output>
       </div>
+      <div class="row live" id="channel-row" hidden>
+        <label for="channel-choice" style="color: var(--dim); font-size: 12.5px">capa</label>
+        <select id="channel-choice" style="flex: 1"></select>
+      </div>
       <p class="live" id="engine-note" style="margin: 6px 0 0; color: var(--dim); font-size: 12px"></p>
 
       <p class="note" id="note">
@@ -230,12 +234,16 @@
       let state = null;
       let layer = null;
       let makeState = () => null;
+      /** Recreates the custom layer over the current `state`; set once a container is loaded. */
+      let mountLayer = () => {};
+      /** The loaded container's declared channels, and the maximum each one received last run. */
+      let paintable = [];
+      let measuredMax = new Map();
 
       async function display(name, container) {
         const inflate = (stored) => decompress(stored);
         const read = async (start, end) => container.subarray(start, end + 1);
         const parsed = parseContainer(container.buffer.slice(container.byteOffset, container.byteOffset + container.length));
-        parsedContainer = parsed;
         // Keyed by directory index, which is how a GeometryRef addresses a tile. Parsed once:
         // framing the map and flying over it both want every tile.
         const geometry = new Map();
@@ -319,6 +327,29 @@
         };
         offerEngines(new Set(channels.map((candidate) => candidate.name)));
         state = makeState(document.querySelector("#engine-choice").value);
+        paintable = channels;
+        measuredMax = new Map();
+        document.querySelector("#channel-row").hidden = true;
+        // One mount for every path that (re)creates the layer: the load below, each solve, and
+        // each channel switch. A node channel needs the edge→nodes lookup, so it rides along.
+        const endpointsOf = (edgeIndex) => {
+          const edge = graph.edges[edgeIndex];
+          return edge === undefined ? undefined : [edge.sourceNodeIndex, edge.targetNodeIndex];
+        };
+        mountLayer = () => {
+          if (map.getLayer("trama-network") !== undefined) map.removeLayer("trama-network");
+          layer = createTramaLayer({
+            id: "trama-network",
+            container: parsed,
+            read,
+            decompress: inflate,
+            style: { widthPixels: 2.5, color: [0.49, 0.82, 1, 1] },
+            resolutionPixels: () => [map.getCanvas().width, map.getCanvas().height],
+            state: state ?? undefined,
+            edgeEndpoints: endpointsOf,
+          });
+          map.addLayer(layer);
+        };
 
         map.on("click", (moment) => {
           const picked = document.querySelector("#engine-choice").value;
@@ -329,18 +360,7 @@
           // valve, see the new pressures; block the culvert, see where the water goes.
           else if (["epanet", "swmm"].includes(picked)) addCut(moment.lngLat);
         });
-        map.on("load", () => {
-          layer = createTramaLayer({
-            id: "trama-network",
-            container: parsed,
-            read,
-            decompress: inflate,
-            style: { widthPixels: 2.5, color: [0.49, 0.82, 1, 1] },
-            resolutionPixels: () => [map.getCanvas().width, map.getCanvas().height],
-            state: state ?? undefined,
-          });
-          map.addLayer(layer);
-        });
+        map.on("load", () => mountLayer());
         document.querySelector("#time-row").hidden = false;
         return { tiles: geometry.size, nodes: graph.nodes.length, edges: graph.edges.length };
       }
@@ -583,7 +603,6 @@
 
       // --- wiring ---
       let container = null;
-      let parsedContainer = null;
       let stem = "network";
 
       async function load(name, bytes) {
@@ -654,7 +673,7 @@
           channel: "pressure",
           paints: "flow",
           needs: "una red importada de un .inp de EPANET",
-          does: "resuelve la hidráulica con el toolkit de EPANET 2.3 y escribe presión, caudal y edad del agua, 24 horas en pasos de una hora. Pulsa tramos para cerrar válvulas y resimular el escenario.",
+          does: "resuelve la hidráulica con el toolkit de EPANET 2.3, 24 horas en pasos de una hora. Tras simular, elige la capa: caudal, presión, edad del agua, cloro o el % que llega desde cada fuente. Pulsa tramos para cerrar válvulas y resimular el escenario.",
         },
         {
           value: "swmm",
@@ -662,7 +681,7 @@
           channel: "depth",
           paints: "flow",
           needs: "una red importada de un .inp de SWMM",
-          does: "resuelve el drenaje con EPA SWMM 5.2 y escribe calado, caudal e inundación, 24 horas de simulación. Pulsa tramos para bloquearlos y ver por dónde va el agua.",
+          does: "resuelve el drenaje con EPA SWMM 5.2, 24 horas de simulación. Tras simular, elige la capa: caudal, calado o inundación. Pulsa tramos para bloquearlos y ver por dónde va el agua.",
         },
         {
           value: "routing",
@@ -723,6 +742,58 @@
         describeEngine();
         return usable !== undefined;
       }
+
+      /** Spanish for the known channels; the chem and trace families carry the file's own names. */
+      function channelLabel(channel) {
+        const known = {
+          pressure: "presión",
+          flow: "caudal",
+          age: "edad del agua",
+          depth: "calado",
+          flooding: "inundación",
+          "chem:chlorine": "cloro",
+        };
+        if (channel.name.startsWith("trace:")) return `% desde ${channel.name.slice(6)}`;
+        const base = known[channel.name] ?? (channel.name.startsWith("chem:") ? channel.name.slice(5) : channel.name);
+        return `${base} (${channel.unit})`;
+      }
+
+      /** Offers every channel the last run wrote as a map layer, keeping `wanted` if it is one. */
+      function offerChannels(wanted) {
+        const row = document.querySelector("#channel-row");
+        const select = document.querySelector("#channel-choice");
+        const offered = paintable.filter((channel) => measuredMax.has(channel.channelId));
+        select.replaceChildren();
+        for (const channel of offered) {
+          const option = document.createElement("option");
+          option.value = channel.name;
+          option.textContent = channelLabel(channel);
+          select.append(option);
+        }
+        // One channel is not a choice; EPANET's five are. The row only appears when it decides.
+        row.hidden = offered.length < 2;
+        if (offered.length === 0) return;
+        select.value = offered.some((channel) => channel.name === wanted) ? wanted : offered[0].name;
+        paintChannel(select.value);
+      }
+
+      /** Repaints the map by a declared channel without re-solving: same ring, new layer state. */
+      function paintChannel(name) {
+        const channel = paintable.find((candidate) => candidate.name === name);
+        if (channel === undefined || state === null) return;
+        state = {
+          ring: state.ring,
+          channelId: channel.channelId,
+          // A node channel — a pressure, an age, a share — paints each line as the gradient
+          // between its two nodes, which is how the physics actually varies along a pipe.
+          entityKind: channel.entityKind,
+          range: [0, channel.rangePresent ? channel.declaredMax : (measuredMax.get(channel.channelId) ?? 1)],
+          highColor: [1, 0.72, 0.2, 1],
+          timeSeconds: () => Number(document.querySelector("#scrub").value),
+        };
+        mountLayer();
+      }
+      document.querySelector("#channel-choice").addEventListener("change", (event) => paintChannel(event.target.value));
 
       /** One line under the picker saying what the chosen solver will do, or why it cannot. */
       function describeEngine() {
@@ -794,17 +865,7 @@
         try {
           const choice = document.querySelector("#engine-choice").value;
           state = makeState(choice);
-          map.removeLayer("trama-network");
-          layer = createTramaLayer({
-            id: "trama-network",
-            container: parsedContainer,
-            read: async (start, end) => container.subarray(start, end + 1),
-            decompress: (stored) => decompress(stored),
-            style: { widthPixels: 2.5, color: [0.49, 0.82, 1, 1] },
-            resolutionPixels: () => [map.getCanvas().width, map.getCanvas().height],
-            state,
-          });
-          map.addLayer(layer);
+          mountLayer();
           // Closures travel as the stable ids the deltas use, read from the graph the page
           // already holds — indices are this page's private address space, ids are the file's.
           const closedIds = cutEdges.map((index) => String(routableGraph.edges[index].id));
@@ -827,6 +888,17 @@
           const applied = state.ring.apply(deltas);
           // The ring is CPU-side until this: the texture is what the shader reads.
           layer?.refreshState();
+          // What the run actually wrote, by channel: the layer selector offers exactly that,
+          // and a channel with no declared range gets the run's own maximum as its ramp, so a
+          // 130 psi network and a 30 psi one both use the whole colour scale.
+          measuredMax = new Map();
+          const written = new DataView(deltas.buffer, deltas.byteOffset, deltas.byteLength);
+          for (let at = 0; at + 18 <= deltas.byteLength; at += 18) {
+            const channelId = written.getUint16(at + 8, true);
+            const value = written.getFloat32(at + 14, true);
+            measuredMax.set(channelId, Math.max(measuredMax.get(channelId) ?? 0, value));
+          }
+          offerChannels(ENGINES.find((engine) => engine.value === choice)?.paints ?? "");
           // A route is over long before the window is: at 8 m/s half an hour covers 14 km and
           // these streets are two. Without this the whole journey happens in the first inch of
           // the slider and dragging it does nothing visible.
