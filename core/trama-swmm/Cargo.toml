@@ -14,3 +14,15 @@ serde_json.workspace = true
 # gate. If a third .inp-family crate ever appears, that shared code moves to its own crate;
 # until then a dependency beats a copy.
 trama-epanet = { path = "../trama-epanet", default-features = false }
+# The solver is optional so the importer can reach a browser without carrying the engine.
+trama-swmm-sys = { path = "../trama-swmm-sys", optional = true }
+trama-solver = { path = "../trama-solver", optional = true }
+
+[features]
+default = ["solver"]
+solver = ["dep:trama-swmm-sys", "dep:trama-solver"]
+
+[[bin]]
+name = "trama-solver-swmm"
+path = "src/bin/server.rs"
+required-features = ["solver"]

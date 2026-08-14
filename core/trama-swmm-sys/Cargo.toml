@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: LicenseRef-BSL-1.1
+[package]
+name = "trama-swmm-sys"
+description = "EPA SWMM 5.2.4, vendored and statically linked."
+version.workspace = true
+edition.workspace = true
+# The Rust in this crate is the workspace's; the C under SWMM/ is the EPA's, public domain.
+license.workspace = true
+links = "swmm5"
+build = "build.rs"
+
+[build-dependencies]
+cc = "1"

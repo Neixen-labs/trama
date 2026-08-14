@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# The manifest docs/SOLVER_CONTRACT.md section 2 requires of every solver package.
+id = "swmm"
+version = "0.1.0"
+license = "LicenseRef-BSL-1.1"
+contract_versions = ["0.1.0", "0.2.0"]
+runtimes = ["server"]
+
+[inputs]
+nodes = true
+edges = true
+# The drainage scalars travel as opaque `swmm:` keys, and the toolkit reads the whole network
+# rather than named columns, so nothing is required by name here.
+edge_properties = []
+node_properties = []
+
+# Both unit systems, because the unit is the input's to choose: `[OPTIONS] FLOW_UNITS` sets it
+# file-wide, and SWMM reports depth in feet for a US flow unit and metres for an SI one.
+[[outputs]]
+channel = "depth"
+entity_kind = "node"
+units = ["ft", "m"]
+
+[[outputs]]
+channel = "flow"
+entity_kind = "edge"
+units = ["cfs", "gpm", "mgd", "cms", "lps", "mld"]
+
+[params]
+schema = { "type" = "object", "additionalProperties" = false, "properties" = { "depth_channel" = { "type" = "string", "default" = "depth" }, "flow_channel" = { "type" = "string", "default" = "flow" } } }

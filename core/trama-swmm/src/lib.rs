@@ -11,3 +11,5 @@
 
 pub mod exporter;
 pub mod importer;
+#[cfg(feature = "solver")]
+pub mod solver;
