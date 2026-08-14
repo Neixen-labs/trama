@@ -32,7 +32,7 @@ fn results(source: &Path) -> BTreeMap<(String, u16, u32), f32> {
     let (nodes, links) = solver::entity_ids(&container).unwrap();
     let mut names: BTreeMap<u64, String> = nodes.iter().map(|(name, id)| (*id, name.clone())).collect();
     names.extend(links.iter().map(|(name, id)| (*id, name.clone())));
-    let deltas = solver::solve(&container, "pressure", "flow", "age", 0.0, 86400.0).unwrap();
+    let deltas = solver::solve(&container, "pressure", "flow", "age", &[], 0.0, 86400.0).unwrap();
     deltas
         .chunks(18)
         .map(|record| {
@@ -92,7 +92,7 @@ fn an_inp_without_a_declared_crs_is_refused() {
 fn a_channel_the_container_never_declared_is_refused() {
     let container = compile("Net1.inp");
 
-    let error = solver::solve(&container, "head", "flow", "age", 0.0, 3600.0).unwrap_err();
+    let error = solver::solve(&container, "head", "flow", "age", &[], 0.0, 3600.0).unwrap_err();
 
     assert!(error.contains("no node channel named 'head'"), "{error}");
 }
@@ -111,7 +111,7 @@ fn a_container_from_another_format_is_refused() {
     ];
     let container = trama_format::compile(&features, &channels, &[]).unwrap();
 
-    let error = solver::solve(&container, "pressure", "flow", "age", 0.0, 3600.0).unwrap_err();
+    let error = solver::solve(&container, "pressure", "flow", "age", &[], 0.0, 3600.0).unwrap_err();
 
     assert!(error.contains("not compiled from an EPANET network"), "{error}");
 }
@@ -123,7 +123,7 @@ fn water_age_grows_from_zero_toward_the_travel_time() {
     let age = channels.iter().find(|channel| channel.name == "age").expect("the importer declares age");
     assert_eq!(age.entity_kind, 1, "age is a node channel");
 
-    let deltas = solver::solve(&container, "pressure", "flow", "age", 0.0, 86400.0).unwrap();
+    let deltas = solver::solve(&container, "pressure", "flow", "age", &[], 0.0, 86400.0).unwrap();
     let ages: Vec<(f32, f32)> = deltas
         .chunks(18)
         .filter(|record| u16::from_le_bytes(record[8..10].try_into().unwrap()) == age.id)
@@ -159,9 +159,34 @@ fn a_container_without_the_age_channel_still_solves() {
         imported.channels.iter().filter(|channel| channel["name"] != "age").cloned().collect();
     let container = trama_format::compile(&imported.features, &old_channels, &imported.extras).unwrap();
 
-    let deltas = solver::solve(&container, "pressure", "flow", "age", 0.0, 86400.0).unwrap();
+    let deltas = solver::solve(&container, "pressure", "flow", "age", &[], 0.0, 86400.0).unwrap();
 
     assert!(!deltas.is_empty());
     let channels = trama_solver::channels(&container).unwrap();
     assert!(channels.iter().all(|channel| channel.name != "age"));
+}
+
+#[test]
+fn closing_a_pipe_changes_the_physics_and_an_unknown_id_is_refused() {
+    let container = compile("Net1.inp");
+    let (_nodes, links) = solver::entity_ids(&container).unwrap();
+
+    let open_run = solver::solve(&container, "pressure", "flow", "age", &[], 0.0, 3600.0).unwrap();
+    // Net1's pipe 10 is the single link between the pump and the rest of the network.
+    let closed_id = links["10"];
+    let closed_run = solver::solve(&container, "pressure", "flow", "age", &[closed_id], 0.0, 3600.0).unwrap();
+
+    assert_eq!(open_run.len(), closed_run.len(), "same entities report on the same schedule");
+    let values = |deltas: &[u8]| -> Vec<f32> {
+        deltas.chunks(18).map(|r| f32::from_le_bytes(r[14..18].try_into().unwrap())).collect()
+    };
+    let moved = values(&open_run)
+        .iter()
+        .zip(values(&closed_run))
+        .filter(|(open, closed)| (**open - closed).abs() > 0.01)
+        .count();
+    assert!(moved > 10, "closing the network's main feed changed {moved} values; the closure did nothing");
+
+    let error = solver::solve(&container, "pressure", "flow", "age", &[42], 0.0, 3600.0).err().unwrap();
+    assert!(error.contains("42"), "{error}");
 }

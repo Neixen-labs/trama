@@ -459,3 +459,15 @@ Chlorine decay and source tracing are the same loop with a different `EN_setqual
 **Why:** where the system floods is the question stormwater modelling exists to answer, and it was one enum constant away. The channel is zero almost everywhere almost always, which is exactly why the exceptions matter and why a scrub over it reads instantly: the map lights up where and when the network gives up.
 
 **Consequence:** the offer-not-demand rule set by EPANET's age channel is now a convention rather than a case — two solvers follow it, and old containers keep solving untouched by either. The test demanded more than shape: the fixture's storm must actually overwhelm something (`peak > 0`), because a flooding channel no fixture can light is untestable and the storm decorative. It does.
+
+## 2026-08-14 — Close it and see: the scenario, answered with physics
+
+**Decision:** both EPA solvers accept `closed_edges` — stable entity ids, carried as strings because a `u64` does not survive a JSON number. EPANET expresses the closure as a `[STATUS] <name> Closed` section appended to the rebuilt `.inp`; SWMM omits the closed links from its rebuilt file entirely, along with their cross-sections and vertices.
+
+**Why two mechanisms for one parameter:** each engine gets the closure in the only language it speaks. EPANET has a first-class construct for a closed link — a shut valve still exists, holds pressure against its faces, and appears in results. SWMM has neither a status column for conduits nor a runtime API that will touch one (`setLinkSetting` returns without acting on `CONDUIT`; read in the vendored source, not the manual), so a blocked culvert is expressed the way the engine can hear: absent from the network. The asymmetry is honest — it mirrors what closing means physically in each domain — and invisible to the caller, who names edges by the same stable ids the deltas use.
+
+Because both solvers rebuild the `.inp` from the container on every run, the scenario needed no new state anywhere: it is a text edit between export and simulation, which is the kind of feature the export-then-simulate architecture was quietly buying all along.
+
+**Consequence:** the physics is tested, not asserted. Closing Net1's pipe 10 — the single link between the pump and everything else — must change more than ten reported values, and it does. Blocking the fixture's only conduit into storage removes exactly that link from the results and changes the rest. An id that names no edge stops the run with the id in the message, rather than becoming a line EPANET would refuse later or SWMM would silently fail to match.
+
+The playground follow-up: let the click flow that already picks cut edges for the topological solver hand the same edges to the physical ones.

@@ -38,4 +38,4 @@ entity_kind = "node"
 units = ["h"]
 
 [params]
-schema = { "type" = "object", "additionalProperties" = false, "properties" = { "pressure_channel" = { "type" = "string", "default" = "pressure" }, "flow_channel" = { "type" = "string", "default" = "flow" }, "age_channel" = { "type" = "string", "default" = "age" } } }
+schema = { "type" = "object", "additionalProperties" = false, "properties" = { "pressure_channel" = { "type" = "string", "default" = "pressure" }, "flow_channel" = { "type" = "string", "default" = "flow" }, "age_channel" = { "type" = "string", "default" = "age" }, "closed_edges" = { "type" = "array", "items" = { "type" = "string" }, "default" = [] } } }

@@ -88,17 +88,48 @@ impl Solver for EpanetSolver {
         let pressure_channel = request.params["pressure_channel"].as_str().unwrap_or("pressure");
         let flow_channel = request.params["flow_channel"].as_str().unwrap_or("flow");
         let age_channel = request.params["age_channel"].as_str().unwrap_or("age");
-        solve(&request.container, pressure_channel, flow_channel, age_channel, request.t0_seconds, request.t1_seconds)
-            .map_err(Rejection::input)
+        let closed = closed_edges(&request.params)?;
+        solve(
+            &request.container,
+            pressure_channel,
+            flow_channel,
+            age_channel,
+            &closed,
+            request.t0_seconds,
+            request.t1_seconds,
+        )
+        .map_err(Rejection::input)
     }
 }
 
+/// `params.closed_edges`: stable entity ids as strings, because a u64 does not survive a JSON
+/// number. Shared by both EPA solvers.
+pub fn closed_edges(params: &serde_json::Value) -> Result<Vec<u64>, trama_solver::server::Rejection> {
+    params["closed_edges"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| {
+                    value.as_str().and_then(|text| text.parse::<u64>().ok()).ok_or_else(|| {
+                        trama_solver::server::Rejection::request("closed_edges holds entity ids as strings")
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| Ok(Vec::new()))
+}
+
 /// Packed deltas for every node pressure and link flow reported within [t0, t1].
+///
+/// `closed`: edges (by stable id) to force `Closed` for this run — the scenario question. A
+/// closed valve still exists, so it stays in the network and in the results.
 pub fn solve(
     container: &[u8],
     pressure_channel: &str,
     flow_channel: &str,
     age_channel: &str,
+    closed: &[u64],
     t0_seconds: f32,
     t1_seconds: f32,
 ) -> Result<Vec<u8>, String> {
@@ -118,7 +149,21 @@ pub fn solve(
     let workspace = scratch().join(format!("trama-epanet-{serial}"));
     std::fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
     let network = workspace.join("network.inp");
-    std::fs::write(&network, export_inp(container, WORKING_CRS)?).map_err(|error| error.to_string())?;
+    let mut text = export_inp(container, WORKING_CRS)?;
+    if !closed.is_empty() {
+        // EPANET's own construct for the scenario: [STATUS] closes a link at time zero without
+        // removing it. Names come from the same map the deltas use, so an unknown id is a
+        // caller error worth stopping on rather than a line EPANET would refuse later.
+        let by_id: BTreeMap<u64, &String> = links.iter().map(|(name, id)| (*id, name)).collect();
+        let mut status = String::from("[STATUS]\n");
+        for id in closed {
+            let name = by_id.get(id).ok_or_else(|| format!("closed_edges names no edge of this network: {id}"))?;
+            status.push_str(&format!(" {name}\tClosed\n"));
+        }
+        let end = text.find("[END]").unwrap_or(text.len());
+        text.insert_str(end, &format!("{status}\n"));
+    }
+    std::fs::write(&network, text).map_err(|error| error.to_string())?;
     let result =
         simulate(&network, &workspace.join("report.rpt"), &nodes, &links, pressure, flow, age, t0_seconds, t1_seconds);
     let _ = std::fs::remove_dir_all(&workspace);

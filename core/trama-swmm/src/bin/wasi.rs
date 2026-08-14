@@ -4,7 +4,7 @@
 //! Files are the interface because they are what SWMM already speaks and what WASI already
 //! provides: the host writes a container, runs this, and reads the deltas back.
 //!
-//!     trama-swmm-wasi <container> <deltas> [t1_seconds]
+//!     trama-swmm-wasi <container> <deltas> [t1_seconds] [closed_id,closed_id,...]
 
 use std::process::ExitCode;
 
@@ -15,9 +15,13 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let t1_seconds: f32 = arguments.get(3).and_then(|value| value.parse().ok()).unwrap_or(86400.0);
+    let closed: Vec<u64> =
+        arguments.get(4).map(|list| list.split(',').filter_map(|id| id.parse().ok()).collect()).unwrap_or_default();
     let outcome = std::fs::read(&arguments[1])
         .map_err(|error| error.to_string())
-        .and_then(|container| trama_swmm::solver::solve(&container, "depth", "flow", "flooding", 0.0, t1_seconds))
+        .and_then(|container| {
+            trama_swmm::solver::solve(&container, "depth", "flow", "flooding", &closed, 0.0, t1_seconds)
+        })
         .and_then(|deltas| std::fs::write(&arguments[2], deltas).map_err(|error| error.to_string()));
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
