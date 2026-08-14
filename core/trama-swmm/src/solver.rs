@@ -66,17 +66,31 @@ impl Solver for SwmmSolver {
         let depth_channel = request.params["depth_channel"].as_str().unwrap_or("depth");
         let flow_channel = request.params["flow_channel"].as_str().unwrap_or("flow");
         let flooding_channel = request.params["flooding_channel"].as_str().unwrap_or("flooding");
-        solve(&request.container, depth_channel, flow_channel, flooding_channel, request.t0_seconds, request.t1_seconds)
-            .map_err(Rejection::input)
+        let closed = trama_epanet::solver::closed_edges(&request.params)?;
+        solve(
+            &request.container,
+            depth_channel,
+            flow_channel,
+            flooding_channel,
+            &closed,
+            request.t0_seconds,
+            request.t1_seconds,
+        )
+        .map_err(Rejection::input)
     }
 }
 
 /// Packed deltas for every node depth and link flow reported within [t0, t1].
+///
+/// `closed`: edges (by stable id) removed from the network for this run. SWMM's API refuses to
+/// close a conduit (`setLinkSetting` returns on `CONDUIT`), and its `.inp` has no status
+/// column for one, so a blocked link is expressed the way the engine can hear it: absent.
 pub fn solve(
     container: &[u8],
     depth_channel: &str,
     flow_channel: &str,
     flooding_channel: &str,
+    closed: &[u64],
     t0_seconds: f32,
     t1_seconds: f32,
 ) -> Result<Vec<u8>, String> {
@@ -96,7 +110,41 @@ pub fn solve(
     let workspace = scratch().join(format!("trama-swmm-{serial}"));
     std::fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
     let network = workspace.join("network.inp");
-    std::fs::write(&network, export_inp(container, WORKING_CRS)?).map_err(|error| error.to_string())?;
+    let mut text = export_inp(container, WORKING_CRS)?;
+    if !closed.is_empty() {
+        let by_id: BTreeMap<u64, &String> = links.iter().map(|(name, id)| (*id, name)).collect();
+        let mut names = std::collections::BTreeSet::new();
+        for id in closed {
+            names.insert(
+                by_id.get(id).ok_or_else(|| format!("closed_edges names no edge of this network: {id}"))?.as_str(),
+            );
+        }
+        // Drop the closed links from every section that rows them by name: the link sections
+        // themselves, their cross-sections, and their vertices.
+        let document = trama_epanet::inp::parse(&text);
+        let filtered = trama_epanet::inp::Document {
+            sections: document
+                .sections
+                .iter()
+                .map(|(section, body)| {
+                    let filters = ["CONDUITS", "PUMPS", "ORIFICES", "WEIRS", "OUTLETS", "XSECTIONS", "VERTICES"];
+                    if !filters.contains(&section.as_str()) {
+                        return (section.clone(), body.clone());
+                    }
+                    let kept = body
+                        .iter()
+                        .filter(|line| {
+                            trama_epanet::inp::values(line).first().is_none_or(|name| !names.contains(name.as_str()))
+                        })
+                        .cloned()
+                        .collect();
+                    (section.clone(), kept)
+                })
+                .collect(),
+        };
+        text = trama_epanet::inp::serialize(&filtered);
+    }
+    std::fs::write(&network, text).map_err(|error| error.to_string())?;
     let result = simulate(&network, &workspace, &nodes, &links, depth, flow, flooding, t0_seconds, t1_seconds);
     let _ = std::fs::remove_dir_all(&workspace);
     result

@@ -34,4 +34,4 @@ entity_kind = "node"
 units = ["cfs", "gpm", "mgd", "cms", "lps", "mld"]
 
 [params]
-schema = { "type" = "object", "additionalProperties" = false, "properties" = { "depth_channel" = { "type" = "string", "default" = "depth" }, "flow_channel" = { "type" = "string", "default" = "flow" }, "flooding_channel" = { "type" = "string", "default" = "flooding" } } }
+schema = { "type" = "object", "additionalProperties" = false, "properties" = { "depth_channel" = { "type" = "string", "default" = "depth" }, "flow_channel" = { "type" = "string", "default" = "flow" }, "flooding_channel" = { "type" = "string", "default" = "flooding" }, "closed_edges" = { "type" = "array", "items" = { "type" = "string" }, "default" = [] } } }
