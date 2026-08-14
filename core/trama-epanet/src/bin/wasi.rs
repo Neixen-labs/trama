@@ -17,7 +17,7 @@ fn main() -> ExitCode {
     let t1_seconds: f32 = arguments.get(3).and_then(|value| value.parse().ok()).unwrap_or(86400.0);
     let outcome = std::fs::read(&arguments[1])
         .map_err(|error| error.to_string())
-        .and_then(|container| trama_epanet::solver::solve(&container, "pressure", "flow", 0.0, t1_seconds))
+        .and_then(|container| trama_epanet::solver::solve(&container, "pressure", "flow", "age", 0.0, t1_seconds))
         .and_then(|deltas| std::fs::write(&arguments[2], deltas).map_err(|error| error.to_string()));
     match outcome {
         Ok(()) => ExitCode::SUCCESS,

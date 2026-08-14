@@ -439,3 +439,15 @@ What is deliberately not here: WASI. The build needs the same shim treatment EPA
 **Consequence:** verified end to end with a real browser before merging: the pyswmm fixture compiles in 35 ms, the page selects SWMM by itself — EPANET is offered disabled because the container declares no `pressure`, which is the channel system doing its job — and simulating returns 10,080 deltas: 24 hours at the file's own 60-second report step times seven entities, exactly. The WASI module also ran under Node's own WASI against the full 58-hour window as a second, browser-free witness.
 
 The playground now holds the whole commercial claim in one page: water, drainage, and streets, compiled and solved locally, on three solvers that share one contract and a core that cannot tell them apart.
+
+## 2026-08-14 — The launch waits for depth, and depth starts with water age
+
+**Decision (owner):** the public launch is deferred. Not for polish — the criterion it was gated on passes with a fifty-fold margin — but for substance: three solvers that answer one question each is a demo, and the launch should be a product. The work turns inward: more operations on the solvers that exist, then more solvers.
+
+**First deepening: water age.** `EN_AGE` was already in the linked toolkit, unused. The importer now declares an `age` node channel in hours, and the solver runs EPANET's quality pass after its hydraulic one — switched on programmatically with `EN_setqualtype`, so the user's `.inp` needs no `[QUALITY]` section, and advanced with `EN_nextQ`, which steps by hydraulic events and keeps age on the same cadence pressure reports at.
+
+**Why age first:** it is the highest ratio of question-answered to code-written available. How long water sits in the network is what chlorine decay, taste complaints and stagnation regulation are all about, and no tool shows it to a small utility. The physics is now a test: age starts at zero, the day's mean grows, and the worst value stays under 25 — hours, not seconds, which is the kind of unit mistake a channel declaration exists to prevent.
+
+**The compatibility rule that fell out of it:** age is an offer, not a demand. The solver writes it only where the container declares it, so every `.trama` compiled before this change solves exactly as it did. `fixtures/net3.trama` regenerates because declaring a channel changes the container — the 2026-08-12 precedent — and the equivalence suite re-verified identity across both compilers.
+
+Chlorine decay and source tracing are the same loop with a different `EN_setqualtype` argument, and are recorded here as the natural next two.

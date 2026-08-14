@@ -157,6 +157,11 @@ pub fn channels(document: &inp::Document) -> Result<Vec<Value>, String> {
     let mut channels = vec![
         json!({"name": "pressure", "entity_kind": "node", "unit": pressure}),
         json!({"name": "flow", "entity_kind": "edge", "unit": flow_units}),
+        // Hours whatever the flow units: EN_AGE is the toolkit's own analysis, switched on by
+        // the solver without the file needing a [QUALITY] section. How long water sits in the
+        // network is a question utilities are regulated on, and stale water is invisible on a
+        // map of pressures.
+        json!({"name": "age", "entity_kind": "node", "unit": "h"}),
     ];
     // The topological channels, which have nothing to do with water and everything to do with
     // what a utility asks: close this valve, who loses service. A pipe network and a street

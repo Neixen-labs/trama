@@ -32,7 +32,7 @@ fn results(source: &Path) -> BTreeMap<(String, u16, u32), f32> {
     let (nodes, links) = solver::entity_ids(&container).unwrap();
     let mut names: BTreeMap<u64, String> = nodes.iter().map(|(name, id)| (*id, name.clone())).collect();
     names.extend(links.iter().map(|(name, id)| (*id, name.clone())));
-    let deltas = solver::solve(&container, "pressure", "flow", 0.0, 86400.0).unwrap();
+    let deltas = solver::solve(&container, "pressure", "flow", "age", 0.0, 86400.0).unwrap();
     deltas
         .chunks(18)
         .map(|record| {
@@ -92,7 +92,7 @@ fn an_inp_without_a_declared_crs_is_refused() {
 fn a_channel_the_container_never_declared_is_refused() {
     let container = compile("Net1.inp");
 
-    let error = solver::solve(&container, "head", "flow", 0.0, 3600.0).unwrap_err();
+    let error = solver::solve(&container, "head", "flow", "age", 0.0, 3600.0).unwrap_err();
 
     assert!(error.contains("no node channel named 'head'"), "{error}");
 }
@@ -111,7 +111,57 @@ fn a_container_from_another_format_is_refused() {
     ];
     let container = trama_format::compile(&features, &channels, &[]).unwrap();
 
-    let error = solver::solve(&container, "pressure", "flow", 0.0, 3600.0).unwrap_err();
+    let error = solver::solve(&container, "pressure", "flow", "age", 0.0, 3600.0).unwrap_err();
 
     assert!(error.contains("not compiled from an EPANET network"), "{error}");
+}
+
+#[test]
+fn water_age_grows_from_zero_toward_the_travel_time() {
+    let container = compile("Net3.inp");
+    let channels = trama_solver::channels(&container).unwrap();
+    let age = channels.iter().find(|channel| channel.name == "age").expect("the importer declares age");
+    assert_eq!(age.entity_kind, 1, "age is a node channel");
+
+    let deltas = solver::solve(&container, "pressure", "flow", "age", 0.0, 86400.0).unwrap();
+    let ages: Vec<(f32, f32)> = deltas
+        .chunks(18)
+        .filter(|record| u16::from_le_bytes(record[8..10].try_into().unwrap()) == age.id)
+        .map(|record| {
+            (
+                f32::from_le_bytes(record[10..14].try_into().unwrap()),
+                f32::from_le_bytes(record[14..18].try_into().unwrap()),
+            )
+        })
+        .collect();
+    assert!(!ages.is_empty(), "an age channel was declared and nothing was written into it");
+
+    // The physics this exists to show: water starts fresh and gets older as the day runs.
+    let at_start: f32 = ages.iter().filter(|(t, _)| *t == 0.0).map(|(_, v)| v).sum();
+    let early: f32 = ages.iter().filter(|(t, _)| *t <= 7200.0).map(|(_, v)| v).sum::<f32>()
+        / ages.iter().filter(|(t, _)| *t <= 7200.0).count() as f32;
+    let late: f32 = ages.iter().filter(|(t, _)| *t >= 79200.0).map(|(_, v)| v).sum::<f32>()
+        / ages.iter().filter(|(t, _)| *t >= 79200.0).count() as f32;
+    assert_eq!(at_start, 0.0, "at t=0 no water has aged yet");
+    assert!(late > early + 1.0, "mean age must grow over the day: {early:.2}h early vs {late:.2}h late");
+    // And it is hours, not seconds: a day of simulation cannot age water more than a day.
+    let worst = ages.iter().map(|(_, v)| *v).fold(0.0f32, f32::max);
+    assert!(worst <= 24.0 + 1.0, "age is declared in hours; {worst} looks like another unit");
+}
+
+#[test]
+fn a_container_without_the_age_channel_still_solves() {
+    // Containers compiled before the channel existed declare pressure and flow only. Age is
+    // an offer, not a demand: the solver writes it where declared and stays quiet elsewhere.
+    let options: BTreeMap<String, String> = [("source-crs".to_string(), CRS.to_string())].into_iter().collect();
+    let imported = EpanetImporter.load(&networks().join("Net1.inp"), &options).unwrap();
+    let old_channels: Vec<serde_json::Value> =
+        imported.channels.iter().filter(|channel| channel["name"] != "age").cloned().collect();
+    let container = trama_format::compile(&imported.features, &old_channels, &imported.extras).unwrap();
+
+    let deltas = solver::solve(&container, "pressure", "flow", "age", 0.0, 86400.0).unwrap();
+
+    assert!(!deltas.is_empty());
+    let channels = trama_solver::channels(&container).unwrap();
+    assert!(channels.iter().all(|channel| channel.name != "age"));
 }

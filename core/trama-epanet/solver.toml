@@ -30,5 +30,12 @@ channel = "flow"
 entity_kind = "edge"
 units = ["cfs", "gpm", "mgd", "imgd", "afd", "lps", "lpm", "mld", "cmh", "cmd"]
 
+# Hours whichever unit system the file chose: EN_AGE is the toolkit's own analysis, and the
+# solver writes it only where the container declares the channel.
+[[outputs]]
+channel = "age"
+entity_kind = "node"
+units = ["h"]
+
 [params]
-schema = { "type" = "object", "additionalProperties" = false, "properties" = { "pressure_channel" = { "type" = "string", "default" = "pressure" }, "flow_channel" = { "type" = "string", "default" = "flow" } } }
+schema = { "type" = "object", "additionalProperties" = false, "properties" = { "pressure_channel" = { "type" = "string", "default" = "pressure" }, "flow_channel" = { "type" = "string", "default" = "flow" }, "age_channel" = { "type" = "string", "default" = "age" } } }
