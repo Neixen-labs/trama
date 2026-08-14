@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Solver checks
+
+on:
+  pull_request:
+    paths:
+      - 'solvers/**'
+      - 'fixtures/**'
+      - '.github/workflows/solver-checks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'solvers/**'
+      - 'fixtures/**'
+      - '.github/workflows/solver-checks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pandapower:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: solvers/pandapower
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -e .[dev]
+      - run: python -m pytest -q
