@@ -24,6 +24,16 @@ pub fn compile_inp(source: &str, crs: &str) -> Result<Vec<u8>, JsError> {
         .map_err(|error| JsError::new(&error))
 }
 
+/// Compile a SWMM `.inp`, the other EPA dialect sharing the suffix. The page tries EPANET
+/// first and retries here when the redirect message names SWMM, the same dance the command
+/// line does with `--importer swmm`.
+#[wasm_bindgen]
+pub fn compile_swmm(source: &str, crs: &str) -> Result<Vec<u8>, JsError> {
+    let imported = trama_swmm::importer::import(source, crs).map_err(|error| JsError::new(&error))?;
+    trama_format::compile(&imported.features, &imported.channels, &imported.extras)
+        .map_err(|error| JsError::new(&error))
+}
+
 /// Compile an OpenStreetMap extract, as Overpass writes it for `out geom;`.
 ///
 /// The road importer declares the channel a router writes, so a container built here is

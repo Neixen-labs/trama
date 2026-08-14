@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 trama-format = { path = "../trama-format" }
 trama-epanet = { path = "../trama-epanet", default-features = false }
+trama-swmm = { path = "../trama-swmm", default-features = false }
 trama-example = { path = "../trama-example" }
 trama-roads = { path = "../trama-roads" }
 trama-routing = { path = "../trama-routing" }

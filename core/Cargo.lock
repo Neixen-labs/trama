@@ -840,6 +840,7 @@ dependencies = [
  "trama-format",
  "trama-roads",
  "trama-routing",
+ "trama-swmm",
  "trama-trace",
  "wasm-bindgen",
 ]

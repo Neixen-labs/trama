@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
-# Builds the EPANET solver as a WASI command, which is what lets a browser run it: EPANET is C
-# with a file-based API, and only WASI gives it a libc and a filesystem.
+# Builds the EPA solvers as WASI commands, which is what lets a browser run them: EPANET and
+# SWMM are C with file-based APIs, and only WASI gives them a libc and a filesystem.
 #
 #   WASI_SDK=/path/to/wasi-sdk-33.0 ./core/wasi/build.sh
 set -euo pipefail
@@ -19,4 +19,7 @@ export RUSTFLAGS="${RUSTFLAGS:-} -L native=$WASI_SDK/share/wasi-sysroot/lib/wasm
 
 cd "$here/.."
 cargo build --release --target wasm32-wasip1 -p trama-epanet --bin trama-epanet-wasi
-printf 'built %s\n' "$(du -h target/wasm32-wasip1/release/trama-epanet-wasi.wasm | cut -f1)"
+cargo build --release --target wasm32-wasip1 -p trama-swmm --bin trama-swmm-wasi
+printf 'built %s epanet, %s swmm\n' \
+  "$(du -h target/wasm32-wasip1/release/trama-epanet-wasi.wasm | cut -f1)" \
+  "$(du -h target/wasm32-wasip1/release/trama-swmm-wasi.wasm | cut -f1)"

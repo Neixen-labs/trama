@@ -26,3 +26,8 @@ solver = ["dep:trama-swmm-sys", "dep:trama-solver"]
 name = "trama-solver-swmm"
 path = "src/bin/server.rs"
 required-features = ["solver"]
+
+[[bin]]
+name = "trama-swmm-wasi"
+path = "src/bin/wasi.rs"
+required-features = ["solver"]
