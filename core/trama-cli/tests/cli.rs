@@ -316,3 +316,41 @@ fn exports_one_vector_tile_per_geometry_record() {
         assert!(text.contains("nodes"), "{} names no nodes layer", tile.display());
     }
 }
+
+#[test]
+fn a_swmm_network_compiles_by_name_and_exports_back_to_its_own_dialect() {
+    let directory = workspace("swmm");
+    let out = directory.join("drainage.trama");
+
+    let result = trama(&[
+        "compile",
+        repository().join("core/trama-swmm/tests/networks/model_full_features.inp").to_str().unwrap(),
+        out.to_str().unwrap(),
+        "--importer",
+        "swmm",
+        "-o",
+        "source-crs=EPSG:3857",
+    ]);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+
+    // `--to inp` finds the right dialect from the container itself: this one must come back
+    // as SWMM sections, not EPANET ones.
+    let back = directory.join("drainage.inp");
+    let result =
+        trama(&["export", out.to_str().unwrap(), back.to_str().unwrap(), "--to", "inp", "-o", "crs=EPSG:3857"]);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let text = std::fs::read_to_string(&back).unwrap();
+    assert!(text.contains("[CONDUITS]"), "no SWMM sections in the export");
+    assert!(text.contains("[SUBCATCHMENTS]"), "the hydrology must come back too");
+
+    // Without --importer, the suffix routes to EPANET, which must redirect rather than parse.
+    let misdirected = trama(&[
+        "compile",
+        repository().join("core/trama-swmm/tests/networks/model_full_features.inp").to_str().unwrap(),
+        directory.join("wrong.trama").to_str().unwrap(),
+        "-o",
+        "source-crs=EPSG:3857",
+    ]);
+    assert!(!misdirected.status.success());
+    assert!(String::from_utf8_lossy(&misdirected.stderr).contains("--importer swmm"));
+}

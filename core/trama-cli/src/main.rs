@@ -16,7 +16,11 @@ mod points;
 /// Formats the core does not know are read by the crates that own them. The seam is the same
 /// one a plugin would use; linking them here only decides which are present in this binary.
 fn importers() -> Vec<Box<dyn Importer>> {
-    vec![Box::new(trama_epanet::importer::EpanetImporter), Box::new(trama_roads::RoadImporter)]
+    vec![
+        Box::new(trama_epanet::importer::EpanetImporter),
+        Box::new(trama_swmm::importer::SwmmImporter),
+        Box::new(trama_roads::RoadImporter),
+    ]
 }
 
 const NATIVE_SUFFIXES: [&str; 2] = [".geojson", ".json"];
@@ -126,7 +130,12 @@ fn run(arguments: Arguments) -> Result<(), String> {
                     let crs = options
                         .get("crs")
                         .ok_or("writing a .inp needs the coordinate reference system it was imported from; pass -o crs=EPSG:xxxx")?;
-                    write(&destination, &trama_epanet::exporter::export_inp(&container, crs)?)
+                    // Both EPA formats write a .inp; the container says which one it came from,
+                    // through the XTRA record only the right exporter recognises.
+                    let text = trama_epanet::exporter::export_inp(&container, crs).or_else(|epanet| {
+                        trama_swmm::exporter::export_inp(&container, crs).map_err(|swmm| format!("{epanet}; {swmm}"))
+                    })?;
+                    write(&destination, &text)
                 }
                 other => Err(format!("unsupported export format '{other}'")),
             }

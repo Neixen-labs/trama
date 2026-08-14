@@ -82,6 +82,12 @@ impl Importer for EpanetImporter {
 impl EpanetImporter {
     fn read(&self, text: &str, crs: &str) -> Result<Import, String> {
         let document = inp::parse(text);
+        // SWMM files share the suffix and the section shape; what they never share is these
+        // sections. Parsing one here would produce an empty network with no error, which is
+        // the worst of the three available outcomes.
+        if !document.rows("CONDUITS").is_empty() || !document.rows("SUBCATCHMENTS").is_empty() {
+            return Err("this looks like a SWMM network ([CONDUITS]/[SUBCATCHMENTS]); pass --importer swmm".into());
+        }
         let transform = Reprojection::to_wgs84(crs)?;
 
         let mut positions: BTreeMap<String, (f64, f64)> = BTreeMap::new();

@@ -745,6 +745,7 @@ dependencies = [
  "trama-epanet",
  "trama-format",
  "trama-roads",
+ "trama-swmm",
 ]
 
 [[package]]
@@ -799,6 +800,15 @@ name = "trama-solver"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "trama-format",
+]
+
+[[package]]
+name = "trama-swmm"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "trama-epanet",
  "trama-format",
 ]
 
