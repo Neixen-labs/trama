@@ -121,3 +121,50 @@ fn the_importer_is_reached_by_name_and_requires_a_crs() {
     let missing = SwmmImporter.load(std::path::Path::new("whatever.inp"), &BTreeMap::new()).err().unwrap();
     assert!(missing.contains("source-crs"), "{missing}");
 }
+
+#[test]
+fn the_round_trip_is_verified_by_simulation() {
+    // The standard the EPANET round trip is held to: the original file and the exported one,
+    // run through the same engine, must agree — not byte-compare, simulate.
+    let imported = import(&network(), CRS).unwrap();
+    let container = trama_format::compile(&imported.features, &imported.channels, &imported.extras).unwrap();
+
+    let deltas = trama_swmm::solver::solve(&container, "depth", "flow", 0.0, f32::MAX).unwrap();
+    assert!(!deltas.is_empty(), "the simulation reported nothing");
+    assert_eq!(deltas.len() % 18, 0, "deltas are 18-byte records");
+
+    // Sanity of shape: every entity of the network appears, and time advances.
+    let mut seen = std::collections::BTreeSet::new();
+    let mut latest = 0.0f32;
+    for record in deltas.chunks(18) {
+        seen.insert(u64::from_le_bytes(record[0..8].try_into().unwrap()));
+        latest = latest.max(f32::from_le_bytes(record[10..14].try_into().unwrap()));
+    }
+    assert_eq!(seen.len(), 7, "four nodes and three links should all report");
+    // The fixture runs 11/01 14:00 to 11/04 00:00: 58 hours.
+    assert!(latest >= 57.0 * 3600.0, "the fixture simulates 58 hours; the run stopped at {latest}s");
+
+    // The original network through the same engine: agreement per entity per timestep, within
+    // the tolerance of writing coordinates back through quantized geometry — which the routing
+    // never reads, so the answers should match to float precision.
+    let direct = {
+        let direct_import = import(&network(), CRS).unwrap();
+        let direct_container =
+            trama_format::compile(&direct_import.features, &direct_import.channels, &direct_import.extras).unwrap();
+        trama_swmm::solver::solve(&direct_container, "depth", "flow", 0.0, f32::MAX).unwrap()
+    };
+    assert_eq!(deltas, direct, "the same container must simulate identically twice");
+
+    let exported = trama_swmm::exporter::export_inp(&container, CRS).unwrap();
+    let re_imported = import(&exported, CRS).unwrap();
+    let re_container =
+        trama_format::compile(&re_imported.features, &re_imported.channels, &re_imported.extras).unwrap();
+    let re_deltas = trama_swmm::solver::solve(&re_container, "depth", "flow", 0.0, f32::MAX).unwrap();
+    assert_eq!(deltas.len(), re_deltas.len(), "the exported network must report the same schedule");
+    for (a, b) in deltas.chunks(18).zip(re_deltas.chunks(18)) {
+        assert_eq!(a[0..14], b[0..14], "same entity, same channel, same time");
+        let (va, vb) =
+            (f32::from_le_bytes(a[14..18].try_into().unwrap()), f32::from_le_bytes(b[14..18].try_into().unwrap()));
+        assert!((va - vb).abs() <= 1e-4 * va.abs().max(1.0), "values diverged: {va} vs {vb}");
+    }
+}

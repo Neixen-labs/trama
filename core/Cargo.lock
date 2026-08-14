@@ -810,6 +810,15 @@ dependencies = [
  "serde_json",
  "trama-epanet",
  "trama-format",
+ "trama-solver",
+ "trama-swmm-sys",
+]
+
+[[package]]
+name = "trama-swmm-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
