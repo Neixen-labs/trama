@@ -46,6 +46,7 @@ mod toolkit {
 const NODE: c_int = 2;
 const LINK: c_int = 3;
 const NODE_DEPTH: c_int = 303;
+const NODE_OVERFLOW: c_int = 308;
 const LINK_FLOW: c_int = 410;
 const REPORT_STEP: c_int = 5; // swmm_SystemProperty::swmm_REPORTSTEP, in seconds
 const SECONDS_PER_DAY: f64 = 86400.0;
@@ -64,7 +65,8 @@ impl Solver for SwmmSolver {
     fn solve(&self, request: &Request) -> Result<Vec<u8>, Rejection> {
         let depth_channel = request.params["depth_channel"].as_str().unwrap_or("depth");
         let flow_channel = request.params["flow_channel"].as_str().unwrap_or("flow");
-        solve(&request.container, depth_channel, flow_channel, request.t0_seconds, request.t1_seconds)
+        let flooding_channel = request.params["flooding_channel"].as_str().unwrap_or("flooding");
+        solve(&request.container, depth_channel, flow_channel, flooding_channel, request.t0_seconds, request.t1_seconds)
             .map_err(Rejection::input)
     }
 }
@@ -74,6 +76,7 @@ pub fn solve(
     container: &[u8],
     depth_channel: &str,
     flow_channel: &str,
+    flooding_channel: &str,
     t0_seconds: f32,
     t1_seconds: f32,
 ) -> Result<Vec<u8>, String> {
@@ -82,6 +85,9 @@ pub fn solve(
     }
     let depth = declared(container, depth_channel, 1)?;
     let flow = declared(container, flow_channel, 2)?;
+    // Written only where the container declares it, the same rule as EPANET's age: files
+    // compiled before the channel existed keep solving exactly as they did.
+    let flooding = declared(container, flooding_channel, 1).ok();
     let (nodes, links) = entity_ids(container)?;
 
     // A counter rather than a process id: WASI has no processes, and asking for one traps.
@@ -91,7 +97,7 @@ pub fn solve(
     std::fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
     let network = workspace.join("network.inp");
     std::fs::write(&network, export_inp(container, WORKING_CRS)?).map_err(|error| error.to_string())?;
-    let result = simulate(&network, &workspace, &nodes, &links, depth, flow, t0_seconds, t1_seconds);
+    let result = simulate(&network, &workspace, &nodes, &links, depth, flow, flooding, t0_seconds, t1_seconds);
     let _ = std::fs::remove_dir_all(&workspace);
     result
 }
@@ -144,6 +150,7 @@ fn simulate(
     links: &BTreeMap<String, u64>,
     depth: u16,
     flow: u16,
+    flooding: Option<u16>,
     t0_seconds: f32,
     t1_seconds: f32,
 ) -> Result<Vec<u8>, String> {
@@ -183,6 +190,10 @@ fn simulate(
                     if let Some(identity) = nodes.get(&identifier(NODE, index)) {
                         let value = toolkit::swmm_getValue(NODE_DEPTH, index) as f32;
                         records.extend_from_slice(&pack(*identity, depth, seconds, value));
+                        if let Some(flooding) = flooding {
+                            let rate = toolkit::swmm_getValue(NODE_OVERFLOW, index) as f32;
+                            records.extend_from_slice(&pack(*identity, flooding, seconds, rate));
+                        }
                     }
                 }
                 for index in 0..link_count {

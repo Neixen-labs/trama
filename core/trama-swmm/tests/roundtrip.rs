@@ -129,7 +129,7 @@ fn the_round_trip_is_verified_by_simulation() {
     let imported = import(&network(), CRS).unwrap();
     let container = trama_format::compile(&imported.features, &imported.channels, &imported.extras).unwrap();
 
-    let deltas = trama_swmm::solver::solve(&container, "depth", "flow", 0.0, f32::MAX).unwrap();
+    let deltas = trama_swmm::solver::solve(&container, "depth", "flow", "flooding", 0.0, f32::MAX).unwrap();
     assert!(!deltas.is_empty(), "the simulation reported nothing");
     assert_eq!(deltas.len() % 18, 0, "deltas are 18-byte records");
 
@@ -151,7 +151,7 @@ fn the_round_trip_is_verified_by_simulation() {
         let direct_import = import(&network(), CRS).unwrap();
         let direct_container =
             trama_format::compile(&direct_import.features, &direct_import.channels, &direct_import.extras).unwrap();
-        trama_swmm::solver::solve(&direct_container, "depth", "flow", 0.0, f32::MAX).unwrap()
+        trama_swmm::solver::solve(&direct_container, "depth", "flow", "flooding", 0.0, f32::MAX).unwrap()
     };
     assert_eq!(deltas, direct, "the same container must simulate identically twice");
 
@@ -159,7 +159,7 @@ fn the_round_trip_is_verified_by_simulation() {
     let re_imported = import(&exported, CRS).unwrap();
     let re_container =
         trama_format::compile(&re_imported.features, &re_imported.channels, &re_imported.extras).unwrap();
-    let re_deltas = trama_swmm::solver::solve(&re_container, "depth", "flow", 0.0, f32::MAX).unwrap();
+    let re_deltas = trama_swmm::solver::solve(&re_container, "depth", "flow", "flooding", 0.0, f32::MAX).unwrap();
     assert_eq!(deltas.len(), re_deltas.len(), "the exported network must report the same schedule");
     for (a, b) in deltas.chunks(18).zip(re_deltas.chunks(18)) {
         assert_eq!(a[0..14], b[0..14], "same entity, same channel, same time");
@@ -167,4 +167,30 @@ fn the_round_trip_is_verified_by_simulation() {
             (f32::from_le_bytes(a[14..18].try_into().unwrap()), f32::from_le_bytes(b[14..18].try_into().unwrap()));
         assert!((va - vb).abs() <= 1e-4 * va.abs().max(1.0), "values diverged: {va} vs {vb}");
     }
+}
+
+#[test]
+fn flooding_is_declared_reported_and_never_negative() {
+    let imported = import(&network(), CRS).unwrap();
+    let container = trama_format::compile(&imported.features, &imported.channels, &imported.extras).unwrap();
+    let flooding = trama_solver::channels(&container)
+        .unwrap()
+        .into_iter()
+        .find(|channel| channel.name == "flooding")
+        .expect("the importer declares flooding");
+    assert_eq!(flooding.entity_kind, 1, "flooding is a node channel");
+
+    let deltas = trama_swmm::solver::solve(&container, "depth", "flow", "flooding", 0.0, f32::MAX).unwrap();
+    let rates: Vec<f32> = deltas
+        .chunks(18)
+        .filter(|record| u16::from_le_bytes(record[8..10].try_into().unwrap()) == flooding.id)
+        .map(|record| f32::from_le_bytes(record[14..18].try_into().unwrap()))
+        .collect();
+    assert!(!rates.is_empty(), "a flooding channel was declared and nothing was written into it");
+    assert!(rates.iter().all(|rate| rate.is_finite() && *rate >= 0.0), "an overflow rate cannot be negative");
+
+    // The fixture's storm pushes more into the system than its conduits pass: somewhere must
+    // flood, or the channel would be untestable and the storm decorative.
+    let peak = rates.iter().fold(0.0f32, |worst, rate| worst.max(*rate));
+    assert!(peak > 0.0, "nothing flooded; the fixture's storm should overwhelm something");
 }
