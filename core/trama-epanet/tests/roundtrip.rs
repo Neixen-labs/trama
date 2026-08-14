@@ -26,12 +26,15 @@ fn compile(name: &str) -> Vec<u8> {
     trama_format::compile(&imported.features, &imported.channels, &imported.extras).unwrap()
 }
 
-/// Every node pressure and link flow, keyed by entity name and simulation time.
-fn results(source: &Path) -> BTreeMap<(String, u16, u32), f32> {
+/// Every reported value, keyed by entity name, channel name and simulation time. Names on both
+/// axes, because recompiling the rebuilt `.inp` may hand the same channel a different id.
+fn results(source: &Path) -> BTreeMap<(String, String, u32), f32> {
     let container = compile_from(source);
     let (nodes, links) = solver::entity_ids(&container).unwrap();
     let mut names: BTreeMap<u64, String> = nodes.iter().map(|(name, id)| (*id, name.clone())).collect();
     names.extend(links.iter().map(|(name, id)| (*id, name.clone())));
+    let channel_names: BTreeMap<u16, String> =
+        trama_solver::channels(&container).unwrap().into_iter().map(|channel| (channel.id, channel.name)).collect();
     let deltas = solver::solve(&container, "pressure", "flow", "age", &[], 0.0, 86400.0).unwrap();
     deltas
         .chunks(18)
@@ -40,7 +43,7 @@ fn results(source: &Path) -> BTreeMap<(String, u16, u32), f32> {
             let channel = u16::from_le_bytes(record[8..10].try_into().unwrap());
             let t = f32::from_le_bytes(record[10..14].try_into().unwrap());
             let value = f32::from_le_bytes(record[14..18].try_into().unwrap());
-            ((names[&id].clone(), channel, t as u32), value)
+            ((names[&id].clone(), channel_names[&channel].clone(), t as u32), value)
         })
         .collect()
 }
@@ -124,16 +127,7 @@ fn water_age_grows_from_zero_toward_the_travel_time() {
     assert_eq!(age.entity_kind, 1, "age is a node channel");
 
     let deltas = solver::solve(&container, "pressure", "flow", "age", &[], 0.0, 86400.0).unwrap();
-    let ages: Vec<(f32, f32)> = deltas
-        .chunks(18)
-        .filter(|record| u16::from_le_bytes(record[8..10].try_into().unwrap()) == age.id)
-        .map(|record| {
-            (
-                f32::from_le_bytes(record[10..14].try_into().unwrap()),
-                f32::from_le_bytes(record[14..18].try_into().unwrap()),
-            )
-        })
-        .collect();
+    let ages = samples(&deltas, age.id);
     assert!(!ages.is_empty(), "an age channel was declared and nothing was written into it");
 
     // The physics this exists to show: water starts fresh and gets older as the day runs.
@@ -151,12 +145,19 @@ fn water_age_grows_from_zero_toward_the_travel_time() {
 
 #[test]
 fn a_container_without_the_age_channel_still_solves() {
-    // Containers compiled before the channel existed declare pressure and flow only. Age is
-    // an offer, not a demand: the solver writes it where declared and stays quiet elsewhere.
+    // Containers compiled before the quality channels existed declare pressure and flow only.
+    // Each is an offer, not a demand: the solver writes where declared, stays quiet elsewhere.
     let options: BTreeMap<String, String> = [("source-crs".to_string(), CRS.to_string())].into_iter().collect();
     let imported = EpanetImporter.load(&networks().join("Net1.inp"), &options).unwrap();
-    let old_channels: Vec<serde_json::Value> =
-        imported.channels.iter().filter(|channel| channel["name"] != "age").cloned().collect();
+    let old_channels: Vec<serde_json::Value> = imported
+        .channels
+        .iter()
+        .filter(|channel| {
+            let name = channel["name"].as_str().unwrap_or_default();
+            name != "age" && !name.starts_with("chem:") && !name.starts_with("trace:")
+        })
+        .cloned()
+        .collect();
     let container = trama_format::compile(&imported.features, &old_channels, &imported.extras).unwrap();
 
     let deltas = solver::solve(&container, "pressure", "flow", "age", &[], 0.0, 86400.0).unwrap();
@@ -189,4 +190,69 @@ fn closing_a_pipe_changes_the_physics_and_an_unknown_id_is_refused() {
 
     let error = solver::solve(&container, "pressure", "flow", "age", &[42], 0.0, 3600.0).err().unwrap();
     assert!(error.contains("42"), "{error}");
+}
+
+/// Every `(t, value)` written into one channel.
+fn samples(deltas: &[u8], channel: u16) -> Vec<(f32, f32)> {
+    deltas
+        .chunks(18)
+        .filter(|record| u16::from_le_bytes(record[8..10].try_into().unwrap()) == channel)
+        .map(|record| {
+            (
+                f32::from_le_bytes(record[10..14].try_into().unwrap()),
+                f32::from_le_bytes(record[14..18].try_into().unwrap()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_files_own_chemical_is_simulated_under_its_own_name() {
+    let container = compile("Net1.inp");
+    let channels = trama_solver::channels(&container).unwrap();
+    // Net1's [OPTIONS] says `Quality Chlorine mg/L`: the channel is named by the file, and the
+    // unit is the file's own rather than anything this crate chose.
+    let chlorine = channels.iter().find(|channel| channel.name == "chem:chlorine").expect("Net1 declares its chemical");
+    assert_eq!((chlorine.entity_kind, chlorine.unit.as_str()), (1, "mg/L"));
+
+    let deltas = solver::solve(&container, "pressure", "flow", "age", &[], 0.0, 86400.0).unwrap();
+    let concentrations = samples(&deltas, chlorine.id);
+    assert!(!concentrations.is_empty(), "a declared chemical channel was never written");
+
+    // The physics this exists to show: chlorine enters at 1 mg/L from the source and decays as
+    // it travels, under the [REACTIONS] coefficients the file carried through XTRA.
+    let peak = concentrations.iter().map(|(_, value)| *value).fold(f32::MIN, f32::max);
+    let floor = concentrations.iter().map(|(_, value)| *value).fold(f32::MAX, f32::min);
+    assert!(floor >= 0.0, "a concentration went negative: {floor}");
+    assert!(peak > 0.8, "the source injects 1 mg/L and no node came near it: peak {peak}");
+    assert!(floor < 0.4, "decay should leave the far end well below the source: floor {floor}");
+}
+
+#[test]
+fn every_reservoir_gets_a_tracing_channel_and_the_shares_stay_shares() {
+    let container = compile("Net3.inp");
+    let channels = trama_solver::channels(&container).unwrap();
+    let lake = channels.iter().find(|channel| channel.name == "trace:Lake").expect("Net3's Lake is offered");
+    let river = channels.iter().find(|channel| channel.name == "trace:River").expect("Net3's River is offered");
+    assert_eq!((lake.unit.as_str(), river.unit.as_str()), ("%", "%"));
+
+    let deltas = solver::solve(&container, "pressure", "flow", "age", &[], 0.0, 86400.0).unwrap();
+    // Shares are per (node, time): each within 0..100, and the two sources together can never
+    // account for more than all of a node's water.
+    let mut combined: BTreeMap<(u64, u32), f32> = BTreeMap::new();
+    for record in deltas.chunks(18) {
+        let channel = u16::from_le_bytes(record[8..10].try_into().unwrap());
+        if channel != lake.id && channel != river.id {
+            continue;
+        }
+        let entity = u64::from_le_bytes(record[0..8].try_into().unwrap());
+        let t = f32::from_le_bytes(record[10..14].try_into().unwrap()) as u32;
+        let value = f32::from_le_bytes(record[14..18].try_into().unwrap());
+        assert!((0.0..=100.0).contains(&value), "a share of {value}% is not a share");
+        *combined.entry((entity, t)).or_default() += value;
+    }
+    assert!(!combined.is_empty(), "declared tracing channels were never written");
+    let fullest = combined.values().fold(0.0f32, |worst, total| worst.max(*total));
+    assert!(fullest <= 100.5, "Lake and River together supplied {fullest}% of some node's water");
+    assert!(fullest > 90.0, "some node should drink almost entirely from the two sources; the best was {fullest}%");
 }

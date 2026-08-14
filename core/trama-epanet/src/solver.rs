@@ -67,6 +67,8 @@ const FLOW: c_int = 8;
 const QUALITY: c_int = 12;
 /// EN_AGE: the toolkit computes each node's water age itself; no chemical involved.
 const AGE_ANALYSIS: c_int = 2;
+/// EN_TRACE: the share of a node's water, in percent, that arrived from one named source.
+const TRACE_ANALYSIS: c_int = 3;
 const NODE_COUNT: c_int = 0;
 const LINK_COUNT: c_int = 2;
 const SAVE: c_int = 1;
@@ -79,9 +81,10 @@ impl Solver for EpanetSolver {
     }
 
     fn contract_versions(&self) -> &'static [&'static str] {
-        // Both, because nothing in the wire protocol changed between them: 0.2.0 only added a
-        // way for a manifest to name more than one unit.
-        &["0.1.0", "0.2.0"]
+        // All three, because nothing in the wire protocol changed between them: 0.2.0 added a
+        // way for a manifest to name more than one unit, 0.3.0 a way to name a channel family
+        // by prefix.
+        &["0.1.0", "0.2.0", "0.3.0"]
     }
 
     fn solve(&self, request: &Request) -> Result<Vec<u8>, Rejection> {
@@ -145,11 +148,45 @@ pub fn solve(
         let end = text.find("[END]").unwrap_or(text.len());
         text.insert_str(end, &format!("{status}\n"));
     }
+    // The quality channels the file itself names, resolved from the same text the toolkit is
+    // about to read. Each is an offer like age: undeclared means unwritten, never an error.
+    let document = crate::inp::parse(&text);
+    let chemical = document
+        .rows("OPTIONS")
+        .into_iter()
+        .find(|row| row[0].eq_ignore_ascii_case("quality"))
+        .and_then(|row| row.get(1).cloned())
+        .filter(|name| !["none", "age", "trace"].contains(&name.to_lowercase().as_str()))
+        .and_then(|name| declared(container, &format!("chem:{}", name.to_lowercase()), 1).ok());
+    let traces: Vec<(String, u16)> = document
+        .rows("RESERVOIRS")
+        .into_iter()
+        .filter_map(|row| declared(container, &format!("trace:{}", row[0]), 1).ok().map(|id| (row[0].clone(), id)))
+        .collect();
+    let quality = Quality { chemical, traces, age };
     std::fs::write(&network, text).map_err(|error| error.to_string())?;
-    let result =
-        simulate(&network, &workspace.join("report.rpt"), &nodes, &links, pressure, flow, age, t0_seconds, t1_seconds);
+    let result = simulate(
+        &network,
+        &workspace.join("report.rpt"),
+        &nodes,
+        &links,
+        pressure,
+        flow,
+        &quality,
+        t0_seconds,
+        t1_seconds,
+    );
     let _ = std::fs::remove_dir_all(&workspace);
     result
+}
+
+/// The quality analyses one run writes, each already resolved against the container's
+/// declarations. All ride the same saved hydraulics; they differ only in what EPANET is asked
+/// to carry through the pipes.
+struct Quality {
+    chemical: Option<u16>,
+    traces: Vec<(String, u16)>,
+    age: Option<u16>,
 }
 
 /// Where the rebuilt `.inp` is written before the toolkit opens it.
@@ -203,7 +240,7 @@ fn simulate(
     links: &BTreeMap<String, u64>,
     pressure: u16,
     flow: u16,
-    age: Option<u16>,
+    quality: &Quality,
     t0_seconds: f32,
     t1_seconds: f32,
 ) -> Result<Vec<u8>, String> {
@@ -258,39 +295,87 @@ fn simulate(
                 }
             }
             check(toolkit::EN_closeH(project))?;
-            // The quality pass rides on the hydraulics EN_initH(SAVE) just recorded. EN_AGE is
-            // switched on here so the user's .inp needs no [QUALITY] section, and EN_nextQ
-            // advances by hydraulic events, which keeps age on the cadence pressure reports at.
-            let Some(age) = age else { return Ok(()) };
-            check(toolkit::EN_setqualtype(project, AGE_ANALYSIS, empty.as_ptr(), empty.as_ptr(), empty.as_ptr()))?;
-            check(toolkit::EN_openQ(project))?;
-            check(toolkit::EN_initQ(project, SAVE))?;
-            loop {
-                let mut now: c_long = 0;
-                check(toolkit::EN_runQ(project, &mut now))?;
-                let seconds = now as f32;
-                if seconds >= t0_seconds && seconds <= t1_seconds {
-                    for index in 1..=node_count {
-                        if let Some(identity) = nodes.get(&identifier(project, index, true)?) {
-                            // EN_AGE reports in hours already, matching the declared unit.
-                            let hours = value(project, index, QUALITY, true)?;
-                            records.extend_from_slice(&pack(*identity, age, seconds, hours));
-                        }
-                    }
-                }
-                let mut step: c_long = 0;
-                check(toolkit::EN_nextQ(project, &mut step))?;
-                if step == 0 {
-                    break;
-                }
+            // Every quality pass rides on the hydraulics EN_initH(SAVE) just recorded, and
+            // EN_nextQ advances by hydraulic events, which keeps each on the cadence pressure
+            // reports at. The chemical goes first and untouched: the file's own [OPTIONS],
+            // [QUALITY], [SOURCES] and [REACTIONS] came back through XTRA, so the project is
+            // already set to simulate the user's chemistry and EN_setqualtype would only
+            // disturb it.
+            if let Some(channel) = quality.chemical {
+                quality_pass(project, node_count, nodes, channel, None, (t0_seconds, t1_seconds), &mut records)?;
             }
-            check(toolkit::EN_closeQ(project))
+            // One pass per traced source. Percent is bounded by meaning, not by the toolkit's
+            // numerics, and the declaration promises 0..100, so the bounds are enforced here.
+            for (source, channel) in &quality.traces {
+                let source = CString::new(source.as_bytes()).map_err(|_| "source name is not usable".to_string())?;
+                check(toolkit::EN_setqualtype(
+                    project,
+                    TRACE_ANALYSIS,
+                    empty.as_ptr(),
+                    empty.as_ptr(),
+                    source.as_ptr(),
+                ))?;
+                quality_pass(
+                    project,
+                    node_count,
+                    nodes,
+                    *channel,
+                    Some((0.0, 100.0)),
+                    (t0_seconds, t1_seconds),
+                    &mut records,
+                )?;
+            }
+            // Age last, because EN_setqualtype leaves the project on whatever ran before it.
+            // EN_AGE is switched on here so the user's .inp needs no [QUALITY] section.
+            let Some(age) = quality.age else { return Ok(()) };
+            check(toolkit::EN_setqualtype(project, AGE_ANALYSIS, empty.as_ptr(), empty.as_ptr(), empty.as_ptr()))?;
+            quality_pass(project, node_count, nodes, age, None, (t0_seconds, t1_seconds), &mut records)
         })();
         toolkit::EN_close(project);
         toolkit::EN_deleteproject(project);
         outcome?;
     }
     Ok(records)
+}
+
+/// One pass of the quality loop over the saved hydraulics, writing every node's value into
+/// `channel` for the `window` of seconds the caller asked about. `bounds` clamps where the
+/// channel declares a range the toolkit's numerics may overshoot by a rounding error.
+unsafe fn quality_pass(
+    project: toolkit::Project,
+    node_count: c_int,
+    nodes: &BTreeMap<String, u64>,
+    channel: u16,
+    bounds: Option<(f32, f32)>,
+    window: (f32, f32),
+    records: &mut Vec<u8>,
+) -> Result<(), String> {
+    unsafe {
+        check(toolkit::EN_openQ(project))?;
+        check(toolkit::EN_initQ(project, SAVE))?;
+        loop {
+            let mut now: c_long = 0;
+            check(toolkit::EN_runQ(project, &mut now))?;
+            let seconds = now as f32;
+            if seconds >= window.0 && seconds <= window.1 {
+                for index in 1..=node_count {
+                    if let Some(identity) = nodes.get(&identifier(project, index, true)?) {
+                        let mut measured = value(project, index, QUALITY, true)?;
+                        if let Some((low, high)) = bounds {
+                            measured = measured.clamp(low, high);
+                        }
+                        records.extend_from_slice(&pack(*identity, channel, seconds, measured));
+                    }
+                }
+            }
+            let mut step: c_long = 0;
+            check(toolkit::EN_nextQ(project, &mut step))?;
+            if step == 0 {
+                break;
+            }
+        }
+        check(toolkit::EN_closeQ(project))
+    }
 }
 
 /// EPANET returns warnings as small positive codes; only an error stops the run.
