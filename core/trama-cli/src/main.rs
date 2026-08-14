@@ -20,6 +20,7 @@ fn importers() -> Vec<Box<dyn Importer>> {
         Box::new(trama_epanet::importer::EpanetImporter),
         Box::new(trama_swmm::importer::SwmmImporter),
         Box::new(trama_roads::RoadImporter),
+        Box::new(trama_power::PowerImporter),
     ]
 }
 

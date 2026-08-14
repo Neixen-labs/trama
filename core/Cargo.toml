@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["trama-format", "trama-solver", "trama-epanet", "trama-swmm", "trama-swmm-sys", "trama-example", "trama-routing", "trama-roads", "trama-trace", "trama-cli", "trama-wasm"]
+members = ["trama-format", "trama-solver", "trama-epanet", "trama-swmm", "trama-swmm-sys", "trama-example", "trama-routing", "trama-roads", "trama-power", "trama-trace", "trama-cli", "trama-wasm"]
 
 [workspace.package]
 version = "0.1.0"
