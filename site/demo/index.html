@@ -185,7 +185,7 @@
        * filesystem: the container goes in as a file, the deltas come out as one. Nothing here
        * is a shim around that shape — it is the shape the toolkits already had.
        */
-      async function solveWithWasi(binary, container, seconds) {
+      async function solveWithWasi(binary, container, seconds, closed = []) {
         const { WASI, File, OpenFile, PreopenDirectory, ConsoleStdout } = await import("./vendor/wasi/index.js");
         const output = new File(new Uint8Array());
         const messages = [];
@@ -198,7 +198,7 @@
           ["tmp", new Directory(new Map())],
         ]));
         const wasi = new WASI(
-          [binary, "/network.trama", "/deltas.bin", String(seconds)],
+          [binary, "/network.trama", "/deltas.bin", String(seconds), ...(closed.length > 0 ? [closed.join(",")] : [])],
           [],
           [
             new OpenFile(new File(new Uint8Array())),
@@ -325,6 +325,9 @@
           if (["routing", "reach"].includes(picked)) addWaypoint(moment.lngLat);
           // Isolation needs both: where service comes from, and what is being closed.
           else if (picked === "isolation") (waypoints.length === 0 ? addWaypoint : addCut)(moment.lngLat);
+          // The physical solvers take the same closures and answer with physics: close the
+          // valve, see the new pressures; block the culvert, see where the water goes.
+          else if (["epanet", "swmm"].includes(picked)) addCut(moment.lngLat);
         });
         map.on("load", () => {
           layer = createTramaLayer({
@@ -371,8 +374,16 @@
       function updateWaypointCount() {
         const choice = document.querySelector("#engine-choice").value;
         const row = document.querySelector("#route-row");
-        row.hidden = !["routing", "reach", "isolation"].includes(choice);
+        row.hidden = !["routing", "reach", "isolation", "epanet", "swmm"].includes(choice);
         const count = document.querySelector("#waypoint-count");
+        if (["epanet", "swmm"].includes(choice)) {
+          // Optional on purpose: zero closures simulates the network as it stands.
+          count.textContent =
+            cutEdges.length === 0
+              ? "pulsa tramos para cerrarlos, o simula tal cual"
+              : `cerrando ${cutEdges.length} ${cutEdges.length === 1 ? "tramo" : "tramos"}`;
+          return;
+        }
         if (choice !== "isolation") {
           count.textContent = waypoints.length === 0 ? "pulsa sobre la red" : `${waypoints.length} puntos`;
           return;
@@ -643,7 +654,7 @@
           channel: "pressure",
           paints: "flow",
           needs: "una red importada de un .inp de EPANET",
-          does: "resuelve la hidráulica con el toolkit de EPANET 2.3 y escribe presión en los nudos y caudal en los tramos, 24 horas en pasos de una hora.",
+          does: "resuelve la hidráulica con el toolkit de EPANET 2.3 y escribe presión, caudal y edad del agua, 24 horas en pasos de una hora. Pulsa tramos para cerrar válvulas y resimular el escenario.",
         },
         {
           value: "swmm",
@@ -651,7 +662,7 @@
           channel: "depth",
           paints: "flow",
           needs: "una red importada de un .inp de SWMM",
-          does: "resuelve el drenaje con EPA SWMM 5.2 y escribe calado en los nudos y caudal en los tramos, 24 horas de simulación.",
+          does: "resuelve el drenaje con EPA SWMM 5.2 y escribe calado, caudal e inundación, 24 horas de simulación. Pulsa tramos para bloquearlos y ver por dónde va el agua.",
         },
         {
           value: "routing",
@@ -794,10 +805,13 @@
             state,
           });
           map.addLayer(layer);
+          // Closures travel as the stable ids the deltas use, read from the graph the page
+          // already holds — indices are this page's private address space, ids are the file's.
+          const closedIds = cutEdges.map((index) => String(routableGraph.edges[index].id));
           const deltas = choice === "epanet"
-            ? await solveWithWasi("trama-epanet-wasi", container, Number(scrub.max))
+            ? await solveWithWasi("trama-epanet-wasi", container, Number(scrub.max), closedIds)
             : choice === "swmm"
-            ? await solveWithWasi("trama-swmm-wasi", container, Number(scrub.max))
+            ? await solveWithWasi("trama-swmm-wasi", container, Number(scrub.max), closedIds)
             : choice === "critical"
               ? wasm.solve_critical(container, Number(scrub.max))
               : choice === "isolation"

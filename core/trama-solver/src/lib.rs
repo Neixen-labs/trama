@@ -119,3 +119,23 @@ pub fn manifest_agrees_with(manifest: &str, id: &str, contract_versions: &[&str]
     }
     Ok(())
 }
+
+/// `params.closed_edges`: stable entity ids as strings, because a u64 does not survive a JSON
+/// number. A contract-level convention rather than one solver's: any solver simulating a
+/// network can be asked to run it with edges closed.
+pub fn closed_edges(params: &serde_json::Value) -> Result<Vec<u64>, server::Rejection> {
+    params["closed_edges"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .and_then(|text| text.parse::<u64>().ok())
+                        .ok_or_else(|| server::Rejection::request("closed_edges holds entity ids as strings"))
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| Ok(Vec::new()))
+}

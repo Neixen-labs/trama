@@ -66,7 +66,7 @@ impl Solver for SwmmSolver {
         let depth_channel = request.params["depth_channel"].as_str().unwrap_or("depth");
         let flow_channel = request.params["flow_channel"].as_str().unwrap_or("flow");
         let flooding_channel = request.params["flooding_channel"].as_str().unwrap_or("flooding");
-        let closed = trama_epanet::solver::closed_edges(&request.params)?;
+        let closed = trama_solver::closed_edges(&request.params)?;
         solve(
             &request.container,
             depth_channel,

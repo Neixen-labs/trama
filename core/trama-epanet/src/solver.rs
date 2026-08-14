@@ -88,7 +88,7 @@ impl Solver for EpanetSolver {
         let pressure_channel = request.params["pressure_channel"].as_str().unwrap_or("pressure");
         let flow_channel = request.params["flow_channel"].as_str().unwrap_or("flow");
         let age_channel = request.params["age_channel"].as_str().unwrap_or("age");
-        let closed = closed_edges(&request.params)?;
+        let closed = trama_solver::closed_edges(&request.params)?;
         solve(
             &request.container,
             pressure_channel,
@@ -100,24 +100,6 @@ impl Solver for EpanetSolver {
         )
         .map_err(Rejection::input)
     }
-}
-
-/// `params.closed_edges`: stable entity ids as strings, because a u64 does not survive a JSON
-/// number. Shared by both EPA solvers.
-pub fn closed_edges(params: &serde_json::Value) -> Result<Vec<u64>, trama_solver::server::Rejection> {
-    params["closed_edges"]
-        .as_array()
-        .map(|values| {
-            values
-                .iter()
-                .map(|value| {
-                    value.as_str().and_then(|text| text.parse::<u64>().ok()).ok_or_else(|| {
-                        trama_solver::server::Rejection::request("closed_edges holds entity ids as strings")
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_else(|| Ok(Vec::new()))
 }
 
 /// Packed deltas for every node pressure and link flow reported within [t0, t1].

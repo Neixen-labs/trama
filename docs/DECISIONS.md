@@ -471,3 +471,11 @@ Because both solvers rebuild the `.inp` from the container on every run, the sce
 **Consequence:** the physics is tested, not asserted. Closing Net1's pipe 10 — the single link between the pump and everything else — must change more than ten reported values, and it does. Blocking the fixture's only conduit into storage removes exactly that link from the results and changes the rest. An id that names no edge stops the run with the id in the message, rather than becoming a line EPANET would refuse later or SWMM would silently fail to match.
 
 The playground follow-up: let the click flow that already picks cut edges for the topological solver hand the same edges to the physical ones.
+
+## 2026-08-14 — The scenario reaches the page
+
+**Decision:** the playground's click flow feeds the physical solvers. With EPANET or SWMM chosen, clicking edges marks closures — the same red markers the topological solver uses — and simulating passes their stable ids through the WASI argv. Zero closures simulates the network as it stands, so the scenario is an offer on top of the existing flow rather than a mode.
+
+**Consequence:** the closure question now has two answers on one page, and the distinction teaches the product. "Qué se queda sin servicio" answers with topology in milliseconds; EPANET answers with physics in seconds — and the physics knows things the topology cannot: a closed valve drops pressures on paths that remain connected. Verified through the exact binary the browser runs: closing one Net3 pipe changed 8,033 of 8,451 reported values, and the closed run emitted more deltas than the open one, because EPANET inserts hydraulic events when the network changes regime. An id naming no edge refuses by name through the same argv, also verified.
+
+One structural correction fell out: `closed_edges` parsing moved from `trama-epanet` to `trama-solver`, because SWMM's WASI build — which does not enable EPANET's solver feature — needed it, and because it was never EPANET's: any solver simulating a network can be asked to run it with edges closed. The contract crate is where contract conventions live.
