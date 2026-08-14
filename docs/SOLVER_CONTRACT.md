@@ -1,6 +1,6 @@
 # TRAMA Solver Contract
 
-**Contract version:** 0.2.0
+**Contract version:** 0.3.0
 **Status:** Draft
 **Normative language:** The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are to be interpreted as described in RFC 2119.
 
@@ -55,7 +55,7 @@ schema = {"type" = "object", "properties" = {"iterations" = {"type" = "integer",
 - `contract_versions`: non-empty supported contract-version list.
 - `runtimes`: one or both of `wasm` and `server`.
 - `inputs`: required graph entity kinds and property keys. Property keys are strings defined in `PROP`; they do not imply a core domain model.
-- `outputs`: one or more channels that the solver may write. Each output MUST match an `STCH` declaration by name and entity kind, and MUST declare its unit with exactly one of `unit` or `units`. See 2.1.
+- `outputs`: one or more channels that the solver may write. Each output names its channel with exactly one of `channel` or `channel_prefix`, MUST match its resolved `STCH` declarations by entity kind, and MUST declare its unit with exactly one of `unit` or `units`. See 2.1 and 2.2.
 - `params.schema`: an inline JSON Schema 2020-12 object. The caller validates parameters before execution.
 
 A manifest MUST NOT claim filesystem, network, GPU, or clock access. Those capabilities are denied by default.
@@ -68,6 +68,14 @@ An output declares either `unit`, a single string, or `units`, a non-empty array
 
 The array is the set of units the solver can produce, not a preference order. The host picks the one the container declares and MUST reject a container declaring anything outside the set, before execution. That is the property worth keeping: a wildcard would admit every container and catch a solver writing psi into a channel declared in metres only in the results, where it looks like a modelling error rather than a mismatched contract.
 
+### 2.2 An output's channel
+
+An output declares either `channel`, a literal name the host resolves to exactly one `STCH` declaration, or `channel_prefix`, a non-empty string the host resolves to every `STCH` declaration whose name begins with it. Declaring both, or neither, is a malformed manifest.
+
+`channel_prefix` exists because a channel's name is not always the solver's to choose. EPANET traces the share of water each source contributes as one channel per reservoir — `trace:Lake`, `trace:River` — and simulates whatever chemical the file's `[OPTIONS] Quality` names, `chem:chlorine` in one network and `chem:tce` in another. A manifest that had to commit to literal names could not describe that solver for every input it accepts.
+
+A prefix MAY resolve to zero declarations: a family of channels named by the input can be entirely absent from a given container, and a solver writing nothing into an absent family is correct, not failing. Every declaration a prefix does resolve MUST match the output's entity kind and unit exactly as a literal name must. An empty prefix is a malformed manifest for the same reason a unit wildcard is: it would admit every channel and defer every mismatch to the results.
+
 ## 3. Input validation
 
 Before execution, the host MUST:
@@ -75,7 +83,7 @@ Before execution, the host MUST:
 1. validate the manifest syntax and contract version;
 2. validate caller parameters against `params.schema`;
 3. confirm each required property exists for its declared entity kind;
-4. resolve every output channel name to exactly one `STCH` declaration, whose unit MUST equal the output's `unit` or belong to its `units`;
+4. resolve every output's `channel` to exactly one `STCH` declaration — or its `channel_prefix` to every declaration bearing the prefix — each of whose units MUST equal the output's `unit` or belong to its `units`;
 5. pass only the required graph/property view to a sandboxed solver when practical.
 
 A solver MUST treat missing, null, non-finite, and out-of-range input values as a validation error unless its manifest and parameter schema explicitly define a fallback. A solver MUST NOT write a delta for an entity ID or channel outside the input contract.
