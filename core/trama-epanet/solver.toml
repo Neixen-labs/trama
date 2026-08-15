@@ -53,5 +53,12 @@ channel_prefix = "trace:"
 entity_kind = "node"
 unit = "%"
 
+# The fire-flow study: a search over many simulations rather than a reading of one, in the flow
+# units the file chose. Written only for the nodes the caller names.
+[[outputs]]
+channel = "fire_flow"
+entity_kind = "node"
+units = ["cfs", "gpm", "mgd", "imgd", "afd", "lps", "lpm", "mld", "cmh", "cmd"]
+
 [params]
-schema = { "type" = "object", "additionalProperties" = false, "properties" = { "pressure_channel" = { "type" = "string", "default" = "pressure" }, "flow_channel" = { "type" = "string", "default" = "flow" }, "age_channel" = { "type" = "string", "default" = "age" }, "closed_edges" = { "type" = "array", "items" = { "type" = "string" }, "default" = [] } } }
+schema = { "type" = "object", "additionalProperties" = false, "properties" = { "pressure_channel" = { "type" = "string", "default" = "pressure" }, "flow_channel" = { "type" = "string", "default" = "flow" }, "age_channel" = { "type" = "string", "default" = "age" }, "closed_edges" = { "type" = "array", "items" = { "type" = "string" }, "default" = [] }, "fire_flow_channel" = { "type" = "string", "default" = "fire_flow" }, "fire_nodes" = { "type" = "array", "items" = { "type" = "string" }, "default" = [], "description" = "Nodes to rate for fire flow, as stable entity ids." }, "residual_pressure" = { "type" = "number", "exclusiveMinimum" = 0, "description" = "Pressure the network must still hold, in the file\u0027s own unit. Defaults to 20 psi or its metric equivalent." } } }
