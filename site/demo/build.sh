@@ -59,6 +59,11 @@ cp "$root/fixtures/network.geojson" "$here/examples/network.geojson"
 # compiled: the whole city is 240 kB as a container against 1.9 MB as the JSON it came from,
 # which is the first pillar's claim stated in the one place a visitor can weigh it.
 cp "$root/fixtures/teruel.trama" "$here/examples/teruel.trama"
+# The electrical network ships compiled, unlike Net3, because the pandapower solver runs outside
+# the browser and fetches the container by URL: a container the page compiled in memory has no
+# URL for it to fetch. Dropping a pandapower .json still compiles here — it just cannot be solved
+# from the page afterwards, which the page says.
+cp "$root/fixtures/oberrhein.trama" "$here/examples/oberrhein.trama"
 
 echo "service worker"
 # The precache list is generated because it cannot be written by hand: whether the EPANET module

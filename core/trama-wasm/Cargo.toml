@@ -14,6 +14,7 @@ trama-epanet = { path = "../trama-epanet", default-features = false }
 trama-swmm = { path = "../trama-swmm", default-features = false }
 trama-example = { path = "../trama-example" }
 trama-roads = { path = "../trama-roads" }
+trama-power = { path = "../trama-power" }
 trama-routing = { path = "../trama-routing" }
 trama-trace = { path = "../trama-trace" }
 serde_json.workspace = true
