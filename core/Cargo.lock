@@ -848,6 +848,7 @@ dependencies = [
  "trama-epanet",
  "trama-example",
  "trama-format",
+ "trama-power",
  "trama-roads",
  "trama-routing",
  "trama-swmm",

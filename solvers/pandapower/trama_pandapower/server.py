@@ -113,6 +113,11 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        # Chrome's Private Network Access: a page on a public origin reaching a loopback server
+        # is preflighted for this header, and without it the request never arrives. Answered
+        # only when the operator asked for loopback traffic in the first place.
+        if self.allow_http and self.headers.get("Access-Control-Request-Private-Network") == "true":
+            self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Content-Length", "0")
         self.end_headers()
 

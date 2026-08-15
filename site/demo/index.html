@@ -77,6 +77,7 @@
       <div class="row">
         <button class="ghost" data-example="net3.inp" disabled>Ejemplo: Net3</button>
         <button class="ghost" data-example="teruel.trama" disabled>Ejemplo: Teruel entera</button>
+        <button class="ghost" data-example="oberrhein.trama" disabled>Ejemplo: red eléctrica</button>
         <button class="ghost" data-example="network.geojson" disabled>Ejemplo: GeoJSON</button>
       </div>
 
@@ -103,9 +104,18 @@
         <input id="scrub" type="range" min="0" max="600" step="60" value="0" disabled />
         <output id="clock" style="color: var(--dim); min-width: 4em; text-align: right">—</output>
       </div>
+      <div class="row live" id="solver-row" hidden>
+        <label for="solver-endpoint" style="color: var(--dim); font-size: 12.5px">solver</label>
+        <input id="solver-endpoint" type="url" value="http://127.0.0.1:8080/solve" style="flex: 1" />
+      </div>
       <div class="row live" id="channel-row" hidden>
         <label for="channel-choice" style="color: var(--dim); font-size: 12.5px">capa</label>
         <select id="channel-choice" style="flex: 1"></select>
+      </div>
+      <div class="row live" id="ramp-row" hidden>
+        <span id="ramp-low" style="color: var(--dim); font-size: 12px; min-width: 4.5em; text-align: right"></span>
+        <span id="ramp" style="flex: 1; height: 8px; border-radius: 4px; background: linear-gradient(to right, #7dd1ff, #ffb833)"></span>
+        <span id="ramp-high" style="color: var(--dim); font-size: 12px; min-width: 4.5em"></span>
       </div>
       <p class="live" id="engine-note" style="margin: 6px 0 0; color: var(--dim); font-size: 12px"></p>
 
@@ -136,6 +146,7 @@
       import { buildRoute, edgePolyline, sampleRoute, startNode, toLonLat, walk, zoomFor } from "./vendor/engine/flythrough.js";
       import { createTramaLayer } from "./vendor/engine/maplibre.js";
       import { parseGeometry, parseGraph, readSection } from "./vendor/engine/sections.js";
+      import { solveDeltas } from "./vendor/engine/solver.js";
       import { parseStateChannels, StateRing } from "./vendor/engine/state.js";
 
       const show = (rows) => {
@@ -176,11 +187,24 @@
             return wasm.compile_swmm(source, crs);
           }
         };
+        // `.json` means three different files. Overpass writes one, pandapower writes another,
+        // and the plain suffix means "compile this as it stands". A pandapower document says so
+        // itself — `_module` is a signature it writes, not a shape we are guessing at — so the
+        // suffix collision the command line settles with `--importer power` is settled by looking.
+        const isPandapower = (source) => {
+          try {
+            return JSON.parse(source)?._module === "pandapower.auxiliary";
+          } catch {
+            return false;
+          }
+        };
         const container = lower.endsWith(".inp")
           ? compileInp(text, document.querySelector("#crs").value.trim())
           : lower.endsWith(".osm.json")
             ? wasm.compile_osm(text)
-            : wasm.compile_geojson(text);
+            : isPandapower(text)
+              ? wasm.compile_power(text)
+              : wasm.compile_geojson(text);
         return { container, elapsed: performance.now() - started, compiled: true };
       }
 
@@ -229,6 +253,56 @@
         return output.data;
       }
 
+      /**
+       * A solver on the other runtime the contract defines: an HTTP server, streaming the same
+       * 18-byte deltas the WASI ones write. Nothing below knows the solver is Python, which is
+       * the property section 5 of the contract exists to give — "a client MUST NOT need to know
+       * which runtime produced a result".
+       *
+       * The solver fetches the container itself, by URL, so this only works for a network the
+       * solver can reach. A file the visitor dropped never left their machine and has no URL,
+       * and the page says so rather than inventing one.
+       */
+      async function solveOverHttp(seconds) {
+        if (containerUrl === null) {
+          throw new Error(
+            "este solver corre fuera del navegador y descarga la red por URL, así que sólo puede resolver un ejemplo publicado. Tu archivo no ha salido de tu equipo — que es la idea — pero por eso no puede alcanzarlo.",
+          );
+        }
+        const endpoint = document.querySelector("#solver-endpoint").value.trim();
+        // A daily demand curve, hour by hour: the solver runs one real load flow per multiplier
+        // rather than interpolating, because pandapower has no notion of time and inventing one
+        // inside the solver would report a modelling assumption as a measurement.
+        const curve = [0.6, 0.55, 0.5, 0.5, 0.55, 0.65, 0.8, 0.95, 1.0, 0.95, 0.9, 0.9,
+                       0.95, 0.9, 0.85, 0.85, 0.9, 1.0, 1.1, 1.15, 1.1, 0.95, 0.8, 0.7];
+        const chunks = [];
+        try {
+          for await (const chunk of solveDeltas(endpoint, {
+            tramaUrl: containerUrl,
+            params: { load_scaling: curve },
+            t0Seconds: 0,
+            t1Seconds: seconds,
+          })) {
+            chunks.push(chunk);
+          }
+        } catch (failure) {
+          // A solver that is not running looks like a network error, which is the one failure
+          // worth translating: everything else already arrives as the contract's own message.
+          if (failure instanceof TypeError) {
+            throw new Error(`no hay ningún solver escuchando en ${endpoint}. Arráncalo con «trama-solver-pandapower --allow-http» (ver solvers/pandapower/README.md)`);
+          }
+          throw failure;
+        }
+        const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const deltas = new Uint8Array(total);
+        let at = 0;
+        for (const chunk of chunks) {
+          deltas.set(chunk, at);
+          at += chunk.length;
+        }
+        return deltas;
+      }
+
       // --- the map ---
       let map = null;
       let state = null;
@@ -236,9 +310,9 @@
       let makeState = () => null;
       /** Recreates the custom layer over the current `state`; set once a container is loaded. */
       let mountLayer = () => {};
-      /** The loaded container's declared channels, and the maximum each one received last run. */
+      /** The loaded container's declared channels, and the span each one received last run. */
       let paintable = [];
-      let measuredMax = new Map();
+      let measured = new Map();
 
       async function display(name, container) {
         const inflate = (stored) => decompress(stored);
@@ -298,10 +372,13 @@
         const clockOf = (choice) =>
           ["epanet", "swmm"].includes(choice)
             ? { step: 3600, window: 86400 }
-            : // A property of the shape has no clock at all: one instant is the whole answer.
-              ["critical", "isolation"].includes(choice)
-              ? { step: 60, window: 60 }
-              : { step: 60, window: choice === "routing" ? 1800 : 600 };
+            : // A load flow is an instant, and the demand curve below turns it into a day.
+              choice === "pandapower"
+              ? { step: 3600, window: 82800 }
+              : // A property of the shape has no clock at all: one instant is the whole answer.
+                ["critical", "isolation"].includes(choice)
+                ? { step: 60, window: 60 }
+                : { step: 60, window: choice === "routing" ? 1800 : 600 };
         makeState = (choice) => {
           const channel = channelFor(choice);
           if (channel === undefined) return null;
@@ -328,8 +405,9 @@
         offerEngines(new Set(channels.map((candidate) => candidate.name)));
         state = makeState(document.querySelector("#engine-choice").value);
         paintable = channels;
-        measuredMax = new Map();
+        measured = new Map();
         document.querySelector("#channel-row").hidden = true;
+        document.querySelector("#ramp-row").hidden = true;
         // One mount for every path that (re)creates the layer: the load below, each solve, and
         // each channel switch. A node channel needs the edge→nodes lookup, so it rides along.
         const endpointsOf = (edgeIndex) => {
@@ -604,9 +682,19 @@
       // --- wiring ---
       let container = null;
       let stem = "network";
+      /**
+       * Where this container can be fetched from, when it can be at all.
+       *
+       * A solver on the server runtime is handed a URL, not bytes (contract 6), so it can only
+       * solve a container that is somewhere it can reach. A shipped example is; a file the
+       * visitor dropped, which never left their machine, is not — and that is the privacy
+       * promise working as intended rather than a gap to paper over.
+       */
+      let containerUrl = null;
 
-      async function load(name, bytes) {
+      async function load(name, bytes, url = null) {
         try {
+          containerUrl = url;
           document.querySelector("#crs-row").hidden = !name.toLowerCase().endsWith(".inp");
           const compiled = compile(name, bytes);
           container = compiled.container;
@@ -654,7 +742,7 @@
       for (const button of document.querySelectorAll("[data-example]")) {
         button.addEventListener("click", async () => {
           const name = button.dataset.example;
-          await load(name, new Uint8Array(await (await fetch(`examples/${name}`)).arrayBuffer()));
+          await load(name, new Uint8Array(await (await fetch(`examples/${name}`)).arrayBuffer()), new URL(`examples/${name}`, location.href).href);
         });
       }
 
@@ -682,6 +770,14 @@
           paints: "flow",
           needs: "una red importada de un .inp de SWMM",
           does: "resuelve el drenaje con EPA SWMM 5.2, 24 horas de simulación. Tras simular, elige la capa: caudal, calado o inundación. Pulsa tramos para bloquearlos y ver por dónde va el agua.",
+        },
+        {
+          value: "pandapower",
+          label: "pandapower · tensión y carga",
+          channel: "voltage",
+          paints: "loading",
+          needs: "una red eléctrica importada de pandapower",
+          does: "resuelve el flujo de carga con pandapower y escribe la tensión de cada nudo y la carga de cada línea y transformador. Este solver no corre en el navegador: es Python, y la página habla con él por HTTP como habla cualquier cliente, que es lo que el contrato de solvers existe para permitir.",
         },
         {
           value: "routing",
@@ -762,7 +858,7 @@
       function offerChannels(wanted) {
         const row = document.querySelector("#channel-row");
         const select = document.querySelector("#channel-choice");
-        const offered = paintable.filter((channel) => measuredMax.has(channel.channelId));
+        const offered = paintable.filter((channel) => measured.has(channel.channelId));
         select.replaceChildren();
         for (const channel of offered) {
           const option = document.createElement("option");
@@ -777,17 +873,39 @@
         paintChannel(select.value);
       }
 
+      /**
+       * The value range one channel's colour ramp covers: what the file declared if it declared
+       * anything, and otherwise what this run measured. A channel whose values never varied gets
+       * a span anyway, since a zero-width ramp has no colours in it.
+       */
+      function rampFor(channel) {
+        if (channel.rangePresent) return [channel.declaredMin, channel.declaredMax];
+        const span = measured.get(channel.channelId) ?? { min: 0, max: 1 };
+        return span.max > span.min ? [span.min, span.max] : [span.min, span.min + 1];
+      }
+
       /** Repaints the map by a declared channel without re-solving: same ring, new layer state. */
       function paintChannel(name) {
         const channel = paintable.find((candidate) => candidate.name === name);
         if (channel === undefined || state === null) return;
+        // What the colours mean, in the channel's own unit. A gradient with no numbers on it is
+        // decoration: it says where the extremes are and never what they are.
+        const [low, high] = rampFor(channel);
+        const figures = Math.abs(high - low) < 10 ? 2 : 0;
+        document.querySelector("#ramp-low").textContent = low.toFixed(figures);
+        document.querySelector("#ramp-high").textContent = `${high.toFixed(figures)} ${channel.unit}`;
+        document.querySelector("#ramp-row").hidden = false;
         state = {
           ring: state.ring,
           channelId: channel.channelId,
           // A node channel — a pressure, an age, a share — paints each line as the gradient
           // between its two nodes, which is how the physics actually varies along a pipe.
           entityKind: channel.entityKind,
-          range: [0, channel.rangePresent ? channel.declaredMax : (measuredMax.get(channel.channelId) ?? 1)],
+          // The ramp covers what the run actually produced, low end included. Starting every
+          // scale at zero reads well for a flow and hides a voltage completely: bus voltage
+          // lives between 0.97 and 1.03 p.u., which is the last 3% of a scale that begins at 0,
+          // so a healthy network and a collapsing one paint the same colour.
+          range: rampFor(channel),
           highColor: [1, 0.72, 0.2, 1],
           timeSeconds: () => Number(document.querySelector("#scrub").value),
         };
@@ -800,6 +918,8 @@
         const select = document.querySelector("#engine-choice");
         const engine = ENGINES.find((candidate) => candidate.value === select.value);
         const note = document.querySelector("#engine-note");
+        // Only the server runtime needs an address; the rest run here.
+        document.querySelector("#solver-row").hidden = select.value !== "pandapower";
         if (engine === undefined) {
           note.textContent = "Esta red no declara ningún canal de estado, así que no hay nada que simular sobre ella.";
           return;
@@ -873,6 +993,8 @@
             ? await solveWithWasi("trama-epanet-wasi", container, Number(scrub.max), closedIds)
             : choice === "swmm"
             ? await solveWithWasi("trama-swmm-wasi", container, Number(scrub.max), closedIds)
+            : choice === "pandapower"
+            ? await solveOverHttp(Number(scrub.max))
             : choice === "critical"
               ? wasm.solve_critical(container, Number(scrub.max))
               : choice === "isolation"
@@ -891,12 +1013,16 @@
           // What the run actually wrote, by channel: the layer selector offers exactly that,
           // and a channel with no declared range gets the run's own maximum as its ramp, so a
           // 130 psi network and a 30 psi one both use the whole colour scale.
-          measuredMax = new Map();
+          measured = new Map();
           const written = new DataView(deltas.buffer, deltas.byteOffset, deltas.byteLength);
           for (let at = 0; at + 18 <= deltas.byteLength; at += 18) {
             const channelId = written.getUint16(at + 8, true);
             const value = written.getFloat32(at + 14, true);
-            measuredMax.set(channelId, Math.max(measuredMax.get(channelId) ?? 0, value));
+            const span = measured.get(channelId);
+            measured.set(
+              channelId,
+              span === undefined ? { min: value, max: value } : { min: Math.min(span.min, value), max: Math.max(span.max, value) },
+            );
           }
           offerChannels(ENGINES.find((engine) => engine.value === choice)?.paints ?? "");
           // A route is over long before the window is: at 8 m/s half an hour covers 14 km and

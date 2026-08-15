@@ -529,3 +529,17 @@ Writing the reader found three things the specification had never said: the widt
 **Consequence:** the network survives the round trip to the resolution an `f32` delta has — worst deviation 5.8e-8 p.u. on bus voltage and 2.7e-6 % on transformer loading, against `pandapower.networks.mv_oberrhein()` solved directly. 11 tests, including the full client path: fetch over HTTP, solve, read `ready`/`delta`/`complete` back. `solver-checks.yml` now gates it.
 
 **One thing to hold onto:** the independence of that reader is the whole point of it. A decoding bug there must never be fixed by copying what the Rust does. Read the spec; when the spec is silent, amend the spec.
+
+## 2026-08-15 — The page talks to a solver it cannot run
+
+**Decision:** the playground compiles pandapower networks in the browser (`compile_power` in `trama-wasm`, routed by the `_module` signature the document writes about itself rather than by a suffix three formats share) and solves the shipped grid through the **server** runtime of the contract — the Python solver, over HTTP and Server-Sent Events, using the SSE client the engine already had and nothing else.
+
+**Why it matters more than a fourth example:** every solver the page had ever run was WebAssembly it loaded itself. This one it cannot run at all — it is Python, on NumPy and SciPy — so the page does what any other client would: posts a request and reads deltas back. Contract section 5 says "a client MUST NOT need to know which runtime produced a result", and until now that was a sentence rather than a demonstration. The layer picker, the ring buffer, the scrub and the shader treat those deltas exactly as they treat EPANET's.
+
+**What it costs, stated on the page rather than hidden:** a server solver is handed a URL, not bytes, so it can only solve a container it can reach. A shipped example is reachable; a file the visitor dropped never left their machine and has none. The page says exactly that when asked, because it is the privacy promise working, not a gap to paper over.
+
+**The demand curve lives in the caller.** The page sends 24 hourly multipliers and the solver runs 24 real load flows — 8,688 deltas — rather than the solver inventing a profile. A solver that supplied its own would be reporting a modelling assumption as a measurement.
+
+**A colour bug the electrical domain exposed:** the ramp for a channel with no declared range ran from zero to the measured maximum. That reads well for a flow and hides a voltage entirely — bus voltage lives between 0.97 and 1.03 p.u., the last 3% of a scale beginning at 0, so a healthy network and a collapsing one painted the same colour. The ramp now covers the measured span, low end included, and the page prints both ends with the unit beside the picker. Every channel added this week was legible only by luck until this.
+
+**Consequence:** verified with Playwright against a local build and a running solver — the grid loads, offers only pandapower (the only engine whose channel it declares), solves through the HTTP contract, paints voltage and loading, and moves with the daily curve, with no page errors. Chrome's Private Network Access preflight needed answering for a public page to reach a loopback solver; the header is sent only when the operator started the solver with `--allow-http`.

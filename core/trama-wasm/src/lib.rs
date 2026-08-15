@@ -45,6 +45,17 @@ pub fn compile_osm(source: &str) -> Result<Vec<u8>, JsError> {
         .map_err(|error| JsError::new(&error))
 }
 
+/// Compile a pandapower network, as `pandapower.to_json` writes one.
+///
+/// It needs no CRS: pandapower stores each row's geometry as GeoJSON, which is WGS 84 by
+/// definition, so unlike an EPANET `.inp` the file already says where it is.
+#[wasm_bindgen]
+pub fn compile_power(source: &str) -> Result<Vec<u8>, JsError> {
+    let imported = trama_power::import(source).map_err(|error| JsError::new(&error))?;
+    trama_format::compile(&imported.features, &imported.channels, &imported.extras)
+        .map_err(|error| JsError::new(&error))
+}
+
 /// Route through `waypoints`, given as node indices, and return the packed deltas.
 ///
 /// Unlike EPANET, this solver is Rust with no filesystem in its API, so it needs no WASI: the
