@@ -555,3 +555,21 @@ Writing the reader found three things the specification had never said: the widt
 **The bug this found, which was older than this feature:** running dozens of solves in one test binary turned the suite red at random, with EPANET refusing perfectly good networks with error 200. `EN_createproject` looks like it makes the engine reentrant and does not — enough state is still global that two projects open at once collide. It had been latent since the first solver: every caller until now ran one simulation at a time, so the window never opened. The engine is now serialised behind a mutex, which is the shape `trama-swmm` already took for the same reason. Verified by running the suite six times rather than once, because a race that passes once has proved nothing.
 
 **Consequence:** the physics is tested, not recorded — more available flow at a lower threshold than a higher one, two hydrants at opposite ends of Net3 rated differently, and a closed main leaving the hydrant downstream with less. A node already below the threshold rates zero rather than some positive figure, which would be the most dangerous kind of wrong answer.
+
+## 2026-08-15 — rustpower evaluated and set aside, with the measurements
+
+**Decision:** we do not adopt `rustpower` as the browser-side power flow today. Recorded here with the evidence so nobody spends the afternoon again.
+
+`rustpower` (MPL-2.0) looked like it would turn "write a Newton-Raphson" into "package a crate": it is Rust, it reads pandapower JSON natively — which is what our `XTRA` already carries — and it **does compile to `wasm32-unknown-unknown`** with its default features, which was the first thing checked and the reason it was worth trying at all.
+
+**Where it works, it is exactly right.** On pandapower's `case9` it converged in two iterations and reported bus voltages of 0.95762–1.00338 p.u. — the same numbers pandapower gives, to every digit printed. The mathematics is not in question.
+
+**Where it stops:**
+
+1. **It targets pandapower 2.x.** Loading a 3.x document fails on absent columns (`tap_phase_shifter`, `const_i_percent`, `const_z_percent`) and, on the MATPOWER-derived cases, on a column pandapower now writes as a float where the deserializer wants an `i32`.
+2. **It assumes bus indices are contiguous.** `mv_oberrhein` numbers its buses 0–8, 29, 30, … and the loader panics unwrapping a lookup. Fixable on our side — renumbering is the kind of translation our importer already does — but it has to be done.
+3. **It does not converge on a real distribution network.** With indices made contiguous, `mv_oberrhein` runs 100 iterations and lands on voltages between 0.00002 and 1.3 p.u. while pandapower solves it comfortably. Stripping the switches and the distributed generation does not help: still no convergence, still absurd voltages.
+
+**The pattern in those measurements:** `case9` has no transformers and one voltage level. `mv_oberrhein` has two transformers and two levels, 20 kV and 110 kV — and *every* distribution network does, which is the entire use case. The evidence points at transformer handling or the per-level voltage base rather than at anything we could feed it differently.
+
+**What this leaves.** The market finding stands: nobody has put a power flow in the browser as a product, and "the network never leaves your machine" is unclaimed in electrical. The route there is just longer than packaging someone else's crate — either debugging a young engine we do not own, or writing the solver, where the compensation is that pandapower is right here as an oracle to test against. Neither is today's work, and the honest interim is what the page already says: this one calculation runs on a server, and we are working on it not having to.
