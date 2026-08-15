@@ -162,6 +162,10 @@ pub fn channels(document: &inp::Document) -> Result<Vec<Value>, String> {
         // network is a question utilities are regulated on, and stale water is invisible on a
         // map of pressures.
         json!({"name": "age", "entity_kind": "node", "unit": "h"}),
+        // What a hydrant here could deliver while the network still holds pressure. In the flow
+        // units the file chose, because it is a flow — and a node channel, because it is a
+        // property of a point in the network rather than of any one pipe reaching it.
+        json!({"name": "fire_flow", "entity_kind": "node", "unit": flow_units}),
     ];
     // The file's own chemistry, when `[OPTIONS] Quality` names a chemical rather than one of
     // the toolkit's analyses. Its [QUALITY]/[SOURCES]/[REACTIONS] travel through XTRA, so the

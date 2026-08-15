@@ -120,22 +120,25 @@ pub fn manifest_agrees_with(manifest: &str, id: &str, contract_versions: &[&str]
     Ok(())
 }
 
-/// `params.closed_edges`: stable entity ids as strings, because a u64 does not survive a JSON
-/// number. A contract-level convention rather than one solver's: any solver simulating a
-/// network can be asked to run it with edges closed.
-pub fn closed_edges(params: &serde_json::Value) -> Result<Vec<u64>, server::Rejection> {
-    params["closed_edges"]
-        .as_array()
-        .map(|values| {
-            values
-                .iter()
-                .map(|value| {
-                    value
-                        .as_str()
-                        .and_then(|text| text.parse::<u64>().ok())
-                        .ok_or_else(|| server::Rejection::request("closed_edges holds entity ids as strings"))
-                })
-                .collect()
+/// A parameter naming entities: stable ids as strings, because a `u64` does not survive a JSON
+/// number. Absent means an empty list, so a parameter a caller did not use costs them nothing.
+///
+/// A contract-level convention rather than one solver's or one parameter's: every solver that
+/// takes entities takes them this way, and a caller who has learnt it once has learnt it for all.
+pub fn entity_list(params: &serde_json::Value, key: &str) -> Result<Vec<u64>, server::Rejection> {
+    let Some(values) = params[key].as_array() else { return Ok(Vec::new()) };
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .and_then(|text| text.parse::<u64>().ok())
+                .ok_or_else(|| server::Rejection::request(format!("{key} holds entity ids as strings")))
         })
-        .unwrap_or_else(|| Ok(Vec::new()))
+        .collect()
+}
+
+/// `params.closed_edges`: the edges to run this simulation with shut.
+pub fn closed_edges(params: &serde_json::Value) -> Result<Vec<u64>, server::Rejection> {
+    entity_list(params, "closed_edges")
 }

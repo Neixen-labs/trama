@@ -192,6 +192,89 @@ fn closing_a_pipe_changes_the_physics_and_an_unknown_id_is_refused() {
     assert!(error.contains("42"), "{error}");
 }
 
+#[test]
+fn a_hydrant_delivers_less_the_more_pressure_it_must_leave_standing() {
+    let container = compile("Net3.inp");
+    let (nodes, _links) = solver::entity_ids(&container).unwrap();
+    let hydrant = nodes["101"];
+    let available = |threshold: f32| -> f32 {
+        let deltas = solver::fire_flow(&container, "fire_flow", &[hydrant], Some(threshold), &[], 0.0).unwrap();
+        assert_eq!(deltas.len(), 18, "one node asked, one delta written");
+        f32::from_le_bytes(deltas[14..18].try_into().unwrap())
+    };
+
+    // The trade the study exists to quantify: every psi you insist on keeping is water you
+    // cannot draw. Monotonic, and not by a rounding error.
+    let (generous, strict) = (available(20.0), available(60.0));
+    assert!(generous > 0.0, "a healthy node delivered nothing at 20 psi");
+    assert!(strict < generous, "asking for 60 psi must yield less than asking for 20: {strict} vs {generous}");
+
+    // And the threshold is a pressure, not a decoration: demand enough head and nothing is left.
+    assert_eq!(available(1e6), 0.0, "no network holds a million psi, so nothing can be drawn");
+}
+
+#[test]
+fn where_a_hydrant_sits_decides_what_it_can_give() {
+    let container = compile("Net3.inp");
+    let (nodes, _links) = solver::entity_ids(&container).unwrap();
+
+    // Net3 feeds from Lake and River through the pumps; node 101 hangs off that trunk, and 269
+    // is out at the end of the network's longest reach.
+    let flows = solver::fire_flow(&container, "fire_flow", &[nodes["101"], nodes["269"]], None, &[], 0.0).unwrap();
+    let read = |index: usize| -> (u64, f32) {
+        let record = &flows[index * 18..(index + 1) * 18];
+        (u64::from_le_bytes(record[0..8].try_into().unwrap()), f32::from_le_bytes(record[14..18].try_into().unwrap()))
+    };
+
+    assert_eq!(flows.len(), 36);
+    let (near_id, near) = read(0);
+    let (far_id, far) = read(1);
+    assert_eq!((near_id, far_id), (nodes["101"], nodes["269"]));
+    // The whole point of modelling it: a hydrant's rating is a property of the network around
+    // it, not of the pipe it hangs off, so two hydrants on the same system differ.
+    assert!(near != far, "two hydrants at opposite ends of the network rated identically");
+    assert!(near > 0.0 && far > 0.0);
+}
+
+#[test]
+fn closing_a_main_changes_what_the_hydrant_downstream_can_give() {
+    let container = compile("Net3.inp");
+    let (nodes, links) = solver::entity_ids(&container).unwrap();
+    let hydrant = nodes["101"];
+    let available = |closed: &[u64]| -> f32 {
+        let deltas = solver::fire_flow(&container, "fire_flow", &[hydrant], Some(20.0), closed, 0.0).unwrap();
+        f32::from_le_bytes(deltas[14..18].try_into().unwrap())
+    };
+
+    // The question a real study asks, which needs both features at once: what can this hydrant
+    // deliver while that main is out for repair?
+    let open = available(&[]);
+    let shut = available(&[links["117"]]);
+
+    assert!(open > 0.0);
+    assert!(shut < open, "closing a feeding main left the hydrant no worse off: {shut} vs {open}");
+}
+
+#[test]
+fn fire_flow_is_an_offer_like_every_other_channel() {
+    // A container compiled before the channel existed is asked for a study and answers nothing,
+    // rather than failing: the caller gets an empty stream, not an error about a missing channel.
+    let options: BTreeMap<String, String> = [("source-crs".to_string(), CRS.to_string())].into_iter().collect();
+    let imported = EpanetImporter.load(&networks().join("Net1.inp"), &options).unwrap();
+    let older: Vec<serde_json::Value> =
+        imported.channels.iter().filter(|channel| channel["name"] != "fire_flow").cloned().collect();
+    let container = trama_format::compile(&imported.features, &older, &imported.extras).unwrap();
+    let (nodes, _links) = solver::entity_ids(&container).unwrap();
+
+    let deltas = solver::fire_flow(&container, "fire_flow", &[nodes["12"]], None, &[], 0.0).unwrap();
+
+    assert!(deltas.is_empty());
+    // And a node this network does not have is a caller error worth naming, not a silent zero.
+    let full = compile("Net1.inp");
+    let error = solver::fire_flow(&full, "fire_flow", &[42], None, &[], 0.0).err().unwrap();
+    assert!(error.contains("42"), "{error}");
+}
+
 /// Every `(t, value)` written into one channel.
 fn samples(deltas: &[u8], channel: u16) -> Vec<(f32, f32)> {
     deltas
