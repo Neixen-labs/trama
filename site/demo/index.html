@@ -289,7 +289,7 @@
           // A solver that is not running looks like a network error, which is the one failure
           // worth translating: everything else already arrives as the contract's own message.
           if (failure instanceof TypeError) {
-            throw new Error(`no hay ningún solver escuchando en ${endpoint}. Arráncalo con «trama-solver-pandapower --allow-http» (ver solvers/pandapower/README.md)`);
+            throw new Error(`el solver eléctrico no está respondiendo en ${endpoint}. Es el único cálculo de esta página que necesita un servidor —pandapower es Python y todavía no corre en el navegador—, así que hace falta arrancarlo: «pip install -e solvers/pandapower» y «trama-solver-pandapower --allow-http». Todo lo demás de esta página funciona sin conexión.`);
           }
           throw failure;
         }
@@ -777,7 +777,10 @@
           channel: "voltage",
           paints: "loading",
           needs: "una red eléctrica importada de pandapower",
-          does: "resuelve el flujo de carga con pandapower y escribe la tensión de cada nudo y la carga de cada línea y transformador. Este solver no corre en el navegador: es Python, y la página habla con él por HTTP como habla cualquier cliente, que es lo que el contrato de solvers existe para permitir.",
+          does: "resuelve el flujo de carga y escribe la tensión de cada nudo y la carga de cada línea y transformador. Es el único cálculo de esta página que no corre aquí dentro: pandapower es Python, así que vive en un servidor y la página habla con él por HTTP igual que hablaría cualquier otro cliente. Estamos trabajando en que también corra en tu navegador, como ya lo hacen el agua y el saneamiento.",
+          // Every other engine runs inside the tab; this one cannot, and the page says so before
+          // the click rather than after it.
+          offsite: true,
         },
         {
           value: "routing",
@@ -829,7 +832,13 @@
           const option = document.createElement("option");
           option.value = engine.value;
           option.disabled = !declared.has(engine.channel);
-          option.textContent = option.disabled ? `${engine.label} — necesita ${engine.needs}` : engine.label;
+          // An engine that runs elsewhere is marked in the list itself, so the one calculation
+          // that needs a server is known before it is chosen rather than after it fails.
+          option.textContent = option.disabled
+            ? `${engine.label} — necesita ${engine.needs}`
+            : engine.offsite === true
+              ? `${engine.label} (en un servidor)`
+              : engine.label;
           select.append(option);
         }
         const usable = ENGINES.find((engine) => declared.has(engine.channel));
