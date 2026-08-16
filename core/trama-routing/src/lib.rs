@@ -8,6 +8,8 @@
 
 use std::collections::{BTreeMap, BinaryHeap};
 
+pub mod fleet;
+
 use trama_format::{Graph, edge_lengths, edge_properties, parse_graph, read_sections};
 use trama_solver::server::{Rejection, Request, Solver};
 use trama_solver::{declared, pack};
@@ -184,6 +186,41 @@ pub fn plan(graph: &Graph, costs: &[f64], waypoints: &[usize]) -> Result<Route, 
 /// source, so an edge that may not be crossed backwards simply does not appear among what leaves
 /// its target — the topology states the restriction and the search cannot violate it.
 fn shortest_path(graph: &Graph, costs: &[f64], from: usize, to: usize) -> Result<Vec<usize>, String> {
+    let (best, came_from) = explore(graph, costs, from, Some(to));
+    if !best.contains_key(&(to as u32)) {
+        return Err(format!("no route from node {from} to node {to}"));
+    }
+    Ok(retrace(&came_from, from, to))
+}
+
+/// The edges of the path `came_from` records, from `from` to `to`, in order.
+pub(crate) fn retrace(came_from: &BTreeMap<u32, (usize, u32)>, from: usize, to: usize) -> Vec<usize> {
+    let mut path = Vec::new();
+    let mut node = to as u32;
+    while node as usize != from {
+        let (edge_index, previous) = came_from[&node];
+        path.push(edge_index);
+        node = previous;
+    }
+    path.reverse();
+    path
+}
+
+/// Dijkstra over the CSR adjacency from `from`, stopping early at `until` when one is given.
+///
+/// Two callers want different things from the same search: a single route wants the path to one
+/// node and can stop as soon as it settles, while a fleet wants the distance to every stop and
+/// must run the queue dry. `until` is that difference and nothing else is.
+///
+/// Direction needs no special case here. SPEC 4 gives a directed edge one CSR entry, at its
+/// source, so an edge that may not be crossed backwards simply does not appear among what leaves
+/// its target — the topology states the restriction and the search cannot violate it.
+pub(crate) fn explore(
+    graph: &Graph,
+    costs: &[f64],
+    from: usize,
+    until: Option<usize>,
+) -> (BTreeMap<u32, u64>, BTreeMap<u32, (usize, u32)>) {
     // Scaled to integers so the queue can order them: a thousandth of the unit, which for
     // seconds is a millisecond and for metres a millimetre. The geometry is quantized to about
     // 4 cm, so neither reading discards anything that was ever there.
@@ -192,7 +229,7 @@ fn shortest_path(graph: &Graph, costs: &[f64], from: usize, to: usize) -> Result
     let mut queue = BinaryHeap::from([(std::cmp::Reverse(0u64), from as u32)]);
 
     while let Some((std::cmp::Reverse(cost), node)) = queue.pop() {
-        if node as usize == to {
+        if Some(node as usize) == until {
             break;
         }
         // A stale queue entry for a node already settled more cheaply.
@@ -214,16 +251,5 @@ fn shortest_path(graph: &Graph, costs: &[f64], from: usize, to: usize) -> Result
         }
     }
 
-    if !best.contains_key(&(to as u32)) {
-        return Err(format!("no route from node {from} to node {to}"));
-    }
-    let mut path = Vec::new();
-    let mut node = to as u32;
-    while node as usize != from {
-        let (edge_index, previous) = came_from[&node];
-        path.push(edge_index);
-        node = previous;
-    }
-    path.reverse();
-    Ok(path)
+    (best, came_from)
 }

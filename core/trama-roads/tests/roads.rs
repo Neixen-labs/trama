@@ -163,8 +163,14 @@ fn the_importer_declares_every_channel_a_solver_may_write() {
     // A solver may only write where the file says it may, so an undeclared channel is a
     // calculation refused. Three of these are topological and say nothing about roads.
     let names: Vec<&str> = imported.channels.iter().map(|channel| channel["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["on_route", "reach", "isolated", "critical"]);
+    assert_eq!(names, ["on_route", "reach", "isolated", "critical", "vehicle"]);
     assert!(imported.channels.iter().all(|channel| channel["entity_kind"] == json!("edge")));
+
+    // The first four are readings between nothing and everything; the fifth is an identity, and a
+    // fleet's size is not something the file can know. Declaring a range on it would have the host
+    // reject the fifth van's deltas as invalid.
+    let ranged: Vec<bool> = imported.channels.iter().map(|channel| channel.get("max").is_some()).collect();
+    assert_eq!(ranged, [true, true, true, true, false]);
 }
 
 #[test]

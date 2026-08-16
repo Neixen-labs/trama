@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# The manifest docs/SOLVER_CONTRACT.md section 2 requires of every solver package.
+#
+# A second manifest beside `solver.toml`, for the second solver this crate ships. They share a
+# Dijkstra and nothing else: one is told where to go, the other works it out.
+id = "fleet-routing"
+version = "0.1.0"
+license = "LicenseRef-BSL-1.1"
+contract_versions = ["0.1.0", "0.2.0"]
+runtimes = ["server"]
+
+[inputs]
+nodes = true
+edges = true
+edge_properties = []
+node_properties = []
+
+[[outputs]]
+channel = "vehicle"
+entity_kind = "edge"
+# Which vehicle serves this street, numbered from one; zero before any has reached it. Not a
+# quantity, and deliberately without a declared range: a fleet's size is the caller's to choose.
+unit = "1"
+
+[params]
+schema = { "type" = "object", "additionalProperties" = false, "required" = ["depot", "stops"], "properties" = { "channel" = { "type" = "string", "default" = "vehicle" }, "depot" = { "type" = "integer", "minimum" = 0, "description" = "The node index every vehicle leaves from and returns to." }, "stops" = { "type" = "array", "minItems" = 1, "items" = { "type" = "integer", "minimum" = 0 } }, "demands" = { "type" = "array", "items" = { "type" = "number", "minimum" = 0 }, "description" = "What each stop takes out of a vehicle, in the caller's own unit. Absent means one each, which makes capacity a count of stops." }, "capacity" = { "type" = "number", "exclusiveMinimum" = 0 }, "vehicles" = { "type" = "integer", "minimum" = 1, "default" = 1 }, "speed_property" = { "type" = "string" } } }
