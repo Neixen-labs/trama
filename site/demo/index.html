@@ -270,11 +270,7 @@
           );
         }
         const endpoint = document.querySelector("#solver-endpoint").value.trim();
-        // A daily demand curve, hour by hour: the solver runs one real load flow per multiplier
-        // rather than interpolating, because pandapower has no notion of time and inventing one
-        // inside the solver would report a modelling assumption as a measurement.
-        const curve = [0.6, 0.55, 0.5, 0.5, 0.55, 0.65, 0.8, 0.95, 1.0, 0.95, 0.9, 0.9,
-                       0.95, 0.9, 0.85, 0.85, 0.9, 1.0, 1.1, 1.15, 1.1, 0.95, 0.8, 0.7];
+        const curve = DEMAND_CURVE;
         const chunks = [];
         try {
           for await (const chunk of solveDeltas(endpoint, {
@@ -373,7 +369,7 @@
           ["epanet", "swmm"].includes(choice)
             ? { step: 3600, window: 86400 }
             : // A load flow is an instant, and the demand curve below turns it into a day.
-              choice === "pandapower"
+              ["power", "pandapower"].includes(choice)
               ? { step: 3600, window: 82800 }
               : // A property of the shape has no clock at all: one instant is the whole answer.
                 ["critical", "isolation"].includes(choice)
@@ -754,6 +750,17 @@
        * solver cannot touch. This is what stops the page offering a calculation that answers
        * `the container declares no edge channel named 'flow'` after the click.
        */
+      /**
+       * A daily demand curve, hour by hour, sent by whichever runtime solves the network.
+       *
+       * The caller supplies it and the solver runs one real load flow per multiplier rather than
+       * interpolating between two: a load flow is an instant, and a solver that invented a profile
+       * of its own would be reporting a modelling assumption as a measurement. Both electrical
+       * options send this same array, which is part of what makes them comparable.
+       */
+      const DEMAND_CURVE = [0.6, 0.55, 0.5, 0.5, 0.55, 0.65, 0.8, 0.95, 1.0, 0.95, 0.9, 0.9,
+                            0.95, 0.9, 0.85, 0.85, 0.9, 1.0, 1.1, 1.15, 1.1, 0.95, 0.8, 0.7];
+
       const ENGINES = [
         {
           value: "epanet",
@@ -772,12 +779,20 @@
           does: "resuelve el drenaje con EPA SWMM 5.2, 24 horas de simulación. Tras simular, elige la capa: caudal, calado o inundación. Pulsa tramos para bloquearlos y ver por dónde va el agua.",
         },
         {
-          value: "pandapower",
-          label: "pandapower · tensión y carga",
+          value: "power",
+          label: "electricidad · tensión y carga",
           channel: "voltage",
           paints: "loading",
           needs: "una red eléctrica importada de pandapower",
-          does: "resuelve el flujo de carga y escribe la tensión de cada nudo y la carga de cada línea y transformador. Es el único cálculo de esta página que no corre aquí dentro: pandapower es Python, así que vive en un servidor y la página habla con él por HTTP igual que hablaría cualquier otro cliente. Estamos trabajando en que también corra en tu navegador, como ya lo hacen el agua y el saneamiento.",
+          does: "resuelve el flujo de carga aquí dentro y escribe la tensión de cada nudo y la carga de cada línea y transformador, hora a hora sobre un día. Newton-Raphson en Rust, comprobado tensión a tensión contra pandapower: la red no sale de tu equipo.",
+        },
+        {
+          value: "pandapower",
+          label: "el mismo cálculo, con pandapower",
+          channel: "voltage",
+          paints: "loading",
+          needs: "una red eléctrica importada de pandapower",
+          does: "el mismo flujo de carga, resuelto por el solver de pandapower en Python contra un servidor. Está aquí porque el contrato de solvers dice que un cliente no debe poder distinguir dónde se calculó un resultado, y esta es la única forma de enseñarlo: mismo archivo, mismos canales, misma barra de tiempo, otro lenguaje y otra máquina. Para redes tuyas usa la opción de arriba, que no necesita servidor.",
           // Every other engine runs inside the tab; this one cannot, and the page says so before
           // the click rather than after it.
           offsite: true,
@@ -1002,6 +1017,8 @@
             ? await solveWithWasi("trama-epanet-wasi", container, Number(scrub.max), closedIds)
             : choice === "swmm"
             ? await solveWithWasi("trama-swmm-wasi", container, Number(scrub.max), closedIds)
+            : choice === "power"
+            ? wasm.solve_power(container, Float32Array.from(DEMAND_CURVE), Number(scrub.max))
             : choice === "pandapower"
             ? await solveOverHttp(Number(scrub.max))
             : choice === "critical"
