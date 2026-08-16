@@ -573,3 +573,15 @@ Writing the reader found three things the specification had never said: the widt
 **The pattern in those measurements:** `case9` has no transformers and one voltage level. `mv_oberrhein` has two transformers and two levels, 20 kV and 110 kV — and *every* distribution network does, which is the entire use case. The evidence points at transformer handling or the per-level voltage base rather than at anything we could feed it differently.
 
 **What this leaves.** The market finding stands: nobody has put a power flow in the browser as a product, and "the network never leaves your machine" is unclaimed in electrical. The route there is just longer than packaging someone else's crate — either debugging a young engine we do not own, or writing the solver, where the compensation is that pandapower is right here as an oracle to test against. Neither is today's work, and the honest interim is what the page already says: this one calculation runs on a server, and we are working on it not having to.
+
+## 2026-08-16 — The licence names a range, because a release is not a licence event
+
+**Decision:** the BSL parameters name `TRAMA source code, versions 0.x` rather than a single version, and the Change Date moves from 2030-08-09 to 2030-12-31. The 2026-08-09 entry above stands as written: it records what was decided then, and this supersedes it rather than rewriting it.
+
+**What it fixes, found while preparing the first release:** `LICENSE` named `0.0.0-pre-alpha` while `engine/package.json` and the Rust workspace both declare `0.1.0`. BSL 1.1 licenses the work it *names*, so publishing 0.1.0 under that text would have shipped the one artefact anybody downloads without an explicit grant covering it. Nobody would have noticed until it mattered, which is the kind of gap that only surfaces in a dispute.
+
+**Why a range instead of the exact version:** naming the exact version is more precise and costs a licence PR on every release — and the failure mode of forgetting one is exactly the ambiguity we just found, arriving silently. A range has one edit and no recurring obligation. `0.x` is identifiable, which is all BSL 1.1 asks of the parameter, and 1.0 is the natural place to reparameterise: a stable release deserves its own Change Date rather than inheriting one set before the format existed.
+
+**Why the date moves:** BSL 1.1 caps the Change Date at four years after the Licensed Work is first publicly distributed. Publishing on 2026-08-16 left 2030-08-09 compliant by seven days — so a fortnight's slip in the release would have put the parameter out of bounds with the tag already public. 2030-12-31 is a round date with room, and still well under the cap. It is a ceiling, not a floor: nothing in the licence objects to converting sooner than four years.
+
+**Consequence:** every 0.x release is covered by one grant that converts on one date. `README.md` says so in the same words. The next time these parameters need attention is 1.0.
