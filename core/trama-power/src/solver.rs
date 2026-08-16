@@ -15,7 +15,11 @@ use crate::network;
 
 pub const VOLTAGE_CHANNEL: &str = "voltage";
 pub const LOADING_CHANNEL: &str = "loading";
-const KNOWN: [&str; 3] = ["load_scaling", "voltage_channel", "loading_channel"];
+pub const FAULT_CHANNEL: &str = "fault_current";
+const KNOWN: [&str; 4] = ["load_scaling", "voltage_channel", "loading_channel", "study"];
+/// IEC 60909's voltage factor above 1 kV. Every network with a transformer in it is above 1 kV,
+/// and the low-voltage value depends on a supply tolerance the file does not carry.
+const C_MAX: f64 = 1.1;
 /// SPEC 4.2 of the contract: node channels are kind 1, edge channels kind 2.
 const NODE: u8 = 1;
 const EDGE: u8 = 2;
@@ -40,6 +44,16 @@ impl Solver for PowerSolver {
         if request.t1_seconds < request.t0_seconds {
             return Err(Rejection::request("t1_seconds must not precede t0_seconds"));
         }
+        // Two studies, one file. A load flow answers what the network is doing; a short circuit
+        // answers what it would do at its worst, which is a different question with different
+        // physics — no load, no charging current, and the standard's own correction factors.
+        match request.params["study"].as_str().unwrap_or("flow") {
+            "flow" => {}
+            "fault" => return fault(request),
+            other => {
+                return Err(Rejection::request(format!("study is 'flow' or 'fault', not '{other}'")));
+            }
+        }
         let scaling = scaling(&request.params)?;
         let voltage_name = request.params["voltage_channel"].as_str().unwrap_or(VOLTAGE_CHANNEL);
         let loading_name = request.params["loading_channel"].as_str().unwrap_or(LOADING_CHANNEL);
@@ -62,7 +76,8 @@ impl Solver for PowerSolver {
                     request.t0_seconds + (request.t1_seconds - request.t0_seconds) * step as f32 / (count - 1) as f32
                 }
             };
-            let model = network::model(&request.container, *factor).map_err(Rejection::input)?;
+            let model = network::model(&request.container, network::Study::Flow { scaling: *factor })
+                .map_err(Rejection::input)?;
             let solution = flow::solve(&model.buses, &model.branches).map_err(|failure| unsolvable(failure, moment))?;
 
             if let Some(channel) = voltage {
@@ -90,6 +105,29 @@ impl Solver for PowerSolver {
         }
         Ok(deltas)
     }
+}
+
+/// The largest initial symmetrical short-circuit current at every bus, as one instant.
+///
+/// It has no time axis and no demand curve: IEC 60909 deliberately ignores the operating state, so
+/// that the number sizing a breaker does not depend on what the network happened to be doing. It
+/// is written at `t0` and holds for the whole window.
+fn fault(request: &Request) -> Result<Vec<u8>, Rejection> {
+    let channel = declared(&request.container, FAULT_CHANNEL, NODE).map_err(|_| {
+        Rejection::input(format!(
+            "this container declares no node channel '{FAULT_CHANNEL}', so it was compiled before \
+             this solver could answer the question"
+        ))
+    })?;
+    let model = network::model(&request.container, network::Study::Fault { c_max: C_MAX }).map_err(Rejection::input)?;
+    let currents = network::fault_currents(&model, C_MAX).map_err(|failure| unsolvable(failure, request.t0_seconds))?;
+    let mut deltas = Vec::with_capacity(model.bus_entity.len() * DELTA_BYTES);
+    for (position, entity) in model.bus_entity.iter().enumerate() {
+        if let Some(id) = entity {
+            deltas.extend_from_slice(&pack(*id, channel, request.t0_seconds, currents[position] as f32));
+        }
+    }
+    Ok(deltas)
 }
 
 /// The demand curve is the caller's to supply.
@@ -177,6 +215,67 @@ mod tests {
         };
         assert_eq!(at(0), 0.0);
         assert_eq!(at(3 * (179 + 183) - 1), 86400.0);
+    }
+
+    fn cigre() -> Vec<u8> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/networks/cigre-mv.json");
+        let import = crate::PowerImporter.load(&path, &BTreeMap::new()).unwrap();
+        trama_format::compile(&import.features, &import.channels, &import.extras).unwrap()
+    }
+
+    #[test]
+    fn a_fault_study_writes_one_current_per_bus_and_no_curve() {
+        let request = Request {
+            container: cigre(),
+            params: serde_json::json!({"study": "fault"}),
+            t0_seconds: 0.0,
+            t1_seconds: 86400.0,
+        };
+        let written = deltas(PowerSolver.solve(&request));
+        // 15 buses, one instant. A fault has no time axis, so a demand curve would be meaningless
+        // and the window is carried by a single sample at t0.
+        assert_eq!(written.len(), 15 * DELTA_BYTES);
+        let at = |index: usize| {
+            f32::from_le_bytes(written[index * DELTA_BYTES + 10..index * DELTA_BYTES + 14].try_into().unwrap())
+        };
+        assert_eq!(at(0), 0.0);
+        assert_eq!(at(14), 0.0);
+
+        // And it lands in the fault channel, not in the voltage one it sits beside.
+        let channel = |index: usize| {
+            u16::from_le_bytes(written[index * DELTA_BYTES + 8..index * DELTA_BYTES + 10].try_into().unwrap())
+        };
+        let voltage = trama_solver::declared(&cigre(), VOLTAGE_CHANNEL, NODE).unwrap();
+        let fault = trama_solver::declared(&cigre(), FAULT_CHANNEL, NODE).unwrap();
+        assert_ne!(voltage, fault);
+        assert!((0..15).all(|index| channel(index) == fault), "every delta is a fault current");
+    }
+
+    #[test]
+    fn a_study_nobody_defined_is_refused() {
+        let request = Request {
+            container: cigre(),
+            params: serde_json::json!({"study": "n-1"}),
+            t0_seconds: 0.0,
+            t1_seconds: 1.0,
+        };
+        let error = refusal(PowerSolver.solve(&request));
+        assert_eq!(error.status, 400);
+        assert!(error.message.contains("'n-1'"), "{}", error.message);
+    }
+
+    /// A network whose file never said what the grid upstream can deliver cannot be faulted, and
+    /// says which column is missing rather than reporting a current limited only by its own lines.
+    #[test]
+    fn a_fault_needs_the_infeed_to_declare_its_level() {
+        let request = Request {
+            container: container(),
+            params: serde_json::json!({"study": "fault"}),
+            t0_seconds: 0.0,
+            t1_seconds: 1.0,
+        };
+        let error = refusal(PowerSolver.solve(&request));
+        assert!(error.message.contains("s_sc_max_mva"), "{}", error.message);
     }
 
     #[test]

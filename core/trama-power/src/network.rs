@@ -19,6 +19,22 @@ use trama_format::{edge_properties, node_properties, parse_graph, read_sections}
 use crate::flow::{self, Branch, Bus, BusKind, C};
 use crate::{MEDIA_TYPE, OWNER};
 
+/// What a model is built to answer, which changes what the network is made of.
+///
+/// The same file becomes two different electrical networks. A load flow wants the whole π —
+/// charging current, iron losses, the phase shift a Dyn imposes — and the demand at every bus.
+/// IEC 60909 wants none of that: a short circuit is decided by the impedances between the fault
+/// and the sources, so capacitance and load are dropped, the phase shift is irrelevant to a
+/// magnitude, and the transformer impedance carries a correction factor the standard prescribes.
+#[derive(Clone, Copy)]
+pub enum Study {
+    /// A load flow, with every load and static generator scaled by this factor.
+    Flow { scaling: f64 },
+    /// The largest initial symmetrical short-circuit current, IEC 60909 with the voltage factor
+    /// `c_max` — 1.1 above 1 kV, which is what a distribution network is.
+    Fault { c_max: f64 },
+}
+
 /// What a branch's loading is measured against.
 pub enum Rating {
     /// A line, rated on current: `max_i_ka` derated by `df` and multiplied by parallel circuits.
@@ -42,10 +58,13 @@ pub struct Model {
     /// Nominal voltage per bus, kV, for turning per-unit currents back into kA.
     pub base_kv: Vec<f64>,
     pub sn_mva: f64,
+    /// Admittances to earth, by bus: the source impedance of each external grid under a fault.
+    /// Empty for a load flow, where the same infeed is a slack instead.
+    pub shunts: Vec<(usize, C)>,
 }
 
-/// Read a container compiled from a pandapower network, with every load scaled by `scaling`.
-pub fn model(container: &[u8], scaling: f64) -> Result<Model, String> {
+/// Read a container compiled from a pandapower network into the network the study needs.
+pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
     let document = remainder(container)?;
     let tables = document.get("_object").and_then(Value::as_object).ok_or("the XTRA record is not a pandapower net")?;
     let scalar = |name: &str, fallback: f64| tables.get(name).and_then(Value::as_f64).unwrap_or(fallback);
@@ -142,8 +161,8 @@ pub fn model(container: &[u8], scaling: f64) -> Result<Model, String> {
         }
 
         let (branch, rated) = match kind.as_str() {
-            "line" => line(row, from, to, base_kv[from], sn_mva, f_hz)?,
-            _ => transformer(row, from, to, base_kv[from], base_kv[to], sn_mva)?,
+            "line" => line(row, from, to, base_kv[from], sn_mva, f_hz, study)?,
+            _ => transformer(row, from, to, base_kv[from], base_kv[to], sn_mva, study)?,
         };
         branches.push(branch);
         branch_entity.push(edge.id);
@@ -152,6 +171,14 @@ pub fn model(container: &[u8], scaling: f64) -> Result<Model, String> {
 
     // Injections. A load consumes and a static generator produces, both scaled by their own column
     // and by the caller's factor; the two differ only in sign.
+    //
+    // A fault has none of this. IEC 60909 computes the current from the sources through the
+    // network impedance with the pre-fault load ignored, because the fault current dwarfs it and
+    // the standard's whole point is an answer that does not depend on the operating state.
+    let scaling = match study {
+        Study::Flow { scaling } => scaling,
+        Study::Fault { .. } => 0.0,
+    };
     for (table, sign) in [("load", -1.0), ("sgen", 1.0)] {
         for row in rows(tables, table)? {
             if !row.get("in_service").and_then(Value::as_bool).unwrap_or(true) {
@@ -168,7 +195,12 @@ pub fn model(container: &[u8], scaling: f64) -> Result<Model, String> {
 
     // The external grid holds the voltage. Its own scaling is none: a slack absorbs whatever the
     // network needs, which is what makes it the slack.
+    //
+    // Under a fault it is not a slack at all but a source impedance to earth: what the rest of the
+    // system upstream can deliver, condensed into `s_sc_max_mva` and an R/X ratio. That impedance
+    // is most of the answer at the head of a feeder, and all of it at the infeed itself.
     let mut slacks = 0;
+    let mut shunts: Vec<(usize, C)> = Vec::new();
     for row in rows(tables, "ext_grid")? {
         if !row.get("in_service").and_then(Value::as_bool).unwrap_or(true) {
             continue;
@@ -180,12 +212,22 @@ pub fn model(container: &[u8], scaling: f64) -> Result<Model, String> {
         buses[*position].vm_pu = row.get("vm_pu").and_then(Value::as_f64).unwrap_or(1.0);
         buses[*position].va_rad = row.get("va_degree").and_then(Value::as_f64).unwrap_or(0.0).to_radians();
         slacks += 1;
+        if let Study::Fault { c_max } = study {
+            let power = row.get("s_sc_max_mva").and_then(Value::as_f64).filter(|value| *value > 0.0).ok_or(
+                "an external grid declares no 's_sc_max_mva', so there is nothing to say how much \
+                 fault current the system upstream can deliver",
+            )?;
+            let magnitude = c_max * sn_mva / power;
+            let ratio = row.get("rx_max").and_then(Value::as_f64).unwrap_or(0.1);
+            let reactance = magnitude / (1.0 + ratio * ratio).sqrt();
+            shunts.push((*position, C::new(ratio * reactance, reactance).inv()));
+        }
     }
     if slacks == 0 {
         return Err("this network has no external grid in service, so no bus holds a voltage".into());
     }
 
-    Ok(Model { buses, branches, bus_entity, branch_entity, rating, base_kv, sn_mva })
+    Ok(Model { buses, branches, bus_entity, branch_entity, rating, base_kv, sn_mva, shunts })
 }
 
 /// A line as a π section, per-unit on the bus it runs between.
@@ -196,6 +238,7 @@ fn line(
     base_kv: f64,
     sn_mva: f64,
     f_hz: f64,
+    study: Study,
 ) -> Result<(Branch, Rating), String> {
     let value = |key: &str, fallback: f64| number(row, key).unwrap_or(fallback);
     let length = value("power:length_km", 0.0);
@@ -209,7 +252,13 @@ fn line(
     if r == 0.0 && x == 0.0 {
         return Err("a line has no impedance, so nothing limits the current through it".into());
     }
-    let half = C::new(g / 2.0, b / 2.0);
+    // A fault is decided by the impedance between it and the sources. Charging current is orders
+    // of magnitude below the fault current and IEC 60909 leaves it out, so this is the standard
+    // speaking rather than a simplification of ours.
+    let half = match study {
+        Study::Flow { .. } => C::new(g / 2.0, b / 2.0),
+        Study::Fault { .. } => C::ZERO,
+    };
     let rating = match number(row, "power:max_i_ka") {
         Some(max_ka) if max_ka > 0.0 => Rating::Current { max_ka: max_ka * value("power:df", 1.0) * parallel },
         _ => Rating::Unrated,
@@ -241,6 +290,7 @@ fn transformer(
     hv_base_kv: f64,
     lv_base_kv: f64,
     sn_mva: f64,
+    study: Study,
 ) -> Result<(Branch, Rating), String> {
     let value = |key: &str, fallback: f64| number(row, key).unwrap_or(fallback);
     let rated_mva = value("power:sn_mva", 0.0);
@@ -287,6 +337,20 @@ fn transformer(
     let x = z.signum() * (z * z - r * r).sqrt();
     let (r, x) = (r / parallel, x / parallel);
 
+    // IEC 60909 §3.7 corrects a transformer's impedance by a factor that depends on its own
+    // reactance, because the standard's fault current is computed at a voltage the network is not
+    // actually at. Without it every current downstream of a transformer is a couple of percent out
+    // — small enough to look like rounding, large enough to size a breaker wrongly.
+    let (r, x) = match study {
+        Study::Flow { .. } => (r, x),
+        Study::Fault { c_max } => {
+            // The reactance relative to the transformer's own rating, which is what §3.7 asks for.
+            let relative = x * rated_mva / ((vn_lv_tapped / lv_base_kv).powi(2) * sn_mva);
+            let correction = 0.95 * c_max / (1.0 + 0.6 * relative);
+            (r * correction, x * correction)
+        }
+    };
+
     // Magnetising branch: iron losses give the conductance, no-load current the susceptance.
     let base_ohm = lv_base_kv * lv_base_kv / sn_mva;
     let referral = (vn_lv_tapped / vn_lv).powi(2);
@@ -297,7 +361,12 @@ fn transformer(
     let magnetising = C::new(iron_mw * scale, susceptance_mva * scale);
 
     // Star to delta: the leakage splits evenly either side of the magnetising branch, which is
-    // pandapower's default and leaves the resulting π symmetric.
+    // pandapower's default and leaves the resulting π symmetric. A fault sees no magnetising
+    // branch at all — it is a shunt across a source, and the standard drops it.
+    let magnetising = match study {
+        Study::Flow { .. } => magnetising,
+        Study::Fault { .. } => C::ZERO,
+    };
     let (series, shunt) = if magnetising == C::ZERO {
         (C::new(r, x).inv(), C::ZERO)
     } else {
@@ -310,6 +379,12 @@ fn transformer(
     let half_shunt = shunt / C::new(2.0, 0.0);
 
     let ratio = (vn_hv_tapped / vn_lv_tapped) / (hv_base_kv / lv_base_kv);
+    // The shift rotates every voltage downstream of it by the same angle, so it cannot change the
+    // magnitude of a fault current. Dropping it keeps this model the one IEC 60909 describes.
+    let shift = match study {
+        Study::Flow { .. } => shift,
+        Study::Fault { .. } => 0.0,
+    };
     Ok((
         Branch {
             from,
@@ -344,6 +419,23 @@ pub fn loadings(model: &Model, solution: &flow::Solution) -> Vec<Option<f64>> {
             }
         })
         .collect()
+}
+
+/// The initial symmetrical short-circuit current at each bus, in kA.
+///
+/// IEC 60909's `Ikss = c·Un / (√3·|Zk|)`, which in per-unit is `c / |Z_ii|` scaled by the bus's
+/// own base current. It is the number that sizes a breaker and sets what a protection relay must
+/// survive, and the reason a utility runs the study at all.
+pub fn fault_currents(model: &Model, c_max: f64) -> Result<Vec<f64>, flow::Failure> {
+    let impedance = flow::thevenin(model.buses.len(), &model.branches, &model.shunts)?;
+    Ok(impedance
+        .iter()
+        .enumerate()
+        .map(|(bus, z)| {
+            let base_current = model.sn_mva / (model.base_kv[bus] * 3f64.sqrt());
+            c_max * base_current / z.abs()
+        })
+        .collect())
 }
 
 /// The pandapower document the compiler carried without reading it.

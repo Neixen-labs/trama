@@ -338,6 +338,72 @@ fn start_angles(buses: &[Bus], branches: &[Branch]) -> Vec<f64> {
     angles
 }
 
+/// The diagonal of the bus impedance matrix: the Thévenin impedance seen looking into each bus.
+///
+/// This is what a short circuit is made of. `Z = Y⁻¹`, and `Z_ii` is the impedance a fault at bus
+/// `i` sees — every path back to every source, in parallel, which is why it cannot be read off the
+/// network by inspection and needs the matrix inverted.
+///
+/// Only the diagonal is returned because only the diagonal is asked for. The full inverse is
+/// computed on the way there; a network large enough for that to matter wants the sparse
+/// factorisation the `admittances` note describes, and would then want a different entry point
+/// too, since the sparse answer for one bus is cheaper than for all of them.
+pub fn thevenin(buses: usize, branches: &[Branch], shunts: &[(usize, C)]) -> Result<Vec<C>, Failure> {
+    let mut y = admittances(buses, branches);
+    for (bus, admittance) in shunts {
+        y[*bus][*bus] = y[*bus][*bus] + *admittance;
+    }
+    // Solve Y·Z = I one column at a time, sharing the elimination: the matrix is factored once
+    // and every column of the identity is carried through it.
+    let identity: Vec<Vec<C>> = (0..buses)
+        .map(|column| (0..buses).map(|row| if row == column { C::new(1.0, 0.0) } else { C::ZERO }).collect())
+        .collect();
+    let inverse = gaussian_complex(y, identity).map_err(|bus| Failure::Singular { bus })?;
+    Ok((0..buses).map(|bus| inverse[bus][bus]).collect())
+}
+
+/// Gaussian elimination with partial pivoting over complex numbers, with many right-hand sides.
+///
+/// `columns[k]` is the k-th right-hand side; the result is indexed the same way, so `out[k][i]` is
+/// row `i` of the solution for column `k`. Real elimination would not do here: a fault current is
+/// set by the ratio of resistance to reactance as much as by their sum.
+fn gaussian_complex(mut a: Vec<Vec<C>>, mut columns: Vec<Vec<C>>) -> Result<Vec<Vec<C>>, usize> {
+    let n = a.len();
+    for column in 0..n {
+        let pivot = (column..n).max_by(|&x, &y| a[x][column].abs().total_cmp(&a[y][column].abs())).unwrap();
+        if a[pivot][column].abs() < 1e-14 {
+            return Err(column);
+        }
+        a.swap(column, pivot);
+        for rhs in columns.iter_mut() {
+            rhs.swap(column, pivot);
+        }
+        for row in column + 1..n {
+            let factor = a[row][column] / a[column][column];
+            if factor == C::ZERO {
+                continue;
+            }
+            let (upper, lower) = a.split_at_mut(row);
+            for (target, source) in lower[0][column..n].iter_mut().zip(&upper[column][column..n]) {
+                *target = *target - factor * *source;
+            }
+            for rhs in columns.iter_mut() {
+                rhs[row] = rhs[row] - factor * rhs[column];
+            }
+        }
+    }
+    Ok(columns
+        .into_iter()
+        .map(|mut rhs| {
+            for row in (0..n).rev() {
+                let sum = (row + 1..n).fold(C::ZERO, |total, k| total + a[row][k] * rhs[k]);
+                rhs[row] = (rhs[row] - sum) / a[row][row];
+            }
+            rhs
+        })
+        .collect())
+}
+
 /// Power leaving each bus into the network, given the voltages.
 fn injections(y: &[Vec<C>], vm: &[f64], va: &[f64]) -> (Vec<f64>, Vec<f64>) {
     let v: Vec<C> = vm.iter().zip(va).map(|(&m, &a)| C::polar(m, a)).collect();

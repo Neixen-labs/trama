@@ -63,7 +63,7 @@ fn indices(container: &[u8]) -> (BTreeMap<usize, i64>, BTreeMap<usize, (String, 
 #[test]
 fn every_bus_voltage_matches_pandapower() {
     let container = compiled();
-    let model = network::model(&container, 1.0).unwrap();
+    let model = network::model(&container, network::Study::Flow { scaling: 1.0 }).unwrap();
     let solution = flow::solve(&model.buses, &model.branches).unwrap_or_else(|error| panic!("{error}"));
     let golden = expected();
     let (by_node, _) = indices(&container);
@@ -92,7 +92,7 @@ fn every_bus_voltage_matches_pandapower() {
 #[test]
 fn every_branch_loading_matches_pandapower() {
     let container = compiled();
-    let model = network::model(&container, 1.0).unwrap();
+    let model = network::model(&container, network::Study::Flow { scaling: 1.0 }).unwrap();
     let solution = flow::solve(&model.buses, &model.branches).unwrap();
     let loadings = network::loadings(&model, &solution);
     let golden = expected();
@@ -118,7 +118,7 @@ fn every_branch_loading_matches_pandapower() {
 #[test]
 fn a_line_behind_an_open_switch_charges_but_does_not_carry() {
     let container = compiled();
-    let model = network::model(&container, 1.0).unwrap();
+    let model = network::model(&container, network::Study::Flow { scaling: 1.0 }).unwrap();
     let solution = flow::solve(&model.buses, &model.branches).unwrap();
     let flows = flow::branch_flows(&model.branches, &solution);
     let (_, by_edge) = indices(&container);
@@ -148,13 +148,13 @@ fn a_line_behind_an_open_switch_charges_but_does_not_carry() {
 fn scaling_the_load_moves_the_voltage_the_way_a_network_does() {
     let container = compiled();
     let light = flow::solve(
-        &network::model(&container, 0.5).unwrap().buses,
-        &network::model(&container, 0.5).unwrap().branches,
+        &network::model(&container, network::Study::Flow { scaling: 0.5 }).unwrap().buses,
+        &network::model(&container, network::Study::Flow { scaling: 0.5 }).unwrap().branches,
     )
     .unwrap();
     let heavy = flow::solve(
-        &network::model(&container, 2.0).unwrap().buses,
-        &network::model(&container, 2.0).unwrap().branches,
+        &network::model(&container, network::Study::Flow { scaling: 2.0 }).unwrap().buses,
+        &network::model(&container, network::Study::Flow { scaling: 2.0 }).unwrap().branches,
     )
     .unwrap();
 

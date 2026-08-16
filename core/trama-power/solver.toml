@@ -27,5 +27,11 @@ channel = "loading"
 entity_kind = "edge"
 unit = "%"
 
+# Written only by `study = "fault"`, and only when the external grid declares its fault level.
+[[outputs]]
+channel = "fault_current"
+entity_kind = "node"
+unit = "kA"
+
 [params]
-schema = { "type" = "object", "additionalProperties" = false, "properties" = { "load_scaling" = { "type" = "array", "minItems" = 1, "items" = { "type" = "number", "minimum" = 0 }, "description" = "One real load flow per multiplier, spread across the interval. Absent means a single flow at t0, the network as the file has it." }, "voltage_channel" = { "type" = "string", "default" = "voltage" }, "loading_channel" = { "type" = "string", "default" = "loading" } } }
+schema = { "type" = "object", "additionalProperties" = false, "properties" = { "study" = { "enum" = ["flow", "fault"], "default" = "flow", "description" = "A load flow, or the IEC 60909 maximum short circuit. The latter takes no demand curve: it deliberately ignores the operating state." }, "load_scaling" = { "type" = "array", "minItems" = 1, "items" = { "type" = "number", "minimum" = 0 }, "description" = "One real load flow per multiplier, spread across the interval. Absent means a single flow at t0, the network as the file has it." }, "voltage_channel" = { "type" = "string", "default" = "voltage" }, "loading_channel" = { "type" = "string", "default" = "loading" } } }
