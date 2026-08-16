@@ -148,3 +148,24 @@ pub fn solve(container: &[u8], t1_seconds: f32) -> Result<Vec<u8>, JsError> {
     trama_example::solve(container, &trama_example::Parameters::default(), 0.0, t1_seconds)
         .map_err(|error| JsError::new(&error))
 }
+
+/// Solve the load flow of a compiled pandapower network, in the browser.
+///
+/// The one calculation the playground could not run without a server, because the only solver for
+/// it was Python. This is the same Rust the `trama-solver-power` binary runs, so the answer does
+/// not depend on which side of the network boundary it was computed — and now there is no boundary
+/// to cross: a file dropped on the page is solved on the machine it was dropped from.
+///
+/// `load_scaling` is the demand curve, one real load flow per multiplier spread across the window.
+/// Empty means a single flow at t0, the network as the file has it.
+#[wasm_bindgen]
+pub fn solve_power(container: &[u8], load_scaling: &[f32], t1_seconds: f32) -> Result<Vec<u8>, JsError> {
+    let params = if load_scaling.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ "load_scaling": load_scaling.iter().map(|factor| *factor as f64).collect::<Vec<f64>>() })
+    };
+    let request = trama_solver::server::Request { container: container.to_vec(), params, t0_seconds: 0.0, t1_seconds };
+    trama_solver::server::Solver::solve(&trama_power::solver::PowerSolver, &request)
+        .map_err(|rejection| JsError::new(&rejection.message))
+}

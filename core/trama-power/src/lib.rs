@@ -12,6 +12,10 @@
 //! The schema is not data another section could carry (SPEC 330): it is the column order a
 //! reader needs to put the rows back, and the rows themselves are in `GRPH` and `PROP`.
 
+pub mod flow;
+pub mod network;
+pub mod solver;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
