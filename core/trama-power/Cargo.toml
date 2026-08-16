@@ -6,9 +6,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "trama-solver-power"
+path = "src/bin/server.rs"
+
 [dependencies]
 trama-format = { path = "../trama-format" }
-serde_json.workspace = true
-
-[dev-dependencies]
 trama-solver = { path = "../trama-solver" }
+serde_json.workspace = true

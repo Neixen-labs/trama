@@ -17,5 +17,6 @@ trama-roads = { path = "../trama-roads" }
 trama-power = { path = "../trama-power" }
 trama-routing = { path = "../trama-routing" }
 trama-trace = { path = "../trama-trace" }
+trama-solver = { path = "../trama-solver" }
 serde_json.workspace = true
 wasm-bindgen = "0.2"

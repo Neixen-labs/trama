@@ -851,6 +851,7 @@ dependencies = [
  "trama-power",
  "trama-roads",
  "trama-routing",
+ "trama-solver",
  "trama-swmm",
  "trama-trace",
  "wasm-bindgen",
