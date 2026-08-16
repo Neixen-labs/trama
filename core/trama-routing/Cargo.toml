@@ -9,6 +9,10 @@ license.workspace = true
 name = "trama-solver-routing"
 path = "src/main.rs"
 
+[[bin]]
+name = "trama-solver-fleet"
+path = "src/bin/fleet.rs"
+
 [dependencies]
 trama-format = { path = "../trama-format" }
 trama-solver = { path = "../trama-solver" }

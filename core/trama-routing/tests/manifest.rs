@@ -10,3 +10,13 @@ fn the_manifest_describes_the_solver_it_ships_with() {
 
     assert_eq!(outcome, Ok(()));
 }
+
+#[test]
+fn the_fleet_manifest_describes_the_solver_it_ships_with() {
+    let manifest = include_str!("../fleet.toml");
+    let solver = trama_routing::fleet::FleetSolver;
+
+    let outcome = manifest_agrees_with(manifest, solver.id(), solver.contract_versions());
+
+    assert_eq!(outcome, Ok(()));
+}

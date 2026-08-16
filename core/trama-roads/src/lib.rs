@@ -38,10 +38,16 @@ impl Importer for RoadImporter {
 /// they are true of any connected network, and because a solver may only write where the file
 /// says it may — an undeclared channel is a calculation the file has refused.
 pub fn channels() -> Vec<Value> {
-    ["on_route", "reach", "isolated", "critical"]
+    let mut declared: Vec<Value> = ["on_route", "reach", "isolated", "critical"]
         .iter()
         .map(|name| json!({"name": name, "entity_kind": "edge", "unit": "1", "min": 0, "max": 1}))
-        .collect()
+        .collect();
+    // Which vehicle of a fleet serves a street, numbered from one, and zero where none does.
+    // No declared range, unlike the four above: how many vehicles there are is the caller's
+    // question, and a file that guessed at a maximum would have the host reject the fifth van
+    // as an invalid reading.
+    declared.push(json!({"name": "vehicle", "entity_kind": "edge", "unit": "1"}));
+    declared
 }
 
 /// Turns an Overpass `out geom` response into features the compiler already speaks.
