@@ -65,6 +65,10 @@ pub fn channels() -> Vec<Value> {
     vec![
         json!({"name": "voltage", "entity_kind": "node", "unit": "p.u."}),
         json!({"name": "loading", "entity_kind": "edge", "unit": "%"}),
+        // What a fault at this bus would draw. Declared by every electrical container, and written
+        // only when the file carries the infeed's fault level — a network that does not say what
+        // the system upstream can deliver cannot be asked this question.
+        json!({"name": "fault_current", "entity_kind": "node", "unit": "kA"}),
     ]
 }
 

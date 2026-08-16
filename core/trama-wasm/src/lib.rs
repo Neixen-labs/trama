@@ -169,3 +169,20 @@ pub fn solve_power(container: &[u8], load_scaling: &[f32], t1_seconds: f32) -> R
     trama_solver::server::Solver::solve(&trama_power::solver::PowerSolver, &request)
         .map_err(|rejection| JsError::new(&rejection.message))
 }
+
+/// The largest short-circuit current at every bus of a compiled pandapower network, in kA.
+///
+/// The second question a distribution utility answers in writing, after the load flow: what a
+/// breaker at each point must be able to interrupt. IEC 60909's maximum case, which takes no
+/// demand curve because it deliberately ignores what the network happened to be doing.
+#[wasm_bindgen]
+pub fn solve_fault(container: &[u8]) -> Result<Vec<u8>, JsError> {
+    let request = trama_solver::server::Request {
+        container: container.to_vec(),
+        params: serde_json::json!({ "study": "fault" }),
+        t0_seconds: 0.0,
+        t1_seconds: 0.0,
+    };
+    trama_solver::server::Solver::solve(&trama_power::solver::PowerSolver, &request)
+        .map_err(|rejection| JsError::new(&rejection.message))
+}
