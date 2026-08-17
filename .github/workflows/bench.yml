@@ -21,9 +21,9 @@ jobs:
   frames:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Build a 100k-segment container
@@ -42,7 +42,7 @@ jobs:
         # Fewer frames than a local run: SwiftShader spends hundreds of milliseconds on each
         # one, and 360 of them outlive the harness timeout. Enough to bind state and draw.
         run: npm run bench -- --container "${RUNNER_TEMP}/bench.trama" --frames 60 --warmup 10 --screenshot "${RUNNER_TEMP}/frame.png"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: frame
           path: ${{ runner.temp }}/frame.png
