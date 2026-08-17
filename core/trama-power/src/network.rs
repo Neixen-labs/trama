@@ -39,8 +39,13 @@ pub enum Study {
 pub enum Rating {
     /// A line, rated on current: `max_i_ka` derated by `df` and multiplied by parallel circuits.
     Current { max_ka: f64 },
-    /// A transformer, rated on apparent power against its nameplate.
-    Power { sn_mva: f64 },
+    /// A transformer, rated on the current each winding can carry at its own nominal voltage —
+    /// `i·vn·√3` against the nameplate, taken at whichever end is worse. Not the apparent power at
+    /// the terminals, which is the other thing pandapower can be asked for and is not its default:
+    /// the two agree only where the bus sits at the winding's nominal voltage, so a network solved
+    /// away from nominal reports one number under the first rule and a different one under the
+    /// second. A winding burns on current.
+    Winding { sn_mva: f64, vn_from_kv: f64, vn_to_kv: f64 },
     /// The source declared no limit. Nothing is written to the loading channel for this branch:
     /// a percentage of an unknown rating is not a number, and a NaN delta would poison the
     /// colour ramp of every other branch on the map.
@@ -58,9 +63,6 @@ pub struct Model {
     /// Nominal voltage per bus, kV, for turning per-unit currents back into kA.
     pub base_kv: Vec<f64>,
     pub sn_mva: f64,
-    /// Admittances to earth, by bus: the source impedance of each external grid under a fault.
-    /// Empty for a load flow, where the same infeed is a slack instead.
-    pub shunts: Vec<(usize, C)>,
 }
 
 /// Read a container compiled from a pandapower network into the network the study needs.
@@ -94,7 +96,7 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
         by_index.insert(index, position);
         base_kv.push(number(row, "power:vn_kv").ok_or_else(|| format!("bus {index} declares no nominal voltage"))?);
         bus_entity.push(Some(node.id));
-        buses.push(Bus { kind: BusKind::Load, p_pu: 0.0, q_pu: 0.0, vm_pu: 1.0, va_rad: 0.0 });
+        buses.push(Bus::floating());
     }
 
     // An open switch does not delete its branch: pandapower moves that end onto a bus of its own,
@@ -154,7 +156,7 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
         for detached in open.get(&(kind.as_str(), index)).map(Vec::as_slice).unwrap_or_default() {
             let end = if *detached == from_index { &mut from } else { &mut to };
             let auxiliary = buses.len();
-            buses.push(Bus { kind: BusKind::Load, p_pu: 0.0, q_pu: 0.0, vm_pu: 1.0, va_rad: 0.0 });
+            buses.push(Bus::floating());
             bus_entity.push(None);
             base_kv.push(base_kv[*end]);
             *end = auxiliary;
@@ -193,6 +195,81 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
         }
     }
 
+    // A shunt is a capacitor bank or a reactor: an admittance to earth, and the cheapest reactive
+    // power on a network. `q_mvar` is what it *consumes* at nominal voltage, so a capacitor
+    // declares it negative and lands as a positive susceptance. Ignoring the table would drop the
+    // bank from the model and report a voltage the network only reaches because of it.
+    //
+    // Under a fault the standard drops it with everything else capacitive: IEC 60909 asks for the
+    // impedance between the fault and the sources, and a bank across a bus is neither.
+    if matches!(study, Study::Flow { .. }) {
+        for row in rows(tables, "shunt")? {
+            if !row.get("in_service").and_then(Value::as_bool).unwrap_or(true) {
+                continue;
+            }
+            let Some(position) = row.get("bus").and_then(Value::as_i64).and_then(|bus| by_index.get(&bus)) else {
+                continue;
+            };
+            // A bank rated for another voltage delivers what the square of the ratio says it does.
+            let rated_kv = row.get("vn_kv").and_then(Value::as_f64).unwrap_or(base_kv[*position]);
+            let ratio = (base_kv[*position] / rated_kv).powi(2);
+            let steps = row.get("step").and_then(Value::as_f64).unwrap_or(1.0);
+            let scale = ratio * steps / sn_mva;
+            let p_mw = row.get("p_mw").and_then(Value::as_f64).unwrap_or(0.0);
+            let q_mvar = row.get("q_mvar").and_then(Value::as_f64).unwrap_or(0.0);
+            buses[*position].y_shunt = buses[*position].y_shunt + C::new(p_mw * scale, -q_mvar * scale);
+        }
+    }
+
+    // A synchronous generator on automatic voltage regulation: real power despatched, voltage
+    // held, reactive power whatever holding it costs — up to the limits the machine declares.
+    //
+    // Its real power carries no study scaling, unlike a load or a static generator. Those two are
+    // demand and weather; this is a despatch decision, and scaling it would mean answering what
+    // the network does at 120% load with a station that also happens to be at 120% output.
+    //
+    // Under a fault it is not a slack, not a load, and not nothing: a synchronous machine feeds a
+    // short circuit from behind its subtransient reactance, and IEC 60909 §3.6 corrects that
+    // impedance by a factor of its own. None of that is modelled here, so the study is refused
+    // rather than answered. Leaving the machines out instead would return a fault current lower
+    // than the true one and perfectly plausible — and a breaker chosen from it would fail closed
+    // on the day it was needed. A number that is wrong in the safe direction is still a refusal;
+    // this one is wrong in the other.
+    if matches!(study, Study::Fault { .. }) && !rows(tables, "gen")?.is_empty() {
+        return Err("this network has synchronous generators, which feed a short circuit from \
+                    behind their subtransient reactance; this solver models only the infeed from \
+                    the external grid, so it would understate every current in the study"
+            .into());
+    }
+    if matches!(study, Study::Flow { .. }) {
+        for row in rows(tables, "gen")? {
+            if !row.get("in_service").and_then(Value::as_bool).unwrap_or(true) {
+                continue;
+            }
+            let Some(position) = row.get("bus").and_then(Value::as_i64).and_then(|bus| by_index.get(&bus)) else {
+                continue;
+            };
+            let scaling = row.get("scaling").and_then(Value::as_f64).unwrap_or(1.0);
+            buses[*position].p_pu += scaling * row.get("p_mw").and_then(Value::as_f64).unwrap_or(0.0) / sn_mva;
+            buses[*position].vm_pu = row.get("vm_pu").and_then(Value::as_f64).unwrap_or(1.0);
+            // A machine that declares no limit is one whose file never recorded it, not one that
+            // can deliver without bound. Which of those to assume is the caller's risk to take.
+            let limit = |key: &str, absent: f64| {
+                row.get(key).and_then(Value::as_f64).map(|mvar| mvar / sn_mva).unwrap_or(absent)
+            };
+            let (q_min_pu, q_max_pu) = (limit("min_q_mvar", f64::NEG_INFINITY), limit("max_q_mvar", f64::INFINITY));
+            // Two machines on one bus hold one voltage between them and their limits add. The
+            // second setpoint silently wins above, which is what pandapower does with the same
+            // input; a file that disagrees with itself about a bus's voltage is not modelled here.
+            buses[*position].kind = match buses[*position].kind {
+                BusKind::Voltage { q_min_pu: min, q_max_pu: max } => {
+                    BusKind::Voltage { q_min_pu: min + q_min_pu, q_max_pu: max + q_max_pu }
+                }
+                _ => BusKind::Voltage { q_min_pu, q_max_pu },
+            };
+        }
+    }
+
     // The external grid holds the voltage. Its own scaling is none: a slack absorbs whatever the
     // network needs, which is what makes it the slack.
     //
@@ -200,7 +277,6 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
     // system upstream can deliver, condensed into `s_sc_max_mva` and an R/X ratio. That impedance
     // is most of the answer at the head of a feeder, and all of it at the infeed itself.
     let mut slacks = 0;
-    let mut shunts: Vec<(usize, C)> = Vec::new();
     for row in rows(tables, "ext_grid")? {
         if !row.get("in_service").and_then(Value::as_bool).unwrap_or(true) {
             continue;
@@ -220,14 +296,14 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
             let magnitude = c_max * sn_mva / power;
             let ratio = row.get("rx_max").and_then(Value::as_f64).unwrap_or(0.1);
             let reactance = magnitude / (1.0 + ratio * ratio).sqrt();
-            shunts.push((*position, C::new(ratio * reactance, reactance).inv()));
+            buses[*position].y_shunt = buses[*position].y_shunt + C::new(ratio * reactance, reactance).inv();
         }
     }
     if slacks == 0 {
         return Err("this network has no external grid in service, so no bus holds a voltage".into());
     }
 
-    Ok(Model { buses, branches, bus_entity, branch_entity, rating, base_kv, sn_mva, shunts })
+    Ok(Model { buses, branches, bus_entity, branch_entity, rating, base_kv, sn_mva })
 }
 
 /// A line as a π section, per-unit on the bus it runs between.
@@ -394,7 +470,9 @@ fn transformer(
             y_shunt_to: half_shunt,
             ratio: C::polar(ratio, shift),
         },
-        Rating::Power { sn_mva: rated_mva * parallel },
+        // The nominal voltages here are the windings' own, untapped: a tap changes what the
+        // transformer does to the network, not what its windings are built to carry.
+        Rating::Winding { sn_mva: rated_mva * parallel * value("power:df", 1.0), vn_from_kv: vn_hv, vn_to_kv: vn_lv },
     ))
 }
 
@@ -413,9 +491,11 @@ pub fn loadings(model: &Model, solution: &flow::Solution) -> Vec<Option<f64>> {
                 let to_ka = flow.current_to.abs() * base_current(branch.to);
                 Some(from_ka.max(to_ka) / max_ka * 100.0)
             }
-            Rating::Power { sn_mva } => {
-                let larger = (flow.power_from.abs()).max(flow.power_to.abs()) * model.sn_mva;
-                Some(larger / sn_mva * 100.0)
+            Rating::Winding { sn_mva, vn_from_kv, vn_to_kv } => {
+                let branch = &model.branches[index];
+                let from = flow.current_from.abs() * base_current(branch.from) * vn_from_kv;
+                let to = flow.current_to.abs() * base_current(branch.to) * vn_to_kv;
+                Some(from.max(to) * 3f64.sqrt() / sn_mva * 100.0)
             }
         })
         .collect()
@@ -427,7 +507,7 @@ pub fn loadings(model: &Model, solution: &flow::Solution) -> Vec<Option<f64>> {
 /// own base current. It is the number that sizes a breaker and sets what a protection relay must
 /// survive, and the reason a utility runs the study at all.
 pub fn fault_currents(model: &Model, c_max: f64) -> Result<Vec<f64>, flow::Failure> {
-    let impedance = flow::thevenin(model.buses.len(), &model.branches, &model.shunts)?;
+    let impedance = flow::thevenin(&model.buses, &model.branches)?;
     Ok(impedance
         .iter()
         .enumerate()
