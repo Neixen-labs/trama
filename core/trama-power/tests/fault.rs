@@ -98,3 +98,18 @@ fn a_network_without_a_declared_fault_level_is_refused() {
         Ok(_) => panic!("mv_oberrhein declares no short-circuit power; it cannot be faulted"),
     }
 }
+
+/// The same refusal for the other half of a fault this crate does not model. A synchronous machine
+/// feeds a short circuit; leaving it out understates the current, and understating it is how a
+/// breaker gets chosen that cannot clear the fault it was bought for. `case14` carries four.
+#[test]
+fn a_network_with_synchronous_machines_is_refused_a_fault_study() {
+    let container = compiled("case14.json");
+    match network::model(&container, Study::Fault { c_max: C_MAX }) {
+        Err(message) => assert!(message.contains("subtransient"), "{message}"),
+        Ok(_) => panic!("a generator feeds a fault, and this solver does not model that"),
+    }
+    // The same file still answers the study this crate does model, so the refusal is about the
+    // fault and not about the network.
+    assert!(network::model(&container, Study::Flow { scaling: 1.0 }).is_ok());
+}

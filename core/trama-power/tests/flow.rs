@@ -13,8 +13,16 @@
 //!   for i in net.line.index}, 'trafo': {str(i): float(net.res_trafo.loading_percent[i]) \
 //!   for i in net.trafo.index}}, open('oberrhein.solved.json','w'))"
 //! ```
+//!
+//! `case14.json` is `pandapower.networks.case14()` saved with `pp.to_json`, and carries what
+//! `mv_oberrhein` has none of: four synchronous machines holding four buses, and a capacitor bank.
+//! Its two golden files add `'gen': {str(int(net.gen.bus[i])): float(net.res_gen.q_mvar[i]) for i
+//! in net.gen.index}` to the dictionary above — keyed by bus, since that is what a delta is written
+//! against. `case14.solved.json` is `pp.runpp(net)` as it stands; `case14.limited.json` is
+//! `net.load.scaling = 1.2` followed by `pp.runpp(net, enforce_q_lims=True)`. Scaling the load
+//! table alone is what `Study::Flow { scaling }` does to this file, which has no static generation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -25,13 +33,21 @@ fn networks() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("networks")
 }
 
-fn compiled() -> Vec<u8> {
-    let import = PowerImporter.load(&networks().join("oberrhein.json"), &BTreeMap::new()).unwrap();
+fn compile(network: &str) -> Vec<u8> {
+    let import = PowerImporter.load(&networks().join(network), &BTreeMap::new()).unwrap();
     trama_format::compile(&import.features, &import.channels, &import.extras).unwrap()
 }
 
+fn compiled() -> Vec<u8> {
+    compile("oberrhein.json")
+}
+
+fn reference(solved: &str) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(networks().join(solved)).unwrap()).unwrap()
+}
+
 fn expected() -> Value {
-    serde_json::from_str(&std::fs::read_to_string(networks().join("oberrhein.solved.json")).unwrap()).unwrap()
+    reference("oberrhein.solved.json")
 }
 
 /// pandapower's index for each node and edge, so a result can be compared row by row.
@@ -161,4 +177,94 @@ fn scaling_the_load_moves_the_voltage_the_way_a_network_does() {
     // More load, lower voltage everywhere that is not held up by the external grid.
     let sagged = light.vm_pu.iter().zip(&heavy.vm_pu).filter(|(a, b)| b < a).count();
     assert!(sagged > light.vm_pu.len() / 2, "only {sagged} buses of {} sagged under load", light.vm_pu.len());
+}
+
+/// IEEE 14-bus, which `mv_oberrhein` cannot test: four synchronous machines holding four buses,
+/// and a capacitor bank on a fifth. Regenerate `case14.solved.json` the way the header describes,
+/// from `pandapower.networks.case14()` saved as `case14.json`, with `gen` keyed by its bus.
+///
+/// Every voltage, every loading, and the reactive power each machine produces — that last one is
+/// the number this network exists to check. A PV bus can hold its magnitude while injecting the
+/// wrong reactive power, and every bus voltage in the file would still match.
+#[test]
+fn a_network_of_voltage_machines_matches_pandapower() {
+    let container = compile("case14.json");
+    let model = network::model(&container, network::Study::Flow { scaling: 1.0 }).unwrap();
+    let solution = flow::solve(&model.buses, &model.branches).unwrap_or_else(|error| panic!("{error}"));
+    let golden = reference("case14.solved.json");
+    let (by_node, by_edge) = indices(&container);
+
+    assert!(solution.limited.is_empty(), "no machine runs out of reactive power at nominal load");
+
+    let (mut worst_vm, mut worst_va, mut worst_q) = (0.0f64, 0.0f64, 0.0f64);
+    let mut machines = 0;
+    for (position, index) in &by_node {
+        let bus = &golden["bus"][index.to_string()];
+        worst_vm = worst_vm.max((solution.vm_pu[*position] - bus[0].as_f64().unwrap()).abs());
+        let difference = (solution.va_rad[*position].to_degrees() - bus[1].as_f64().unwrap()).rem_euclid(360.0);
+        worst_va = worst_va.max(difference.min(360.0 - difference));
+        if let Some(reactive) = golden["gen"][index.to_string()].as_f64() {
+            // What the machine produced, which is the bus's injection less everything that was on
+            // the bus regardless — the same subtraction the solver's limit check makes.
+            let machine = (solution.q_pu[*position] - model.buses[*position].q_pu) * model.sn_mva;
+            worst_q = worst_q.max((machine - reactive).abs());
+            machines += 1;
+        }
+    }
+    assert_eq!(machines, 4, "case14 has four generators besides its slack");
+    assert!(worst_vm < 1e-8, "worst voltage difference {worst_vm:e} p.u.");
+    assert!(worst_va < 1e-6, "worst angle difference {worst_va:e} degrees");
+    assert!(worst_q < 1e-6, "worst machine reactive power difference {worst_q:e} Mvar");
+
+    let mut worst_loading = 0.0f64;
+    for (position, loading) in network::loadings(&model, &solution).iter().enumerate() {
+        let (kind, index) = &by_edge[&position];
+        let reference = golden[kind][index.to_string()].as_f64().unwrap();
+        worst_loading = worst_loading.max((loading.expect("every branch here is rated") - reference).abs());
+    }
+    assert!(worst_loading < 1e-6, "worst loading difference {worst_loading} percentage points");
+}
+
+/// The same network at 120% load, against `pandapower.runpp(..., enforce_q_lims=True)`.
+///
+/// Two machines exceed their reactive limit outright. Pinning them at it pushes a third past its
+/// own — the cascade a single pass would miss — while the fourth keeps regulating. Getting the
+/// count right is not enough: the test asserts *which* machines gave up, because a solver that
+/// pins the wrong one reports a plausible network held up by the wrong machine.
+#[test]
+fn machines_out_of_reactive_power_give_up_in_the_order_pandapower_says() {
+    let container = compile("case14.json");
+    let model = network::model(&container, network::Study::Flow { scaling: 1.2 }).unwrap();
+    let solution = flow::solve(&model.buses, &model.branches).unwrap_or_else(|error| panic!("{error}"));
+    let golden = reference("case14.limited.json");
+    let (by_node, _) = indices(&container);
+
+    // Which machines gave up, and that the third gave up *after* the other two rather than with
+    // them. Within one pass the order carries no meaning — every machine over its limit is pinned
+    // together — so only the pass boundary is asserted, and that boundary is the cascade itself.
+    let gave_up: Vec<i64> = solution.limited.iter().map(|position| by_node[position]).collect();
+    assert_eq!(gave_up.iter().copied().collect::<std::collections::BTreeSet<_>>(), BTreeSet::from([1, 2, 5]));
+    assert_eq!(gave_up[2], 5, "bus 5 only saturates because pinning buses 1 and 2 pushed it there");
+
+    let (mut worst_vm, mut worst_q) = (0.0f64, 0.0f64);
+    for (position, index) in &by_node {
+        let bus = &golden["bus"][index.to_string()];
+        worst_vm = worst_vm.max((solution.vm_pu[*position] - bus[0].as_f64().unwrap()).abs());
+        if let Some(reactive) = golden["gen"][index.to_string()].as_f64() {
+            let machine = (solution.q_pu[*position] - model.buses[*position].q_pu) * model.sn_mva;
+            worst_q = worst_q.max((machine - reactive).abs());
+        }
+    }
+    assert!(worst_vm < 1e-8, "worst voltage difference {worst_vm:e} p.u.");
+    assert!(worst_q < 1e-6, "worst machine reactive power difference {worst_q:e} Mvar");
+
+    // The one still regulating holds its setpoint exactly; the three that gave up do not.
+    let holding: Vec<usize> = (0..model.buses.len()).filter(|bus| !solution.limited.contains(bus)).collect();
+    let regulating = holding
+        .iter()
+        .filter(|bus| matches!(model.buses[**bus].kind, flow::BusKind::Voltage { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(regulating.len(), 1, "one machine is still holding its bus");
+    let bus = *regulating[0];
+    assert!((solution.vm_pu[bus] - model.buses[bus].vm_pu).abs() < 1e-12, "and it holds it exactly");
 }

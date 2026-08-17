@@ -6,10 +6,11 @@
 //! voltage at every bus. What a pandapower column means is [`crate::network`]'s problem; what a
 //! state delta is belongs to [`crate::solver`].
 //!
-//! Scope, chosen deliberately: slack buses and PQ buses. A distribution network is loads, embedded
-//! generation that behaves as negative load, and an infeed at the head — voltage-controlling
-//! generators live upstream of it, in transmission. PV buses are the natural next addition and the
-//! Jacobian is already blocked for them, so adding them changes the assembly, not the structure.
+//! Three kinds of bus: slack, PQ, and PV — a machine holding a voltage by injecting whatever
+//! reactive power that takes, until it reaches a limit it declares and stops holding it. The last
+//! is what makes this a transmission solver as well as a distribution one, and the limit is what
+//! makes it an honest one: a generator asked for more reactive power than it has stops controlling
+//! voltage, and a study that ignores that reports a network held up by machines that cannot do it.
 
 use std::fmt;
 
@@ -98,16 +99,35 @@ pub enum BusKind {
     Slack,
     /// Power injected, voltage free: a load, embedded generation, or a junction with neither.
     Load,
+    /// Voltage magnitude imposed, reactive power free between the limits a machine declares:
+    /// a synchronous generator on automatic voltage regulation. Its real power is the bus's
+    /// `p_pu` like any other injection; how much reactive power holding the voltage costs is
+    /// what the study answers. A machine that declares no limits carries ±∞ and always holds.
+    Voltage { q_min_pu: f64, q_max_pu: f64 },
 }
 
 pub struct Bus {
     pub kind: BusKind,
     /// Net injection in per-unit on the system base, generation positive.
     pub p_pu: f64,
+    /// The reactive injection that is *not* the voltage machine's: load, static generation, a
+    /// synchronous machine's own consumption. What a [`BusKind::Voltage`] machine adds on top of
+    /// this is an answer rather than an input, which is why its limits live on the kind.
     pub q_pu: f64,
-    /// The imposed voltage of a slack, and the flat start of everything else.
+    /// The imposed voltage of a slack or a voltage machine, and the flat start of everything else.
     pub vm_pu: f64,
     pub va_rad: f64,
+    /// Admittance to earth at this bus: a shunt capacitor or reactor under a load flow, and the
+    /// source impedance of an external grid under a fault. Both are the same thing to the matrix.
+    pub y_shunt: C,
+}
+
+impl Bus {
+    /// A bus injecting nothing, holding nothing, and earthed by nothing: the starting point every
+    /// importer fills in from there.
+    pub fn floating() -> Bus {
+        Bus { kind: BusKind::Load, p_pu: 0.0, q_pu: 0.0, vm_pu: 1.0, va_rad: 0.0, y_shunt: C::ZERO }
+    }
 }
 
 /// One two-port in π, with an optional complex turns ratio: a line, or a transformer.
@@ -159,6 +179,14 @@ pub struct Solution {
     pub vm_pu: Vec<f64>,
     /// Voltage angle per bus, radians.
     pub va_rad: Vec<f64>,
+    /// Reactive power each bus injects into the network once solved, per-unit. For a bus holding
+    /// a voltage this is the machine's output plus whatever else sits on the bus, and is the
+    /// quantity its limits are checked against.
+    pub q_pu: Vec<f64>,
+    /// Buses whose machine ran out of reactive power and stopped holding its voltage, in the order
+    /// they gave up. An operator reading a low voltage wants this list before anything else on the
+    /// map: it names the machines that are no longer regulating, which is why the voltage moved.
+    pub limited: Vec<usize>,
     pub iterations: usize,
 }
 
@@ -212,8 +240,8 @@ const MAX_ITERATIONS: usize = 30;
 /// where this is milliseconds. Past a few thousand it is the wrong structure and the answer is a
 /// sparse matrix with an LU that reuses its ordering across iterations — the Jacobian's sparsity
 /// pattern never changes between them.
-pub fn admittances(buses: usize, branches: &[Branch]) -> Vec<Vec<C>> {
-    let mut y = vec![vec![C::ZERO; buses]; buses];
+pub fn admittances(buses: &[Bus], branches: &[Branch]) -> Vec<Vec<C>> {
+    let mut y = vec![vec![C::ZERO; buses.len()]; buses.len()];
     for branch in branches {
         let (f, t) = (branch.from, branch.to);
         let c = branch.coefficients();
@@ -222,47 +250,138 @@ pub fn admittances(buses: usize, branches: &[Branch]) -> Vec<Vec<C>> {
         y[t][f] = y[t][f] + c.tf;
         y[t][t] = y[t][t] + c.tt;
     }
+    // A shunt is a branch with one end at earth, so it lands on the diagonal and nowhere else.
+    for (bus, earthed) in buses.iter().enumerate() {
+        y[bus][bus] = y[bus][bus] + earthed.y_shunt;
+    }
     y
 }
 
-/// Newton-Raphson in polar coordinates, from the flat start each bus carries.
+/// Newton-Raphson in polar coordinates, with reactive limits enforced around it.
+///
+/// Two loops. The inner one is Newton on a fixed set of bus kinds; the outer one asks what each
+/// voltage machine had to inject to hold its bus, and takes the voltage control away from any that
+/// exceeded what it declared it could deliver — the machine is pinned at its limit and its bus
+/// becomes a PQ bus. Once taken away, control is never given back: a machine released to hold its
+/// voltage again would be released into the very conditions that saturated it, and the two states
+/// would alternate for as long as anyone let them.
+///
+/// The outer loop terminates because each pass converts at least one voltage bus and never the
+/// reverse, so it runs at most once per machine. It is also why saturation cascades correctly:
+/// the reactive power a pinned machine stops supplying is picked up by the ones still regulating,
+/// which is how a network actually collapses, and a single pass would miss every machine but the
+/// first to give up.
 pub fn solve(buses: &[Bus], branches: &[Branch]) -> Result<Solution, Failure> {
     energised(buses, branches)?;
 
     let n = buses.len();
-    let y = admittances(n, branches);
+    let y = admittances(buses, branches);
     let mut vm: Vec<f64> = buses.iter().map(|bus| bus.vm_pu).collect();
     let mut va = start_angles(buses, branches);
-    // Slack buses are known; every other bus contributes an angle and a magnitude unknown.
-    let free: Vec<usize> = (0..n).filter(|&i| buses[i].kind != BusKind::Slack).collect();
-    let m = free.len();
-    if m == 0 {
-        return Ok(Solution { vm_pu: vm, va_rad: va, iterations: 0 });
+    let p: Vec<f64> = buses.iter().map(|bus| bus.p_pu).collect();
+    // What each bus injects reactively before its machine is asked for anything. A machine that
+    // saturates has its output folded in here and stops being free.
+    let mut q: Vec<f64> = buses.iter().map(|bus| bus.q_pu).collect();
+    let mut kind: Vec<BusKind> = buses.iter().map(|bus| bus.kind).collect();
+    let mut limited = Vec::new();
+    let mut iterations = 0;
+
+    loop {
+        let solution = newton(&y, &p, &q, &kind, &mut vm, &mut va)?;
+        iterations += solution.iterations;
+
+        // What the machine itself had to produce: everything the bus injects, less what was on the
+        // bus regardless. Checked after convergence rather than during it, because a mismatch
+        // mid-iteration is an artefact of the step, not a statement about the machine.
+        let saturated: Vec<(usize, f64)> = (0..n)
+            .filter_map(|bus| match kind[bus] {
+                BusKind::Voltage { q_min_pu, q_max_pu } => {
+                    let machine = solution.q_pu[bus] - q[bus];
+                    if machine > q_max_pu {
+                        Some((bus, q_max_pu))
+                    } else if machine < q_min_pu {
+                        Some((bus, q_min_pu))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        if saturated.is_empty() {
+            return Ok(Solution { limited, iterations, ..solution });
+        }
+        for (bus, limit) in saturated {
+            kind[bus] = BusKind::Load;
+            q[bus] += limit;
+            limited.push(bus);
+        }
+    }
+}
+
+/// One Newton-Raphson solve with the bus kinds held fixed.
+///
+/// A slack contributes no unknown. A PQ bus contributes both an angle and a magnitude, and both
+/// mismatches. A PV bus contributes only an angle and only the real mismatch: its magnitude is
+/// imposed, and the reactive power that imposition costs is read off the answer rather than solved
+/// for. So the system is not square in the two halves the way a PQ-only network is, and the
+/// Jacobian is assembled from two index lists instead of one.
+fn newton(
+    y: &[Vec<C>],
+    p: &[f64],
+    q: &[f64],
+    kind: &[BusKind],
+    vm: &mut [f64],
+    va: &mut [f64],
+) -> Result<Solution, Failure> {
+    let n = kind.len();
+    let angles: Vec<usize> = (0..n).filter(|&i| kind[i] != BusKind::Slack).collect();
+    let magnitudes: Vec<usize> = (0..n).filter(|&i| kind[i] == BusKind::Load).collect();
+    let (a, m) = (angles.len(), magnitudes.len());
+    if a == 0 {
+        let (_, injected) = injections(y, vm, va);
+        return Ok(Solution {
+            vm_pu: vm.to_vec(),
+            va_rad: va.to_vec(),
+            q_pu: injected,
+            limited: Vec::new(),
+            iterations: 0,
+        });
     }
 
     for iteration in 1..=MAX_ITERATIONS {
-        let (p, q) = injections(&y, &vm, &va);
+        let (injected_p, injected_q) = injections(y, vm, va);
         // Mismatch: what the bus is asked to inject, minus what the voltages say it does.
-        let mut residual = vec![0.0; 2 * m];
-        for (slot, &bus) in free.iter().enumerate() {
-            residual[slot] = buses[bus].p_pu - p[bus];
-            residual[m + slot] = buses[bus].q_pu - q[bus];
+        let mut residual = vec![0.0; a + m];
+        for (slot, &bus) in angles.iter().enumerate() {
+            residual[slot] = p[bus] - injected_p[bus];
         }
-        let (worst_bus, worst) = free
+        for (slot, &bus) in magnitudes.iter().enumerate() {
+            residual[a + slot] = q[bus] - injected_q[bus];
+        }
+        let (worst_bus, worst) = residual
             .iter()
             .enumerate()
-            .map(|(slot, &bus)| (bus, residual[slot].abs().max(residual[m + slot].abs())))
+            .map(|(slot, value)| (if slot < a { angles[slot] } else { magnitudes[slot - a] }, value.abs()))
             .fold((0, 0.0f64), |best, current| if current.1 > best.1 { current } else { best });
         if worst < TOLERANCE_PU {
-            return Ok(Solution { vm_pu: vm, va_rad: va, iterations: iteration - 1 });
+            return Ok(Solution {
+                vm_pu: vm.to_vec(),
+                va_rad: va.to_vec(),
+                q_pu: injected_q,
+                limited: Vec::new(),
+                iterations: iteration - 1,
+            });
         }
 
-        let jacobian = jacobian(&y, &vm, &va, &p, &q, &free);
+        let jacobian = jacobian(y, vm, va, &injected_p, &injected_q, &angles, &magnitudes);
         let step = gaussian(jacobian, residual)
-            .map_err(|row| Failure::Singular { bus: free[if row < m { row } else { row - m }] })?;
-        for (slot, &bus) in free.iter().enumerate() {
+            .map_err(|row| Failure::Singular { bus: if row < a { angles[row] } else { magnitudes[row - a] } })?;
+        for (slot, &bus) in angles.iter().enumerate() {
             va[bus] += step[slot];
-            vm[bus] += step[m + slot];
+        }
+        for (slot, &bus) in magnitudes.iter().enumerate() {
+            vm[bus] += step[a + slot];
         }
         if iteration == MAX_ITERATIONS {
             return Err(Failure::NoConvergence { iterations: MAX_ITERATIONS, worst_bus, worst_mismatch_pu: worst });
@@ -348,18 +467,16 @@ fn start_angles(buses: &[Bus], branches: &[Branch]) -> Vec<f64> {
 /// computed on the way there; a network large enough for that to matter wants the sparse
 /// factorisation the `admittances` note describes, and would then want a different entry point
 /// too, since the sparse answer for one bus is cheaper than for all of them.
-pub fn thevenin(buses: usize, branches: &[Branch], shunts: &[(usize, C)]) -> Result<Vec<C>, Failure> {
-    let mut y = admittances(buses, branches);
-    for (bus, admittance) in shunts {
-        y[*bus][*bus] = y[*bus][*bus] + *admittance;
-    }
+pub fn thevenin(buses: &[Bus], branches: &[Branch]) -> Result<Vec<C>, Failure> {
+    let y = admittances(buses, branches);
+    let n = buses.len();
     // Solve Y·Z = I one column at a time, sharing the elimination: the matrix is factored once
     // and every column of the identity is carried through it.
-    let identity: Vec<Vec<C>> = (0..buses)
-        .map(|column| (0..buses).map(|row| if row == column { C::new(1.0, 0.0) } else { C::ZERO }).collect())
+    let identity: Vec<Vec<C>> = (0..n)
+        .map(|column| (0..n).map(|row| if row == column { C::new(1.0, 0.0) } else { C::ZERO }).collect())
         .collect();
     let inverse = gaussian_complex(y, identity).map_err(|bus| Failure::Singular { bus })?;
-    Ok((0..buses).map(|bus| inverse[bus][bus]).collect())
+    Ok((0..n).map(|bus| inverse[bus][bus]).collect())
 }
 
 /// Gaussian elimination with partial pivoting over complex numbers, with many right-hand sides.
@@ -424,30 +541,60 @@ fn injections(y: &[Vec<C>], vm: &[f64], va: &[f64]) -> (Vec<f64>, Vec<f64>) {
 /// Written from the standard derivation rather than by difference quotients: a numerical Jacobian
 /// converges too, and then quadratically only until the step size reaches the differencing error,
 /// which is precisely where a hard network needs it most.
-fn jacobian(y: &[Vec<C>], vm: &[f64], va: &[f64], p: &[f64], q: &[f64], free: &[usize]) -> Vec<Vec<f64>> {
-    let m = free.len();
-    let mut j = vec![vec![0.0; 2 * m]; 2 * m];
-    for (row, &i) in free.iter().enumerate() {
-        for (column, &k) in free.iter().enumerate() {
-            let (g, b) = (y[i][k].re, y[i][k].im);
-            if i == k {
-                let vsq = vm[i] * vm[i];
-                j[row][column] = -q[i] - b * vsq; // ∂P/∂θ
-                j[row][m + column] = p[i] / vm[i] + g * vm[i]; // ∂P/∂|V|
-                j[m + row][column] = p[i] - g * vsq; // ∂Q/∂θ
-                j[m + row][m + column] = q[i] / vm[i] - b * vm[i]; // ∂Q/∂|V|
-            } else {
-                let delta = va[i] - va[k];
-                let (sin, cos) = delta.sin_cos();
-                let product = vm[i] * vm[k];
-                j[row][column] = product * (g * sin - b * cos);
-                j[row][m + column] = vm[i] * (g * cos + b * sin);
-                j[m + row][column] = -product * (g * cos + b * sin);
-                j[m + row][m + column] = vm[i] * (g * sin - b * cos);
-            }
+///
+/// `angles` are the buses whose angle is unknown, `magnitudes` those whose magnitude is too. They
+/// are the same list only when no bus holds a voltage; a PV bus appears in the first and not the
+/// second, which is what makes the matrix rectangular in its blocks and square overall.
+fn jacobian(
+    y: &[Vec<C>],
+    vm: &[f64],
+    va: &[f64],
+    p: &[f64],
+    q: &[f64],
+    angles: &[usize],
+    magnitudes: &[usize],
+) -> Vec<Vec<f64>> {
+    let (a, m) = (angles.len(), magnitudes.len());
+    let mut j = vec![vec![0.0; a + m]; a + m];
+    for (row, &i) in angles.iter().enumerate() {
+        for (column, &k) in angles.iter().enumerate() {
+            j[row][column] = derivatives(y, vm, va, p, q, i, k)[0];
+        }
+        for (column, &k) in magnitudes.iter().enumerate() {
+            j[row][a + column] = derivatives(y, vm, va, p, q, i, k)[1];
+        }
+    }
+    for (row, &i) in magnitudes.iter().enumerate() {
+        for (column, &k) in angles.iter().enumerate() {
+            j[a + row][column] = derivatives(y, vm, va, p, q, i, k)[2];
+        }
+        for (column, &k) in magnitudes.iter().enumerate() {
+            j[a + row][a + column] = derivatives(y, vm, va, p, q, i, k)[3];
         }
     }
     j
+}
+
+/// `[∂P/∂θ, ∂P/∂|V|, ∂Q/∂θ, ∂Q/∂|V|]` of bus `i` with respect to bus `k`.
+///
+/// All four at once because they share the same trigonometry, and because the diagonal and the
+/// off-diagonal are different formulas rather than one formula with a special case — keeping them
+/// in one place is what stops the blocks from drifting apart.
+fn derivatives(y: &[Vec<C>], vm: &[f64], va: &[f64], p: &[f64], q: &[f64], i: usize, k: usize) -> [f64; 4] {
+    let (g, b) = (y[i][k].re, y[i][k].im);
+    if i == k {
+        let vsq = vm[i] * vm[i];
+        [-q[i] - b * vsq, p[i] / vm[i] + g * vm[i], p[i] - g * vsq, q[i] / vm[i] - b * vm[i]]
+    } else {
+        let (sin, cos) = (va[i] - va[k]).sin_cos();
+        let product = vm[i] * vm[k];
+        [
+            product * (g * sin - b * cos),
+            vm[i] * (g * cos + b * sin),
+            -product * (g * cos + b * sin),
+            vm[i] * (g * sin - b * cos),
+        ]
+    }
 }
 
 /// Solve `a·x = b` by Gaussian elimination with partial pivoting.
@@ -525,10 +672,8 @@ mod tests {
     /// is that Newton-Raphson finds the same numbers the algebra does.
     #[test]
     fn two_bus_feeder_matches_the_algebra() {
-        let buses = vec![
-            Bus { kind: BusKind::Slack, p_pu: 0.0, q_pu: 0.0, vm_pu: 1.0, va_rad: 0.0 },
-            Bus { kind: BusKind::Load, p_pu: -0.5, q_pu: -0.2, vm_pu: 1.0, va_rad: 0.0 },
-        ];
+        let buses =
+            vec![Bus { kind: BusKind::Slack, ..Bus::floating() }, Bus { p_pu: -0.5, q_pu: -0.2, ..Bus::floating() }];
         let branches = vec![Branch {
             from: 0,
             to: 1,
@@ -555,7 +700,7 @@ mod tests {
         // same branch. If this passes with a real ratio, the shift is being dropped somewhere.
         let shift = C::polar(1.0, 30f64.to_radians());
         let y = admittances(
-            2,
+            &[Bus::floating(), Bus::floating()],
             &[Branch {
                 from: 0,
                 to: 1,
@@ -574,12 +719,82 @@ mod tests {
         assert!((rotation - 1.0).abs() < 1e-12, "the two differ by a pure rotation");
     }
 
+    /// A line between two buses, one holding 1.05 p.u. and free to do so. The test is that it
+    /// holds it exactly: a PV bus whose magnitude moved at all would mean the unknown was solved
+    /// for rather than imposed, which is the whole difference between PV and PQ.
+    #[test]
+    fn a_voltage_bus_holds_its_magnitude_and_pays_for_it_in_reactive_power() {
+        let buses = vec![
+            Bus { kind: BusKind::Slack, ..Bus::floating() },
+            Bus {
+                kind: BusKind::Voltage { q_min_pu: f64::NEG_INFINITY, q_max_pu: f64::INFINITY },
+                p_pu: -0.5,
+                q_pu: -0.2,
+                vm_pu: 1.05,
+                ..Bus::floating()
+            },
+        ];
+        let branches = vec![Branch {
+            from: 0,
+            to: 1,
+            y_series: C::new(0.0, -10.0),
+            y_shunt_from: C::ZERO,
+            y_shunt_to: C::ZERO,
+            ratio: C::new(1.0, 0.0),
+        }];
+        let solution = solve(&buses, &branches).unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(solution.vm_pu[1], 1.05, "the machine holds its bus exactly");
+        assert!(solution.limited.is_empty(), "a machine with no limits never gives up");
+        // Holding a bus above the slack while drawing real power through a reactance takes
+        // reactive power the load does not supply, so the machine is producing it.
+        let machine = solution.q_pu[1] - buses[1].q_pu;
+        assert!(machine > 0.0, "the machine produces reactive power to hold 1.05: {machine}");
+    }
+
+    /// The same network with the machine's reactive power capped below what holding 1.05 costs.
+    /// It should stop holding, land on the cap exactly, and say so.
+    #[test]
+    fn a_machine_out_of_reactive_power_stops_holding_its_voltage() {
+        let unlimited = vec![
+            Bus { kind: BusKind::Slack, ..Bus::floating() },
+            Bus {
+                kind: BusKind::Voltage { q_min_pu: f64::NEG_INFINITY, q_max_pu: f64::INFINITY },
+                p_pu: -0.5,
+                q_pu: -0.2,
+                vm_pu: 1.05,
+                ..Bus::floating()
+            },
+        ];
+        let branches = vec![Branch {
+            from: 0,
+            to: 1,
+            y_series: C::new(0.0, -10.0),
+            y_shunt_from: C::ZERO,
+            y_shunt_to: C::ZERO,
+            ratio: C::new(1.0, 0.0),
+        }];
+        let needed = {
+            let free = solve(&unlimited, &branches).unwrap();
+            free.q_pu[1] - unlimited[1].q_pu
+        };
+
+        let cap = needed / 2.0;
+        let mut buses = unlimited;
+        buses[1].kind = BusKind::Voltage { q_min_pu: f64::NEG_INFINITY, q_max_pu: cap };
+        let solution = solve(&buses, &branches).unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(solution.limited, vec![1], "the machine that gave up is named");
+        assert!((solution.q_pu[1] - buses[1].q_pu - cap).abs() < 1e-9, "it sits on its limit exactly");
+        assert!(solution.vm_pu[1] < 1.05, "and its bus falls away: {}", solution.vm_pu[1]);
+    }
+
     #[test]
     fn an_island_with_no_slack_is_named_not_solved() {
         let buses = vec![
-            Bus { kind: BusKind::Slack, p_pu: 0.0, q_pu: 0.0, vm_pu: 1.0, va_rad: 0.0 },
-            Bus { kind: BusKind::Load, p_pu: -0.1, q_pu: 0.0, vm_pu: 1.0, va_rad: 0.0 },
-            Bus { kind: BusKind::Load, p_pu: -0.1, q_pu: 0.0, vm_pu: 1.0, va_rad: 0.0 },
+            Bus { kind: BusKind::Slack, ..Bus::floating() },
+            Bus { p_pu: -0.1, ..Bus::floating() },
+            Bus { p_pu: -0.1, ..Bus::floating() },
         ];
         let branches = vec![Branch {
             from: 0,
