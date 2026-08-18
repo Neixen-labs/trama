@@ -10,6 +10,7 @@
 
 use serde_json::{Value, json};
 use trama_format::{compile, parse_graph, read_sections};
+use trama_routing::Turns;
 use trama_routing::fleet::{self, Fleet};
 
 fn line(id: &str, coordinates: Value) -> Value {
@@ -142,7 +143,7 @@ fn matrix(graph: &trama_format::Graph, costs: &[f64], points: &[usize]) -> Vec<V
                     if from == to {
                         0.0
                     } else {
-                        let leg = trama_routing::plan(graph, costs, &[*from, *to]).unwrap();
+                        let leg = trama_routing::plan(graph, costs, &no_turns(), &[*from, *to]).unwrap();
                         *leg.reached_at.last().unwrap()
                     }
                 })
@@ -165,7 +166,7 @@ fn every_stop_is_served_once_and_no_vehicle_is_overloaded() {
         capacity: 10.0,
         vehicles: 3,
     };
-    let plan = fleet::plan(&graph, &costs, &fleet).unwrap_or_else(|error| panic!("{error}"));
+    let plan = fleet::plan(&graph, &costs, &no_turns(), &fleet).unwrap_or_else(|error| panic!("{error}"));
 
     let mut served: Vec<usize> = plan.iter().flat_map(|assignment| assignment.stops.clone()).collect();
     served.sort();
@@ -189,7 +190,7 @@ fn the_plan_is_within_a_tenth_of_the_true_optimum() {
     let stops = nodes[1..6].to_vec();
     let demands = vec![4.0, 4.0, 4.0, 4.0, 4.0];
     let fleet = Fleet { depot: nodes[0], stops: stops.clone(), demands: demands.clone(), capacity: 10.0, vehicles: 3 };
-    let plan = fleet::plan(&graph, &costs, &fleet).unwrap();
+    let plan = fleet::plan(&graph, &costs, &no_turns(), &fleet).unwrap();
     let planned = fleet::total_cost(&plan);
 
     let mut points = vec![nodes[0]];
@@ -217,7 +218,7 @@ fn a_stop_bigger_than_a_vehicle_is_refused_rather_than_split() {
         capacity: 10.0,
         vehicles: 4,
     };
-    match fleet::plan(&graph, &costs, &fleet) {
+    match fleet::plan(&graph, &costs, &no_turns(), &fleet) {
         Err(message) => assert!(message.contains("no vehicle can serve it"), "{message}"),
         Ok(_) => panic!("a load no vehicle can carry has no plan, and splitting it invents one"),
     }
@@ -237,8 +238,13 @@ fn too_few_vehicles_says_how_many_it_would_need() {
         capacity: 10.0,
         vehicles: 1,
     };
-    match fleet::plan(&graph, &costs, &fleet) {
+    match fleet::plan(&graph, &costs, &no_turns(), &fleet) {
         Err(message) => assert!(message.contains("vehicles"), "{message}"),
         Ok(plan) => panic!("32 units of demand cannot fit in one 10-unit van: {} rounds", plan.len()),
     }
+}
+
+/// No turn restrictions: what every test here but the restriction ones asks for.
+fn no_turns() -> Turns {
+    Turns::new()
 }

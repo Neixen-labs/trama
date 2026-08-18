@@ -3,6 +3,7 @@
 
 use serde_json::{Value, json};
 use trama_format::{compile, parse_graph, read_sections};
+use trama_routing::Turns;
 use trama_routing::{Parameters, plan, solve};
 
 const CHANNEL: fn() -> Value = || json!({"name": "on_route", "entity_kind": "edge", "unit": "1", "min": 0, "max": 1});
@@ -74,7 +75,7 @@ fn the_route_takes_the_shorter_way_round() {
     let lengths = lengths_of(&container);
     let (from, to) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.7000, 40.4160));
 
-    let route = plan(&graph, &lengths, &[from, to]).unwrap();
+    let route = plan(&graph, &lengths, &no_turns(), &[from, to]).unwrap();
 
     assert_eq!(route.edges.len(), 1, "the single south side beats three north ones");
 }
@@ -88,8 +89,8 @@ fn a_one_way_edge_cannot_be_crossed_against_its_direction() {
     let lengths = lengths_of(&container);
     let (a, d) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.7000, 40.4160));
 
-    let with_the_flow = plan(&graph, &lengths, &[a, d]).unwrap();
-    let against_it = plan(&graph, &lengths, &[d, a]).unwrap();
+    let with_the_flow = plan(&graph, &lengths, &no_turns(), &[a, d]).unwrap();
+    let against_it = plan(&graph, &lengths, &no_turns(), &[d, a]).unwrap();
 
     assert_eq!(with_the_flow.edges.len(), 1, "the one-way side is still the shortest way there");
     assert_eq!(against_it.edges.len(), 3, "coming back has to go round");
@@ -102,7 +103,7 @@ fn an_undirected_block_lets_the_short_side_serve_both_ways() {
     let lengths = lengths_of(&container);
     let (a, d) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.7000, 40.4160));
 
-    assert_eq!(plan(&graph, &lengths, &[d, a]).unwrap().edges.len(), 1);
+    assert_eq!(plan(&graph, &lengths, &no_turns(), &[d, a]).unwrap().edges.len(), 1);
 }
 
 #[test]
@@ -114,8 +115,8 @@ fn waypoints_are_visited_in_the_order_given() {
     let c = node_at(&container, -3.7000, 40.4200);
     let d = node_at(&container, -3.7000, 40.4160);
 
-    let direct = plan(&graph, &lengths, &[a, d]).unwrap();
-    let via_c = plan(&graph, &lengths, &[a, c, d]).unwrap();
+    let direct = plan(&graph, &lengths, &no_turns(), &[a, d]).unwrap();
+    let via_c = plan(&graph, &lengths, &no_turns(), &[a, c, d]).unwrap();
 
     assert_eq!(direct.edges.len(), 1);
     assert!(via_c.edges.len() > direct.edges.len(), "a detour is longer than the direct route");
@@ -126,7 +127,7 @@ fn waypoints_are_visited_in_the_order_given() {
 fn a_route_needs_at_least_two_waypoints() {
     let container = compile(&block(false), &[CHANNEL()], &[]).unwrap();
 
-    let outcome = plan(&graph_of(&container), &lengths_of(&container), &[0]);
+    let outcome = plan(&graph_of(&container), &lengths_of(&container), &no_turns(), &[0]);
 
     assert!(outcome.err().unwrap().contains("at least two waypoints"));
 }
@@ -135,7 +136,7 @@ fn a_route_needs_at_least_two_waypoints() {
 fn a_waypoint_outside_the_graph_is_rejected() {
     let container = compile(&block(false), &[CHANNEL()], &[]).unwrap();
 
-    let outcome = plan(&graph_of(&container), &lengths_of(&container), &[0, 999]);
+    let outcome = plan(&graph_of(&container), &lengths_of(&container), &no_turns(), &[0, 999]);
 
     assert!(outcome.err().unwrap().contains("names no node"));
 }
@@ -150,7 +151,7 @@ fn an_unreachable_waypoint_is_an_error_rather_than_an_empty_route() {
     let a = node_at(&container, -3.7040, 40.4160);
     let island = node_at(&container, -3.600, 40.500);
 
-    let outcome = plan(&graph, &lengths_of(&container), &[a, island]);
+    let outcome = plan(&graph, &lengths_of(&container), &no_turns(), &[a, island]);
 
     assert!(outcome.err().unwrap().contains("no route"));
 }
@@ -247,7 +248,7 @@ fn naming_a_speed_column_turns_the_shortest_route_into_the_fastest_one() {
     let graph = graph_of(&container);
     let (a, d) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.7000, 40.4160));
 
-    let by_distance = plan(&graph, &lengths_of(&container), &[a, d]).unwrap();
+    let by_distance = plan(&graph, &lengths_of(&container), &no_turns(), &[a, d]).unwrap();
     let stream = solve(&container, &with_speed_column(vec![a, d]), 0.0, 600.0).unwrap();
 
     assert_eq!(by_distance.edges.len(), 1, "by distance the short side wins");
@@ -284,7 +285,7 @@ fn the_arrival_time_is_a_clock_reading_not_a_distance() {
     // checkable: the first instant an edge reads as reached is its metre count, to the step.
     let container = compile(&block_with_speeds(1.0, 1.0), &[CHANNEL()], &[]).unwrap();
     let (a, d) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.7000, 40.4160));
-    let route = plan(&graph_of(&container), &lengths_of(&container), &[a, d]).unwrap();
+    let route = plan(&graph_of(&container), &lengths_of(&container), &no_turns(), &[a, d]).unwrap();
 
     let stream = solve(&container, &with_speed_column(vec![a, d]), 0.0, 1200.0).unwrap();
 
@@ -295,4 +296,140 @@ fn the_arrival_time_is_a_clock_reading_not_a_distance() {
         .fold(f32::INFINITY, f32::min);
     let metres = route.reached_at[0];
     assert!((arrival as f64 - metres).abs() <= 60.0, "arrival {arrival} against {metres} m at 1 m/s");
+}
+
+/// No turn restrictions: what every test here but the restriction ones asks for.
+fn no_turns() -> Turns {
+    Turns::new()
+}
+
+/// A junction with a detour: `a-b-c` is the short way, `a-d-c` the long way round.
+///
+/// ```text
+///   a --- b --- c      short: ab, bc
+///    \         /
+///     --- d ---        long:  ad, dc
+/// ```
+fn detour() -> Vec<Value> {
+    let a = [-3.7040, 40.4160];
+    let b = [-3.7000, 40.4160];
+    let c = [-3.6960, 40.4160];
+    let d = [-3.7000, 40.4100];
+    vec![
+        line("ab", json!([a, b]), false),
+        line("bc", json!([b, c]), false),
+        line("ad", json!([a, d]), false),
+        line("dc", json!([d, c]), false),
+    ]
+}
+
+/// The index of the edge declared under `name`, so a test can forbid a turn by name.
+fn edge_at(container: &[u8], name: &str) -> usize {
+    let id = trama_format::edge_id(name);
+    graph_of(container).edges.iter().position(|edge| edge.id == id).expect("the edge is in the graph")
+}
+
+fn crossed(container: &[u8], route: &trama_routing::Route) -> Vec<u64> {
+    let graph = graph_of(container);
+    route.edges.iter().map(|index| graph.edges[*index].id).collect()
+}
+
+#[test]
+fn a_forbidden_turn_sends_the_route_the_long_way_round() {
+    let container = compile(&detour(), &[CHANNEL()], &[]).unwrap();
+    let graph = graph_of(&container);
+    let lengths = lengths_of(&container);
+    let (a, c) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.6960, 40.4160));
+
+    let direct = plan(&graph, &lengths, &no_turns(), &[a, c]).unwrap();
+    assert_eq!(
+        crossed(&container, &direct),
+        vec![trama_format::edge_id("ab"), trama_format::edge_id("bc")],
+        "with nothing forbidden the short way wins"
+    );
+
+    // Coming in along `ab`, you may not continue onto `bc`.
+    let forbidden = Turns::from([(edge_at(&container, "ab"), vec![edge_at(&container, "bc")])]);
+    let round = plan(&graph, &lengths, &forbidden, &[a, c]).unwrap();
+
+    assert_eq!(
+        crossed(&container, &round),
+        vec![trama_format::edge_id("ad"), trama_format::edge_id("dc")],
+        "the turn is refused, so the detour is the only way"
+    );
+    let cost = |route: &trama_routing::Route| route.reached_at.last().copied().unwrap();
+    assert!(cost(&round) > cost(&direct), "and it costs more, which is what a restriction does");
+}
+
+/// Why the search settles arcs and not nodes.
+///
+/// ```text
+///   s --------- v --- t     `sv` is the cheap way to v, and may not continue onto `vt`
+///    \         /
+///     -- q ---              `qv` is dearer, and may
+/// ```
+///
+/// A search that settled nodes would reach `v` by `sv`, record that as the way to `v`, and then
+/// find the only road out closed — reporting either no route at all or a path through a turn it
+/// was told not to take. Arriving along `qv` costs more and is the only way through, so the
+/// cheapest route to `t` does not contain the cheapest route to `v`. That is exactly the property
+/// Dijkstra over nodes assumes, and turn restrictions are where it stops holding.
+#[test]
+fn the_cheapest_way_to_a_junction_is_not_always_part_of_the_cheapest_way_through_it() {
+    let s = [-3.7080, 40.4160];
+    let v = [-3.7000, 40.4160];
+    let q = [-3.7040, 40.4100];
+    let t = [-3.6960, 40.4160];
+    let features = vec![
+        line("sv", json!([s, v]), false),
+        line("sq", json!([s, q]), false),
+        line("qv", json!([q, v]), false),
+        line("vt", json!([v, t]), false),
+    ];
+    let container = compile(&features, &[CHANNEL()], &[]).unwrap();
+    let graph = graph_of(&container);
+    let lengths = lengths_of(&container);
+    let (start, end) = (node_at(&container, -3.7080, 40.4160), node_at(&container, -3.6960, 40.4160));
+
+    let forbidden = Turns::from([(edge_at(&container, "sv"), vec![edge_at(&container, "vt")])]);
+    let route = plan(&graph, &lengths, &forbidden, &[start, end]).unwrap();
+
+    assert_eq!(
+        crossed(&container, &route),
+        vec![trama_format::edge_id("sq"), trama_format::edge_id("qv"), trama_format::edge_id("vt")],
+        "the route reaches v the dear way, because the cheap way cannot leave it"
+    );
+}
+
+/// The whole path, from a column in the file to a route that honours it: this is what the road
+/// importer writes and what a caller gets by naming the column.
+#[test]
+fn the_solver_reads_the_restriction_column_the_importer_wrote() {
+    let mut features = detour();
+    features[0]["properties"]["roads:no_turn"] = json!(trama_format::edge_id("bc").to_string());
+    let container = compile(&features, &[CHANNEL()], &[]).unwrap();
+    let (a, c) = (node_at(&container, -3.7040, 40.4160), node_at(&container, -3.6960, 40.4160));
+
+    // Without naming the column the file's restriction is inert: a container carries the fact,
+    // and a caller decides whether this question is one it applies to.
+    let ignored = solve(&container, &parameters(vec![a, c]), 0.0, 0.0).unwrap();
+    let honoured = solve(
+        &container,
+        &Parameters { restriction_property: Some("roads:no_turn".into()), ..parameters(vec![a, c]) },
+        0.0,
+        0.0,
+    )
+    .unwrap();
+
+    // The detour has as many edges as the short way, so counting deltas would prove nothing: it
+    // is *which* edges were written that changed.
+    assert_eq!(
+        routed_edges(&ignored),
+        std::collections::BTreeSet::from([trama_format::edge_id("ab"), trama_format::edge_id("bc")])
+    );
+    assert_eq!(
+        routed_edges(&honoured),
+        std::collections::BTreeSet::from([trama_format::edge_id("ad"), trama_format::edge_id("dc")]),
+        "naming the column is what makes the file's own restriction bite"
+    );
 }

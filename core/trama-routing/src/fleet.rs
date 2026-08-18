@@ -21,7 +21,7 @@ use trama_solver::declared;
 use trama_solver::pack;
 use trama_solver::server::{Rejection, Request, Solver};
 
-use crate::{Parameters, explore, retrace};
+use crate::{Parameters, Turns, explore};
 
 pub struct Fleet {
     /// The node every vehicle starts and ends at.
@@ -56,23 +56,23 @@ struct Distances {
 }
 
 impl Distances {
-    fn build(graph: &Graph, costs: &[f64], points: &[usize]) -> Result<Distances, String> {
+    fn build(graph: &Graph, costs: &[f64], forbidden: &Turns, points: &[usize]) -> Result<Distances, String> {
         let mut cost = vec![vec![f64::INFINITY; points.len()]; points.len()];
         let mut path = vec![vec![Vec::new(); points.len()]; points.len()];
         for (from, origin) in points.iter().enumerate() {
-            let (best, came_from) = explore(graph, costs, *origin, None);
+            let search = explore(graph, costs, forbidden, *origin, None);
             for (to, destination) in points.iter().enumerate() {
                 if from == to {
                     cost[from][to] = 0.0;
                     continue;
                 }
-                if !best.contains_key(&(*destination as u32)) {
+                if !search.cost.contains_key(&(*destination as u32)) {
                     return Err(format!(
                         "no route from node {origin} to node {destination}; a fleet cannot serve a \
                          stop it cannot reach"
                     ));
                 }
-                let legs = retrace(&came_from, *origin, *destination);
+                let legs = search.retrace(*destination);
                 // Summed from the costs themselves, not read off the queue: the search orders its
                 // frontier by a value scaled to thousandths, and a distance rebuilt from that is
                 // out by the rounding of every edge it crossed. Small, and enough to make this
@@ -86,7 +86,7 @@ impl Distances {
 }
 
 /// Assign the stops to vehicles and order each one's round.
-pub fn plan(graph: &Graph, costs: &[f64], fleet: &Fleet) -> Result<Vec<Assignment>, String> {
+pub fn plan(graph: &Graph, costs: &[f64], forbidden: &Turns, fleet: &Fleet) -> Result<Vec<Assignment>, String> {
     if fleet.stops.is_empty() {
         return Err("a fleet needs at least one stop to serve".into());
     }
@@ -112,7 +112,7 @@ pub fn plan(graph: &Graph, costs: &[f64], fleet: &Fleet) -> Result<Vec<Assignmen
 
     let mut points = vec![fleet.depot];
     points.extend(&fleet.stops);
-    let distances = Distances::build(graph, costs, &points)?;
+    let distances = Distances::build(graph, costs, forbidden, &points)?;
 
     let mut routes = savings(&distances, fleet);
     if routes.len() > fleet.vehicles {
@@ -252,7 +252,8 @@ pub fn manifest(assignments: &[Assignment]) -> BTreeMap<usize, Vec<usize>> {
 /// whose parameters are mutually exclusive, which is a schema saying "this is really two things".
 pub struct FleetSolver;
 
-const KNOWN: [&str; 7] = ["channel", "depot", "stops", "demands", "capacity", "vehicles", "speed_property"];
+const KNOWN: [&str; 8] =
+    ["channel", "depot", "stops", "demands", "capacity", "vehicles", "speed_property", "restriction_property"];
 
 impl Solver for FleetSolver {
     fn id(&self) -> &'static str {
@@ -320,10 +321,15 @@ impl Solver for FleetSolver {
         .map_err(Rejection::input)?;
         let parameters = Parameters {
             speed_property: request.params["speed_property"].as_str().map(str::to_string),
+            restriction_property: request.params["restriction_property"].as_str().map(str::to_string),
             ..Default::default()
         };
         let costs = crate::traversal_seconds(&request.container, &graph, &parameters).map_err(Rejection::input)?;
-        let assignments = plan(&graph, &costs, &fleet).map_err(Rejection::input)?;
+        // A van turns like anything else: a fleet that ignored the restrictions would plan rounds
+        // no driver could drive, which is worse than a longer round.
+        let forbidden = crate::forbidden_turns(&request.container, &graph, parameters.restriction_property.as_deref())
+            .map_err(Rejection::input)?;
+        let assignments = plan(&graph, &costs, &forbidden, &fleet).map_err(Rejection::input)?;
 
         // One delta per edge per step, carrying which vehicle has reached it: 0 before anyone
         // does, then the vehicle's own number, so the map colours each round differently and

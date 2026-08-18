@@ -74,10 +74,15 @@ pub fn import(text: &str) -> Result<Import, String> {
     }
 
     let mut features = Vec::new();
+    // OSM node id -> the pieces that end on it, each with the way it came from.
+    let mut touching: BTreeMap<u64, Vec<(u64, String)>> = BTreeMap::new();
     for element in elements {
         if element["type"] != "way" {
             continue;
         }
+        let Some(way_id) = element["id"].as_u64() else {
+            continue;
+        };
         let Some(geometry) = element["geometry"].as_array() else {
             // `out;` without `geom` returns node references rather than positions. Nothing here
             // can resolve those, and a way with no shape is not a road we can place.
@@ -110,12 +115,22 @@ pub fn import(text: &str) -> Result<Import, String> {
         let tag = |key: &str| tags.and_then(|tags| tags.get(key)).and_then(Value::as_str);
         properties.insert("roads:speed_ms".into(), json!(speed_metres_per_second(tag("maxspeed"), tag("highway"))));
 
-        for (piece, span) in split_at_junctions(&coordinates, &nodes, &appearances).iter().enumerate() {
+        let spans = split_at_junctions(&coordinates, &nodes, &appearances);
+        // Which piece of this way touches which OSM node, so a turn restriction naming two ways
+        // and the node between them can find the two pieces that actually meet there. Recorded
+        // while splitting because afterwards the node ids are gone: the compiler joins on
+        // position, and a piece keeps no memory of what OSM called its ends.
+        let boundaries = piece_boundaries(&spans, &coordinates, &nodes);
+        for (piece, span) in spans.iter().enumerate() {
+            let name = format!("osm:way/{}/{piece}", element["id"]);
+            for node in boundaries.get(piece).into_iter().flatten() {
+                touching.entry(*node).or_default().push((way_id, name.clone()));
+            }
             features.push(json!({
                 "type": "Feature",
                 // Stable across recompilations because OSM's own way id is, and the piece index
                 // is stable for as long as the way's node list is.
-                "id": format!("osm:way/{}/{piece}", element["id"]),
+                "id": name,
                 "properties": Value::Object(properties.clone()),
                 "geometry": {"type": "LineString", "coordinates": span.clone()},
             }));
@@ -125,6 +140,7 @@ pub fn import(text: &str) -> Result<Import, String> {
     if features.is_empty() {
         return Err("the extract holds no way with geometry; query with `out geom;`".into());
     }
+    apply_restrictions(elements, &touching, &mut features);
     Ok(Import { features, extras: Vec::new(), channels: channels() })
 }
 
@@ -154,6 +170,110 @@ fn split_at_junctions(coordinates: &[Value], nodes: &[u64], appearances: &BTreeM
     }
     pieces
 }
+
+/// The OSM node at each end of each piece, in the order [`split_at_junctions`] produced them.
+///
+/// A piece is a slice of the way's coordinates, so finding it in the original is what recovers
+/// the node ids at its ends. Positions are compared rather than indices because the split returns
+/// slices and not their bounds — and a way whose node list is out of step with its geometry was
+/// never split, so it has one piece whose ends are the way's own.
+fn piece_boundaries(spans: &[Vec<Value>], coordinates: &[Value], nodes: &[u64]) -> Vec<Vec<u64>> {
+    if nodes.len() != coordinates.len() {
+        return match (nodes.first(), nodes.last()) {
+            (Some(first), Some(last)) => vec![vec![*first, *last]],
+            _ => vec![Vec::new()],
+        };
+    }
+    let mut ends = Vec::with_capacity(spans.len());
+    let mut start = 0;
+    for span in spans {
+        let stop = start + span.len() - 1;
+        ends.push(vec![nodes[start], nodes[stop.min(nodes.len() - 1)]]);
+        start = stop;
+    }
+    ends
+}
+
+/// Writes each turn restriction onto the edge a driver would be arriving on.
+///
+/// An OSM restriction names two ways and the node between them: come in along `from`, and at
+/// `via` you may not take `to`. The pieces are what the graph actually holds, so the relation is
+/// resolved to the one piece of each way that touches `via` — the rest of either way is somewhere
+/// else entirely and unaffected.
+///
+/// `only_*` is the same statement inverted: taking anything but `to` is what is forbidden, so it
+/// expands to a prohibition against every other piece at that node. Storing it expanded rather
+/// than as a mode keeps the reader trivial — a router asks one question, "may I go from here to
+/// there", and never has to know which spelling produced the answer.
+///
+/// ponytail: `via` must be a node. A restriction whose `via` is a way — a no-U-turn across a dual
+/// carriageway, mostly — spans two junctions and cannot be expressed as a property of one edge;
+/// those are skipped, and a router will happily route through them. Expressing them needs the
+/// path-shaped state a property on an edge does not have.
+fn apply_restrictions(elements: &[Value], touching: &BTreeMap<u64, Vec<(u64, String)>>, features: &mut [Value]) {
+    let mut forbidden: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for element in elements {
+        if element["type"] != "relation" || element["tags"]["type"] != "restriction" {
+            continue;
+        }
+        let Some(kind) = element["tags"]["restriction"].as_str() else {
+            continue;
+        };
+        let only = match kind.split('_').next() {
+            Some("no") => false,
+            Some("only") => true,
+            // `restriction=give_way` and friends describe priority, not permission.
+            _ => continue,
+        };
+        let member = |role: &str, kind: &str| {
+            element["members"].as_array()?.iter().find(|member| member["role"] == role && member["type"] == kind)?
+                ["ref"]
+                .as_u64()
+        };
+        // A `via` way is a restriction over a path rather than a turn; see the note above.
+        let (Some(from), Some(via), Some(to)) = (member("from", "way"), member("via", "node"), member("to", "way"))
+        else {
+            continue;
+        };
+        let Some(pieces) = touching.get(&via) else {
+            continue;
+        };
+        let arriving: Vec<&String> = pieces.iter().filter(|(way, _)| *way == from).map(|(_, name)| name).collect();
+        let leaving: Vec<&String> = pieces
+            .iter()
+            .filter(|(way, _)| if only { *way != from && *way != to } else { *way == to })
+            // A `only_*` restriction forbids doubling back as well, but a piece of `from` itself
+            // is the U-turn the `no_u_turn` spelling exists for; leaving it out here keeps the two
+            // spellings from meaning different things about the same movement.
+            .map(|(_, name)| name)
+            .filter(|name| !arriving.contains(name))
+            .collect();
+        for entry in arriving {
+            for exit in &leaving {
+                forbidden.entry(entry.clone()).or_default().push((*exit).clone());
+            }
+        }
+    }
+
+    for feature in features.iter_mut() {
+        let Some(names) = feature["id"].as_str().and_then(|id| forbidden.get(id)) else {
+            continue;
+        };
+        // The stable id of each forbidden edge, space-separated. Identity rather than text: an
+        // edge's id is derived from this same declared string, so the importer can name an edge
+        // the file does not hold yet, and a router reads ids without a lookup table. The rule is
+        // imported from `trama-format` rather than copied — a copy would be a bug the moment the
+        // format changed how it derives one.
+        let mut ids: Vec<String> = names.iter().map(|name| trama_format::edge_id(name).to_string()).collect();
+        ids.sort();
+        ids.dedup();
+        feature["properties"][RESTRICTION_KEY] = json!(ids.join(" "));
+    }
+}
+
+/// The column a router reads to know which turns are forbidden. Domain knowledge, like
+/// `roads:speed_ms`: the router is told the name and never learns what a turn is.
+pub const RESTRICTION_KEY: &str = "roads:no_turn";
 
 /// A travelling speed in metres per second, from the tag if there is one and the road class if not.
 ///
