@@ -76,7 +76,7 @@ pub fn compile(features: &[Value], channels: &[Value], extras: &[Extra]) -> Resu
     for (feature, (id, path)) in lines.iter().zip(&projected_lines) {
         let edge_id = match declared_id(feature)? {
             Some(declared) => declared,
-            None => stable_id(&format!("edge:{}", id)),
+            None => edge_id(id),
         };
         let source = *node_ids.get(&node_cell(path[0])).ok_or("missing source node")?;
         let target = *node_ids.get(&node_cell(path[path.len() - 1])).ok_or("missing target node")?;
@@ -273,6 +273,16 @@ fn declared_directed(feature: &Value) -> Result<bool, String> {
 
 fn number(value: &Value) -> f64 {
     value.as_f64().unwrap_or_default()
+}
+
+/// The id the compiler gives an edge declared under `name`.
+///
+/// Public because an importer sometimes has to name an edge the file does not hold yet: a turn
+/// restriction refers to the edge it forbids, and can only do so by id. The whole rule lives here
+/// — including the `edge:` namespace, without which the digest is of the wrong string and every
+/// reference silently resolves to nothing.
+pub fn edge_id(name: &str) -> u64 {
+    stable_id(&format!("edge:{name}"))
 }
 
 fn stable_id(value: &str) -> u64 {

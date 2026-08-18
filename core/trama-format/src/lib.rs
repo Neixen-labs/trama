@@ -16,7 +16,7 @@ pub use export::{
 };
 pub use import::{Import, Importer, parse_options};
 pub use read::{Adjacency, Edge, GeometryReference, Graph, Node, Section, parse_graph, read_sections};
-pub use write::{Extra, compile};
+pub use write::{Extra, compile, edge_id};
 
 /// CRC-32C (Castagnoli), the checksum every section carries.
 pub(crate) fn crc32c(data: &[u8]) -> u32 {

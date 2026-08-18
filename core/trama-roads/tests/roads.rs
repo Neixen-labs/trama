@@ -248,3 +248,127 @@ fn an_unparseable_limit_falls_back_instead_of_reading_as_zero() {
         assert!((speed - 8.333).abs() < 0.01, "maxspeed={nonsense} gave {speed}");
     }
 }
+
+/// An OSM turn restriction: come in along `from`, and at the `via` node you may not take `to`.
+fn restriction(id: u64, from: u64, via: u64, to: u64, kind: &str) -> Value {
+    json!({
+        "type": "relation",
+        "id": id,
+        "members": [
+            {"type": "way", "ref": from, "role": "from"},
+            {"type": "node", "ref": via, "role": "via"},
+            {"type": "way", "ref": to, "role": "to"},
+        ],
+        "tags": {"type": "restriction", "restriction": kind},
+    })
+}
+
+/// Three ways meeting at node 11: the way in, and two ways out.
+fn junction() -> Vec<Value> {
+    vec![
+        way(1, vec![10, 11], vec![A, B], json!({"highway": "residential"})),
+        way(2, vec![11, 12], vec![B, C], json!({"highway": "residential"})),
+        way(3, vec![11, 13], vec![B, [-3.701, 40.416]], json!({"highway": "residential"})),
+    ]
+}
+
+fn no_turn(imported: &trama_format::Import, id: &str) -> Vec<u64> {
+    let feature = imported.features.iter().find(|f| f["id"] == json!(id)).expect("the piece is there");
+    match feature["properties"].get("roads:no_turn") {
+        None => Vec::new(),
+        Some(value) => value.as_str().unwrap().split(' ').map(|id| id.parse().unwrap()).collect(),
+    }
+}
+
+#[test]
+fn a_forbidden_turn_names_the_edge_it_forbids() {
+    let mut elements = junction();
+    elements.push(restriction(100, 1, 11, 2, "no_left_turn"));
+    let imported = import(&extract(elements)).unwrap();
+
+    // The way in carries the id of the way it may not turn into, and nothing else.
+    assert_eq!(no_turn(&imported, "osm:way/1/0"), vec![trama_format::edge_id("osm:way/2/0")]);
+    // The other exit is untouched, and so is every edge the relation did not name.
+    assert!(no_turn(&imported, "osm:way/2/0").is_empty());
+    assert!(no_turn(&imported, "osm:way/3/0").is_empty());
+}
+
+/// `only_straight_on` is the same statement inverted, and inverting it is the importer's job
+/// rather than the router's: one question — may I go from here to there — with one answer.
+#[test]
+fn a_mandatory_turn_forbids_every_other_exit() {
+    let mut elements = junction();
+    elements.push(restriction(100, 1, 11, 2, "only_straight_on"));
+    let imported = import(&extract(elements)).unwrap();
+
+    assert_eq!(no_turn(&imported, "osm:way/1/0"), vec![trama_format::edge_id("osm:way/3/0")]);
+}
+
+/// A restriction is about one junction, not about a way everywhere it goes. Way 1 runs 9-10-11
+/// and is split at 10 by another street; the `via` is 11, so only the half that reaches 11 may
+/// forbid anything. The other half ends a junction away and a driver on it has not arrived yet.
+#[test]
+fn only_the_piece_that_reaches_the_junction_carries_the_restriction() {
+    let mut elements = vec![
+        way(1, vec![9, 10, 11], vec![[-3.706, 40.414], A, B], json!({"highway": "residential"})),
+        way(2, vec![11, 12], vec![B, C], json!({"highway": "residential"})),
+        // Touches node 10, which is what makes way 1 split there.
+        way(4, vec![10, 15], vec![A, [-3.705, 40.410]], json!({"highway": "residential"})),
+    ];
+    elements.push(restriction(100, 1, 11, 2, "no_right_turn"));
+    let imported = import(&extract(elements)).unwrap();
+
+    assert_eq!(no_turn(&imported, "osm:way/1/1"), vec![trama_format::edge_id("osm:way/2/0")]);
+    assert!(no_turn(&imported, "osm:way/1/0").is_empty(), "a piece that stops short of the junction forbids nothing");
+}
+
+/// A `from` way that runs *through* the `via` node rather than ending at it is ambiguous — OSM
+/// asks for it to be split, and both halves are equally "arriving along way 1". Both halves get
+/// the restriction: forbidding a turn that was allowed costs a longer route, and allowing one that
+/// was forbidden sends a driver the wrong way up a junction.
+#[test]
+fn a_way_running_through_the_via_node_forbids_the_turn_from_both_sides() {
+    let mut elements = vec![
+        way(1, vec![10, 11, 14], vec![A, B, [-3.700, 40.420]], json!({"highway": "residential"})),
+        way(2, vec![11, 12], vec![B, C], json!({"highway": "residential"})),
+    ];
+    elements.push(restriction(100, 1, 11, 2, "no_right_turn"));
+    let imported = import(&extract(elements)).unwrap();
+
+    let forbidden = vec![trama_format::edge_id("osm:way/2/0")];
+    assert_eq!(no_turn(&imported, "osm:way/1/0"), forbidden);
+    assert_eq!(no_turn(&imported, "osm:way/1/1"), forbidden, "both halves arrive along way 1");
+}
+
+/// A restriction whose `via` is a way spans two junctions and cannot be a property of one edge.
+/// It is skipped rather than half-applied — applying it to either junction alone would forbid a
+/// movement the relation does not forbid.
+#[test]
+fn a_restriction_across_a_via_way_is_skipped_rather_than_guessed() {
+    let mut elements = junction();
+    elements.push(json!({
+        "type": "relation",
+        "id": 100,
+        "members": [
+            {"type": "way", "ref": 1, "role": "from"},
+            {"type": "way", "ref": 2, "role": "via"},
+            {"type": "way", "ref": 3, "role": "to"},
+        ],
+        "tags": {"type": "restriction", "restriction": "no_u_turn"},
+    }));
+    let imported = import(&extract(elements)).unwrap();
+
+    for id in ["osm:way/1/0", "osm:way/2/0", "osm:way/3/0"] {
+        assert!(no_turn(&imported, id).is_empty(), "{id} carries a restriction nobody could place");
+    }
+}
+
+/// `restriction=give_way` describes priority, not permission, and nothing may be forbidden by it.
+#[test]
+fn a_relation_that_is_not_a_prohibition_forbids_nothing() {
+    let mut elements = junction();
+    elements.push(restriction(100, 1, 11, 2, "give_way"));
+    let imported = import(&extract(elements)).unwrap();
+
+    assert!(no_turn(&imported, "osm:way/1/0").is_empty());
+}
