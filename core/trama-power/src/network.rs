@@ -228,18 +228,20 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
     // demand and weather; this is a despatch decision, and scaling it would mean answering what
     // the network does at 120% load with a station that also happens to be at 120% output.
     //
-    // Under a fault it is not a slack, not a load, and not nothing: a synchronous machine feeds a
-    // short circuit from behind its subtransient reactance, and IEC 60909 §3.6 corrects that
-    // impedance by a factor of its own. None of that is modelled here, so the study is refused
-    // rather than answered. Leaving the machines out instead would return a fault current lower
-    // than the true one and perfectly plausible — and a breaker chosen from it would fail closed
-    // on the day it was needed. A number that is wrong in the safe direction is still a refusal;
-    // this one is wrong in the other.
-    if matches!(study, Study::Fault { .. }) && !rows(tables, "gen")?.is_empty() {
-        return Err("this network has synchronous generators, which feed a short circuit from \
-                    behind their subtransient reactance; this solver models only the infeed from \
-                    the external grid, so it would understate every current in the study"
-            .into());
+    // Under a fault it is neither slack nor load but a source: a synchronous machine feeds a short
+    // circuit from behind its subtransient reactance, and it is the second largest contribution on
+    // any network that has one. See [`generator`] for the impedance and the correction §3.6 puts
+    // on it.
+    if let Study::Fault { c_max } = study {
+        for row in rows(tables, "gen")? {
+            if !row.get("in_service").and_then(Value::as_bool).unwrap_or(true) {
+                continue;
+            }
+            let Some(position) = row.get("bus").and_then(Value::as_i64).and_then(|bus| by_index.get(&bus)) else {
+                continue;
+            };
+            buses[*position].y_shunt = buses[*position].y_shunt + generator(&row, base_kv[*position], sn_mva, c_max)?;
+        }
     }
     if matches!(study, Study::Flow { .. }) {
         for row in rows(tables, "gen")? {
@@ -474,6 +476,60 @@ fn transformer(
         // transformer does to the network, not what its windings are built to carry.
         Rating::Winding { sn_mva: rated_mva * parallel * value("power:df", 1.0), vn_from_kv: vn_hv, vn_to_kv: vn_lv },
     ))
+}
+
+/// A synchronous machine as a source under a fault: its admittance to earth, per-unit.
+///
+/// The machine is an EMF behind its subtransient impedance, `Z_G = r_dss + j·x″d·vn²/sn` in ohms
+/// at the machine's own rating, and IEC 60909 §3.6 multiplies it by
+///
+/// ```text
+/// K_G = (vn_bus / (vn_gen · (1 + pg%))) · c_max / (1 + x″d · sin φ)
+/// ```
+///
+/// which reconciles two things the standard needs to hold at once: the fault is computed at the
+/// equivalent voltage source `c·Un/√3` rather than at the voltage the machine is actually at, and
+/// a machine's own rated voltage is usually not its bus's nominal. Both ratios are here rather
+/// than assumed to be one, because they only coincide on a machine connected at its own rating —
+/// which is the case that would pass a test written from either.
+///
+/// Every quantity is required and none is defaulted. A machine that declares no `xdss_pu` is a
+/// file that never recorded one, and guessing a reactance would put a source of unknown strength
+/// on the bus; the study says which column is missing instead. This is the same refusal an
+/// external grid without `s_sc_max_mva` already gets, for the same reason.
+fn generator(row: &BTreeMap<String, Value>, base_kv: f64, sn_mva: f64, c_max: f64) -> Result<C, String> {
+    // A power station unit — machine and its step-up transformer as one — carries a different
+    // correction factor, §3.7's `K_S`, computed over the pair rather than the machine. Modelling
+    // it as a bare generator would apply the wrong one, so it is refused rather than approximated.
+    if row.get("power_station_trafo").is_some_and(|value| !value.is_null()) {
+        return Err("a generator declares a power station transformer, which IEC 60909 §3.7 \
+                    corrects as one unit rather than as a machine on a bus; this solver does not \
+                    model that pairing"
+            .into());
+    }
+    let required = |key: &str| {
+        row.get(key)
+            .and_then(Value::as_f64)
+            .ok_or_else(|| format!("a generator declares no '{key}', which a short circuit cannot be computed without"))
+    };
+    let xdss_pu = required("xdss_pu")?;
+    let rated_kv = required("vn_kv")?;
+    let rated_mva = required("sn_mva")?;
+    let cos_phi = required("cos_phi")?;
+    if rated_mva <= 0.0 || rated_kv <= 0.0 {
+        return Err("a generator declares a rating of zero, so it has no impedance".into());
+    }
+    // Absent means the machine runs at its rated voltage, which is what pandapower assumes too.
+    let above_rating = row.get("pg_percent").and_then(Value::as_f64).unwrap_or(0.0) / 100.0;
+
+    let reactance_ohm = xdss_pu * rated_kv * rated_kv / rated_mva;
+    let resistance_ohm = required("rdss_ohm")?;
+    let sin_phi = (1.0 - cos_phi * cos_phi).max(0.0).sqrt();
+    let correction = base_kv / (rated_kv * (1.0 + above_rating)) * c_max / (1.0 + xdss_pu * sin_phi);
+    // Referred to the bus it sits on, which is the base every other impedance here is already in.
+    let base_ohm = base_kv * base_kv / sn_mva;
+    let impedance = C::new(resistance_ohm, reactance_ohm) * C::new(correction / base_ohm, 0.0);
+    Ok(impedance.inv())
 }
 
 /// Loading in percent for each branch, and `None` where the source declared no rating.
