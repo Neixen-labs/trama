@@ -64,18 +64,26 @@ pub fn compile_power(source: &str) -> Result<Vec<u8>, JsError> {
 /// `speed_property` names a `PROP` column holding each edge's own speed in metres per second.
 /// With one the search minimises time, without one distance, and `speed` is the fallback for an
 /// edge whose column holds nothing usable.
+///
+/// `restriction_property` names the column holding, per edge, the edges it may not be followed
+/// by. Naming it makes the route obey the turns a street network actually signs. Nothing else in
+/// this module does yet: an isochrone is `trama-trace`, whose search settles nodes, and a turn
+/// restriction needs the arc-settling one — so `solve_reach` still spreads through junctions a
+/// car may not cross, and says so here rather than looking like it was considered.
 #[wasm_bindgen]
 pub fn solve_route(
     container: &[u8],
     waypoints: &[u32],
     speed: f32,
     speed_property: Option<String>,
+    restriction_property: Option<String>,
     t1_seconds: f32,
 ) -> Result<Vec<u8>, JsError> {
     let parameters = trama_routing::Parameters {
         waypoints: waypoints.iter().map(|index| *index as usize).collect(),
         speed_metres_per_second: speed,
         speed_property,
+        restriction_property,
         ..Default::default()
     };
     trama_routing::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))

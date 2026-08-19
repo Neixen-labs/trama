@@ -803,7 +803,7 @@
           channel: "on_route",
           paints: "on_route",
           needs: "una red de calles con sentidos y velocidades",
-          does: "busca el camino más rápido entre los puntos que elijas, midiendo en tiempo y respetando los sentidos únicos, y marca por dónde va el vehículo en cada instante.",
+          does: "busca el camino más rápido entre los puntos que elijas, midiendo en tiempo y respetando los sentidos únicos y los giros prohibidos, y marca por dónde va el vehículo en cada instante.",
         },
         {
           value: "reach",
@@ -1030,8 +1030,10 @@
                 : choice === "routing"
               // The road importer wrote a speed for every edge, so the search minimises time and
               // a longer fast street can beat a short slow one. The 8 m/s is only the fallback,
-              // for a network compiled without that column.
-              ? wasm.solve_route(container, Uint32Array.from(waypoints), 8, "roads:speed_ms", Number(scrub.max))
+              // for a network compiled without that column. It also wrote the turns OSM forbids,
+              // so the route obeys the no-left-turns rather than driving through them; a file
+              // compiled from anything but roads has neither column and is routed by distance.
+              ? wasm.solve_route(container, Uint32Array.from(waypoints), 8, "roads:speed_ms", "roads:no_turn", Number(scrub.max))
               : wasm.solve(container, Number(scrub.max));
           const applied = state.ring.apply(deltas);
           // The ring is CPU-side until this: the texture is what the shader reads.

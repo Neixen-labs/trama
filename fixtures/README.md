@@ -5,7 +5,7 @@ equivalence test compares, so neither changes without a deliberate reason.
 
 ## `teruel.trama`
 
-The whole street network of Teruel, Spain — 2,770 nodes, 3,649 edges — shipped **compiled**.
+The whole street network of Teruel, Spain — 2,772 nodes, 3,651 edges — shipped **compiled**.
 That is the point of it: 240 kB as a container against the 1.9 MB of Overpass JSON it came from,
 and the playground opens it without a compile step. The example is the first pillar's claim in
 the one place a visitor can weigh it.
@@ -13,6 +13,12 @@ the one place a visitor can weigh it.
 A whole small city rather than a slice of a large one, so the questions asked of it are real:
 a route across town, how far you get in ten minutes, and which streets are the only way through.
 Nothing in it is hydraulic and nothing needed to be invented for it.
+
+It also carries the turns the city forbids: 151 `type=restriction` relations, of which 69 land on
+an edge as a `roads:no_turn` column. The rest name a junction the split did not separate or a way
+outside the extract, and are dropped rather than guessed at. The counts move when OSM moves —
+this file is a snapshot of a live database, and regenerating it is expected to shift the graph by
+a street or two.
 
 **© OpenStreetMap contributors**, licensed under the
 [Open Database License](https://opendatacommons.org/licenses/odbl/) (ODbL). ODbL governs this
