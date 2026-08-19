@@ -9,9 +9,11 @@
 //!
 //! Nothing here knows what an edge is. It knows edges have a cost, that some may only be crossed
 //! one way, and that the CSR already says which — section 4 gives a directed edge one adjacency
-//! entry instead of two, so the direction rule needs no code at all in the forward case.
+//! entry instead of two, so the direction rule needs no code at all in the forward case. It also
+//! knows that some *pairs* of edges may not be crossed in succession, which is a fact no single
+//! edge can hold and the reason the search settles arcs rather than nodes.
 
-use std::collections::{BinaryHeap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 
 use serde_json::Value;
 use trama_format::{Graph, edge_lengths, edge_properties, parse_graph, read_sections};
@@ -65,6 +67,10 @@ pub struct Parameters {
     pub channel: String,
     pub operation: Operation,
     pub cost: Cost,
+    /// A `PROP` column holding, for each edge, the ids of the edges it may not be followed by,
+    /// space-separated. Naming one makes the spread refuse those movements — the same column
+    /// `trama-routing` reads, so a route and an isochrone over one container agree.
+    pub restriction_property: Option<String>,
     /// The scrub's resolution. A trace is emitted as a progression so the spread can be watched,
     /// in whatever unit `cost` is measured in.
     pub step_seconds: f32,
@@ -76,6 +82,7 @@ impl Default for Parameters {
             channel: "reach".into(),
             operation: Operation::Trace { seeds: Vec::new(), direction: Direction::Forward, budget: None },
             cost: Cost::Length,
+            restriction_property: None,
             step_seconds: 60.0,
         }
     }
@@ -102,10 +109,11 @@ pub fn solve(container: &[u8], parameters: &Parameters, t0: f32, t1: f32) -> Res
         &sections.iter().find(|s| &s.kind == b"GRPH").ok_or("container is missing a GRPH section")?.payload,
     )?;
 
+    let forbidden = forbidden_turns(container, &graph, parameters.restriction_property.as_deref())?;
     let values: Vec<(usize, f64)> = match &parameters.operation {
         Operation::Trace { seeds, direction, budget } => {
             let costs = costs_of(container, &graph, &parameters.cost)?;
-            trace(&graph, &costs, seeds, *direction, *budget)?
+            trace(&graph, &costs, &forbidden, seeds, *direction, *budget)?
                 .into_iter()
                 .map(|reached| (reached.edge_index, reached.at))
                 .collect()
@@ -116,7 +124,7 @@ pub fn solve(container: &[u8], parameters: &Parameters, t0: f32, t1: f32) -> Res
         }
         Operation::Isolation { cut, seeds, direction } => {
             let costs = costs_of(container, &graph, &parameters.cost)?;
-            isolation(&graph, &costs, cut, seeds, *direction)?
+            isolation(&graph, &costs, &forbidden, cut, seeds, *direction)?
                 .into_iter()
                 .enumerate()
                 .map(|(edge, lost)| (edge, if lost { 1.0 } else { 0.0 }))
@@ -129,7 +137,7 @@ pub fn solve(container: &[u8], parameters: &Parameters, t0: f32, t1: f32) -> Res
             .collect(),
         Operation::Allocation { sources, direction } => {
             let costs = costs_of(container, &graph, &parameters.cost)?;
-            allocation(&graph, &costs, sources, *direction)?
+            allocation(&graph, &costs, &forbidden, sources, *direction)?
                 .into_iter()
                 .enumerate()
                 .filter_map(|(edge, owner)| owner.map(|owner| (edge, owner as f64)))
@@ -159,6 +167,13 @@ pub fn solve(container: &[u8], parameters: &Parameters, t0: f32, t1: f32) -> Res
     Ok(records)
 }
 
+/// Which edges an edge may not be followed by, by edge index. Empty when nobody asked.
+///
+/// A restriction is a fact about a *pair* of edges, which is why it cannot live on either one
+/// alone as a cost or a flag. This crate learns it as a relation between indices and nothing
+/// more: what a left turn is, and which tag spells it, stays with whoever produced the container.
+pub type Turns = BTreeMap<usize, Vec<usize>>;
+
 /// Every edge the search can cross, with the cost standing on it when it does.
 ///
 /// Multi-seed Dijkstra, which degenerates to a breadth-first search when every edge costs the
@@ -167,17 +182,26 @@ pub fn solve(container: &[u8], parameters: &Parameters, t0: f32, t1: f32) -> Res
 pub fn trace(
     graph: &Graph,
     costs: &[f64],
+    forbidden: &Turns,
     seeds: &[usize],
     direction: Direction,
     budget: Option<f64>,
 ) -> Result<Vec<Reached>, String> {
-    search(graph, costs, seeds, direction, budget, &vec![false; graph.edges.len()])
+    search(graph, costs, forbidden, seeds, direction, budget, &vec![false; graph.edges.len()])
 }
 
 /// The search itself, with a set of edges it may not cross.
+///
+/// It settles arcs, not nodes. With a turn restriction a node stops being a state: arriving at a
+/// junction along one street and along another are different situations, because they permit
+/// different exits. Settling the node would collapse the two and let the search inherit an exit
+/// it was never entitled to — the spread would leak through exactly the turns a route refuses.
+/// The cost of that correctness is a queue over arcs rather than nodes, which for a directed
+/// graph is the same order and for an undirected view is twice it.
 fn search(
     graph: &Graph,
     costs: &[f64],
+    forbidden: &Turns,
     seeds: &[usize],
     direction: Direction,
     budget: Option<f64>,
@@ -192,41 +216,56 @@ fn search(
     if budget.is_some_and(|limit| !(limit.is_finite() && limit >= 0.0)) {
         return Err("a budget must be a finite, non-negative number".into());
     }
+    // The steps of every node laid end to end, so an arc is one index and can be settled like a
+    // node used to be. `leaving[node]..leaving[node + 1]` is that node's own slice of them.
     let steps = steps_from(graph, direction);
+    let mut leaving = Vec::with_capacity(graph.nodes.len() + 1);
+    let mut arcs: Vec<(usize, usize)> = Vec::new();
+    for node_steps in &steps {
+        leaving.push(arcs.len());
+        arcs.extend(node_steps.iter().copied());
+    }
+    leaving.push(arcs.len());
+    let closed = oriented(forbidden, direction);
     // Integer keys, scaled, because a BinaryHeap needs Ord and f64 has none. Millimetres of a
     // metre or milliseconds of a second: below anything a network is measured to.
     let scale = 1000.0;
     let ceiling = budget.map(|limit| (limit * scale).round() as i64);
-    let mut best = vec![i64::MAX; graph.nodes.len()];
+    let mut best = vec![i64::MAX; arcs.len()];
     let mut reached: Vec<Option<i64>> = vec![None; graph.edges.len()];
     let mut queue = BinaryHeap::new();
+    let open = |arc: usize, arrival: i64, best: &mut Vec<i64>, queue: &mut BinaryHeap<(i64, usize)>| {
+        if blocked[arcs[arc].0] || ceiling.is_some_and(|limit| arrival > limit) || arrival >= best[arc] {
+            return;
+        }
+        best[arc] = arrival;
+        queue.push((-arrival, arc));
+    };
+    // The arcs leaving the seeds. There is no arc before them, so no turn to check.
     for seed in seeds {
-        best[*seed] = 0;
-        queue.push((0i64, *seed));
+        for arc in leaving[*seed]..leaving[*seed + 1] {
+            open(arc, (costs[arcs[arc].0] * scale).round() as i64, &mut best, &mut queue);
+        }
     }
-    while let Some((negated, node)) = queue.pop() {
+    while let Some((negated, arc)) = queue.pop() {
         let spent = -negated;
-        if spent > best[node] {
+        if spent > best[arc] {
             continue;
         }
-        for (edge_index, next) in &steps[node] {
-            if blocked[*edge_index] {
+        let (edge_index, node) = arcs[arc];
+        // The edge is reached even if the node beyond it was already cheaper by another way: the
+        // question is which edges the search can cross, not which nodes it settles.
+        if reached[edge_index].is_none_or(|previous| spent < previous) {
+            reached[edge_index] = Some(spent);
+        }
+        let shut = closed.get(&edge_index);
+        for next in leaving[node]..leaving[node + 1] {
+            // The turn itself: crossing this edge and then that one is what a restriction names.
+            if shut.is_some_and(|shut| shut.contains(&arcs[next].0)) {
                 continue;
             }
-            let crossing = (costs[*edge_index] * scale).round() as i64;
-            let arrival = spent.saturating_add(crossing);
-            if ceiling.is_some_and(|limit| arrival > limit) {
-                continue;
-            }
-            // The edge is reached even if the node beyond it was already cheaper by another way:
-            // the question is which edges the search can cross, not which nodes it settles.
-            if reached[*edge_index].is_none_or(|previous| arrival < previous) {
-                reached[*edge_index] = Some(arrival);
-            }
-            if arrival < best[*next] {
-                best[*next] = arrival;
-                queue.push((-arrival, *next));
-            }
+            let crossing = (costs[arcs[next].0] * scale).round() as i64;
+            open(next, spent.saturating_add(crossing), &mut best, &mut queue);
         }
     }
     Ok(reached
@@ -234,6 +273,29 @@ fn search(
         .enumerate()
         .filter_map(|(edge_index, at)| at.map(|at| Reached { edge_index, at: at as f64 / scale }))
         .collect())
+}
+
+/// The restrictions as a search in this direction meets them.
+///
+/// A restriction is stated the way a driver meets it: come in along one edge, and that exit is
+/// shut. Running the network backwards is the same statement read from the other end — having
+/// crossed the exit, the entry is what may not be taken — so the relation is inverted rather than
+/// dropped. Ignoring direction is not a movement at all: "what is connected to this" has no turn
+/// in it to forbid, and applying one there would quietly answer a different question.
+fn oriented(forbidden: &Turns, direction: Direction) -> Turns {
+    match direction {
+        Direction::Forward => forbidden.clone(),
+        Direction::Backward => {
+            let mut inverted = Turns::new();
+            for (entry, exits) in forbidden {
+                for exit in exits {
+                    inverted.entry(*exit).or_default().push(*entry);
+                }
+            }
+            inverted
+        }
+        Direction::Both => Turns::new(),
+    }
 }
 
 /// Which edges lose service when `cut` is removed, the cut edges among them.
@@ -244,6 +306,7 @@ fn search(
 pub fn isolation(
     graph: &Graph,
     costs: &[f64],
+    forbidden: &Turns,
     cut: &[usize],
     seeds: &[usize],
     direction: Direction,
@@ -256,7 +319,7 @@ pub fn isolation(
         blocked[*edge] = true;
     }
     let mut survives = vec![false; graph.edges.len()];
-    for reached in search(graph, costs, seeds, direction, None, &blocked)? {
+    for reached in search(graph, costs, forbidden, seeds, direction, None, &blocked)? {
         survives[reached.edge_index] = true;
     }
     // A cut edge is out of service by construction: the search refuses to cross it, so it is
@@ -326,6 +389,7 @@ pub fn critical(graph: &Graph) -> Vec<bool> {
 pub fn allocation(
     graph: &Graph,
     costs: &[f64],
+    forbidden: &Turns,
     sources: &[usize],
     direction: Direction,
 ) -> Result<Vec<Option<usize>>, String> {
@@ -335,7 +399,7 @@ pub fn allocation(
     let mut owner: Vec<Option<usize>> = vec![None; graph.edges.len()];
     let mut best: Vec<f64> = vec![f64::INFINITY; graph.edges.len()];
     for (label, source) in sources.iter().enumerate() {
-        for reached in trace(graph, costs, &[*source], direction, None)? {
+        for reached in trace(graph, costs, forbidden, &[*source], direction, None)? {
             if reached.at < best[reached.edge_index] {
                 best[reached.edge_index] = reached.at;
                 owner[reached.edge_index] = Some(label);
@@ -437,10 +501,59 @@ fn costs_of(container: &[u8], graph: &Graph, cost: &Cost) -> Result<Vec<f64>, St
     }
 }
 
+/// Which edges each edge may not be followed by, read from a `PROP` column of stable ids.
+///
+/// The column holds ids rather than indices because an id is what the file is addressed by and
+/// what survives a recompilation; an index is an artefact of this reader's own ordering. So the
+/// translation happens once, here, and the search works in indices from then on.
+///
+/// An id naming no edge in this container is skipped rather than refused: a restriction can point
+/// at a street outside the extract, and an edge that is not here is one the search could never
+/// have taken anyway.
+///
+/// ponytail: the same twenty lines live in `trama-routing`, deliberately. The two searches want
+/// different things — a route wants one path and stops early, a spread wants every edge's cost
+/// and runs the queue dry — so sharing them would mean a search with four parameters its first
+/// caller never uses. Extract to a common crate when a third reader appears, not before.
+pub fn forbidden_turns(container: &[u8], graph: &Graph, key: Option<&str>) -> Result<Turns, String> {
+    let Some(key) = key else {
+        return Ok(Turns::new());
+    };
+    let rows = edge_properties(container)?;
+    let by_id: BTreeMap<u64, usize> = graph.edges.iter().enumerate().map(|(index, edge)| (edge.id, index)).collect();
+    let mut turns = Turns::new();
+    for (index, edge) in graph.edges.iter().enumerate() {
+        let Some(listed) = rows.get(edge.property_row as usize).and_then(|row| row.get(key)).and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let closed: Vec<usize> = listed
+            .split_whitespace()
+            .filter_map(|id| id.parse().ok())
+            .filter_map(|id| by_id.get(&id))
+            .copied()
+            .collect();
+        if !closed.is_empty() {
+            turns.insert(index, closed);
+        }
+    }
+    Ok(turns)
+}
+
 pub struct TraceSolver;
 
-const KNOWN: [&str; 9] =
-    ["channel", "operation", "seeds", "direction", "budget", "cost", "step_seconds", "cut", "sources"];
+const KNOWN: [&str; 10] = [
+    "channel",
+    "operation",
+    "seeds",
+    "direction",
+    "budget",
+    "cost",
+    "restriction_property",
+    "step_seconds",
+    "cut",
+    "sources",
+];
 
 impl Solver for TraceSolver {
     fn id(&self) -> &'static str {
@@ -505,6 +618,7 @@ impl Solver for TraceSolver {
             channel: request.params["channel"].as_str().unwrap_or(&defaults.channel).to_string(),
             operation,
             cost,
+            restriction_property: request.params["restriction_property"].as_str().map(str::to_string),
             step_seconds: request.params["step_seconds"].as_f64().unwrap_or(defaults.step_seconds as f64) as f32,
         };
         solve(&request.container, &parameters, request.t0_seconds, request.t1_seconds).map_err(Rejection::input)

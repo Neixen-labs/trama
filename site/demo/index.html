@@ -811,7 +811,7 @@
           channel: "reach",
           paints: "reach",
           needs: "una red con velocidades por tramo",
-          does: "propaga desde el punto que elijas respetando los sentidos, y el reloj de abajo es el presupuesto: arrastra para ver hasta dónde se llega en cada minuto.",
+          does: "propaga desde el punto que elijas respetando los sentidos únicos y los giros prohibidos, igual que la ruta, y el reloj de abajo es el presupuesto: arrastra para ver hasta dónde se llega en cada minuto.",
         },
         {
           value: "isolation",
@@ -1026,7 +1026,9 @@
               : choice === "isolation"
                 ? wasm.solve_isolation(container, Uint32Array.from(waypoints.slice(0, 1)), Uint32Array.from(cutEdges), Number(scrub.max))
               : choice === "reach"
-                ? wasm.solve_reach(container, Uint32Array.from(waypoints.slice(0, 1)), 8, "roads:speed_ms", Number(scrub.max))
+              // The same two columns the route reads, for the same reason: an isochrone that
+              // spread through a turn the route refuses would contradict it on one map.
+                ? wasm.solve_reach(container, Uint32Array.from(waypoints.slice(0, 1)), 8, "roads:speed_ms", "roads:no_turn", Number(scrub.max))
                 : choice === "routing"
               // The road importer wrote a speed for every edge, so the search minimises time and
               // a longer fast street can beat a short slow one. The 8 m/s is only the fallback,
