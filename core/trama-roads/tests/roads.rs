@@ -372,3 +372,28 @@ fn a_relation_that_is_not_a_prohibition_forbids_nothing() {
 
     assert!(no_turn(&imported, "osm:way/1/0").is_empty());
 }
+
+/// `no_u_turn` names the same way as both `from` and `to`: do not come in here and go back out
+/// the way you came. It is the one restriction whose forbidden exit is the arriving edge itself,
+/// and dropping that case leaves a quarter of a real city's restrictions forbidding nothing.
+#[test]
+fn a_no_u_turn_forbids_going_back_out_the_way_you_came() {
+    let mut elements = junction();
+    elements.push(restriction(100, 1, 11, 1, "no_u_turn"));
+    let imported = import(&extract(elements)).unwrap();
+
+    assert_eq!(no_turn(&imported, "osm:way/1/0"), vec![trama_format::edge_id("osm:way/1/0")]);
+}
+
+/// An `only_*` names the single movement allowed and forbids the other exits. Turning back is not
+/// an exit it named, and OSM has `no_u_turn` for that — so the two spellings stay distinct.
+#[test]
+fn a_mandatory_turn_does_not_quietly_forbid_the_u_turn_as_well() {
+    let mut elements = junction();
+    elements.push(restriction(100, 1, 11, 2, "only_straight_on"));
+    let imported = import(&extract(elements)).unwrap();
+
+    let forbidden = no_turn(&imported, "osm:way/1/0");
+    assert_eq!(forbidden, vec![trama_format::edge_id("osm:way/3/0")]);
+    assert!(!forbidden.contains(&trama_format::edge_id("osm:way/1/0")), "the U-turn is no_u_turn's to forbid");
+}

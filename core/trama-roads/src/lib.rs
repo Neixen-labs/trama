@@ -242,11 +242,14 @@ fn apply_restrictions(elements: &[Value], touching: &BTreeMap<u64, Vec<(u64, Str
         let leaving: Vec<&String> = pieces
             .iter()
             .filter(|(way, _)| if only { *way != from && *way != to } else { *way == to })
-            // A `only_*` restriction forbids doubling back as well, but a piece of `from` itself
-            // is the U-turn the `no_u_turn` spelling exists for; leaving it out here keeps the two
-            // spellings from meaning different things about the same movement.
             .map(|(_, name)| name)
-            .filter(|name| !arriving.contains(name))
+            // An `only_*` restriction names the one movement that is allowed, and what it forbids
+            // is every *other* exit. Turning back the way you came is not an exit anyone chose to
+            // name, and OSM spells that prohibition `no_u_turn` — so it is left to that spelling
+            // rather than smuggled in here. A `no_*` keeps its own pieces: `no_u_turn` names the
+            // same way as `from` and `to`, and dropping them would leave it forbidding nothing,
+            // which is what it did until a real extract turned up 25 of them doing exactly that.
+            .filter(|name| !only || !arriving.contains(name))
             .collect();
         for entry in arriving {
             for exit in &leaving {
