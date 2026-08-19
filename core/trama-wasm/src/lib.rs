@@ -66,10 +66,9 @@ pub fn compile_power(source: &str) -> Result<Vec<u8>, JsError> {
 /// edge whose column holds nothing usable.
 ///
 /// `restriction_property` names the column holding, per edge, the edges it may not be followed
-/// by. Naming it makes the route obey the turns a street network actually signs. Nothing else in
-/// this module does yet: an isochrone is `trama-trace`, whose search settles nodes, and a turn
-/// restriction needs the arc-settling one — so `solve_reach` still spreads through junctions a
-/// car may not cross, and says so here rather than looking like it was considered.
+/// by. Naming it makes the route obey the turns a street network actually signs. `solve_reach`
+/// takes the same column and honours it the same way, so a route and an isochrone drawn over one
+/// container cannot disagree about which movements exist.
 #[wasm_bindgen]
 pub fn solve_route(
     container: &[u8],
@@ -99,6 +98,7 @@ pub fn solve_reach(
     seeds: &[u32],
     speed: f32,
     speed_property: Option<String>,
+    restriction_property: Option<String>,
     t1_seconds: f32,
 ) -> Result<Vec<u8>, JsError> {
     let parameters = trama_trace::Parameters {
@@ -109,6 +109,7 @@ pub fn solve_reach(
             budget: Some(t1_seconds as f64),
         },
         cost: trama_trace::Cost::Seconds { metres_per_second: speed as f64, speed_property },
+        restriction_property,
         step_seconds: 60.0,
     };
     trama_trace::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))
@@ -130,7 +131,7 @@ pub fn solve_isolation(container: &[u8], seeds: &[u32], cut: &[u32], t1_seconds:
             direction: trama_trace::Direction::Both,
         },
         cost: trama_trace::Cost::Hops,
-        step_seconds: 60.0,
+        ..Default::default()
     };
     trama_trace::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))
 }
@@ -145,7 +146,7 @@ pub fn solve_critical(container: &[u8], t1_seconds: f32) -> Result<Vec<u8>, JsEr
         channel: "critical".into(),
         operation: trama_trace::Operation::Critical,
         cost: trama_trace::Cost::Hops,
-        step_seconds: 60.0,
+        ..Default::default()
     };
     trama_trace::solve(container, &parameters, 0.0, t1_seconds).map_err(|error| JsError::new(&error))
 }

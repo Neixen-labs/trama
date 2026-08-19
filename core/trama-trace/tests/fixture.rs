@@ -7,7 +7,11 @@
 //! have caught it on the first run.
 
 use trama_format::{Graph, edge_lengths, parse_graph, read_sections};
-use trama_trace::{Direction, allocation, components, critical, trace};
+use trama_trace::{Direction, Turns, allocation, components, critical, trace};
+
+fn no_turns() -> Turns {
+    Turns::new()
+}
 
 const TERUEL: &[u8] = include_bytes!("../../../fixtures/teruel.trama");
 
@@ -51,7 +55,7 @@ fn a_route_can_cross_the_published_city() {
         .map(|(_, edge)| edge.source as usize)
         .collect();
 
-    let reached = trace(&graph, &lengths, &inside[..1], Direction::Both, None).unwrap();
+    let reached = trace(&graph, &lengths, &no_turns(), &inside[..1], Direction::Both, None).unwrap();
 
     assert!(
         reached.len() as f64 / graph.edges.len() as f64 > 0.9,
@@ -93,7 +97,8 @@ fn two_depots_divide_the_city_between_them() {
         .map(|(_, edge)| edge.source as usize)
         .collect();
 
-    let owners = allocation(&graph, &lengths, &[inside[0], inside[inside.len() - 1]], Direction::Both).unwrap();
+    let owners =
+        allocation(&graph, &lengths, &no_turns(), &[inside[0], inside[inside.len() - 1]], Direction::Both).unwrap();
 
     let first = owners.iter().filter(|owner| **owner == Some(0)).count();
     let second = owners.iter().filter(|owner| **owner == Some(1)).count();
@@ -132,7 +137,9 @@ fn what_the_published_city_looks_like() {
         .iter()
         .enumerate()
         .filter(|(_, is)| **is)
-        .map(|(edge, _)| (edge, trama_trace::isolation(&water, &costs, &[edge], &[feed], Direction::Both).unwrap()))
+        .map(|(edge, _)| {
+            (edge, trama_trace::isolation(&water, &costs, &no_turns(), &[edge], &[feed], Direction::Both).unwrap())
+        })
         .map(|(edge, lost)| (lost.iter().filter(|lost| **lost).count(), edge))
         .max()
         .unwrap();
@@ -164,7 +171,9 @@ fn closing_a_critical_pipe_takes_more_than_the_pipe_itself() {
         .iter()
         .enumerate()
         .filter(|(_, is)| **is)
-        .map(|(edge, _)| trama_trace::isolation(&graph, &costs, &[edge], &[feed], Direction::Both).unwrap())
+        .map(|(edge, _)| {
+            trama_trace::isolation(&graph, &costs, &no_turns(), &[edge], &[feed], Direction::Both).unwrap()
+        })
         .map(|lost| lost.iter().filter(|lost| **lost).count())
         .max()
         .expect("a critical pipe");
@@ -185,8 +194,42 @@ fn closing_a_meshed_pipe_loses_only_that_pipe() {
         .map(|(index, edge)| (index, edge.source as usize))
         .expect("a meshed pipe");
 
-    let lost = trama_trace::isolation(&graph, &costs, &[meshed], &[feed], Direction::Both).unwrap();
+    let lost = trama_trace::isolation(&graph, &costs, &no_turns(), &[meshed], &[feed], Direction::Both).unwrap();
 
     // The point of a ring main: close one pipe and the water arrives the other way round.
     assert_eq!(lost.iter().filter(|lost| **lost).count(), 1, "a meshed closure should lose only itself");
+}
+
+/// What the restrictions in the published city actually do to a spread.
+///
+/// The property is one-directional and worth stating as one: forbidding a movement can only make
+/// an edge dearer to reach or unreachable, never cheaper, so the restricted isochrone is a subset
+/// of the unrestricted one at every budget. A search that got the arcs wrong would break it in
+/// either direction — losing edges it should still reach, or gaining edges by leaking through a
+/// junction — and a count alone would not tell those two apart.
+#[test]
+fn the_isochrone_over_the_published_city_obeys_the_turns_the_route_obeys() {
+    let graph = graph_of(TERUEL);
+    let lengths = edge_lengths(TERUEL).unwrap();
+    let forbidden = trama_trace::forbidden_turns(TERUEL, &graph, Some("roads:no_turn")).unwrap();
+    assert!(!forbidden.is_empty(), "the shipped container carries the column, or this proves nothing");
+
+    let mut narrowed = 0;
+    let seeds: Vec<usize> = (0..graph.nodes.len()).step_by(97).collect();
+    for seed in &seeds {
+        let open = trace(&graph, &lengths, &no_turns(), &[*seed], Direction::Forward, Some(2000.0)).unwrap();
+        let shut = trace(&graph, &lengths, &forbidden, &[*seed], Direction::Forward, Some(2000.0)).unwrap();
+        let reachable: std::collections::BTreeMap<usize, f64> =
+            open.iter().map(|reached| (reached.edge_index, reached.at)).collect();
+        for reached in &shut {
+            let unrestricted = reachable.get(&reached.edge_index);
+            assert!(unrestricted.is_some(), "a restriction added an edge the open search never reached");
+            assert!(reached.at >= *unrestricted.unwrap() - 1e-9, "a restriction made an edge cheaper to reach");
+        }
+        if shut.len() < open.len() {
+            narrowed += 1;
+        }
+    }
+
+    assert!(narrowed > 0, "no seed of {} spread differently, so the column is being ignored", seeds.len());
 }

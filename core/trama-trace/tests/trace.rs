@@ -3,7 +3,36 @@
 
 use serde_json::{Value, json};
 use trama_format::{Graph, compile, edge_lengths, parse_graph, read_sections};
-use trama_trace::{Cost, Direction, Operation, Parameters, components, solve, trace};
+use trama_trace::{Cost, Direction, Operation, Parameters, Turns, components, solve, trace};
+
+fn no_turns() -> Turns {
+    Turns::new()
+}
+
+/// The index of the edge declared under `name`, so a test can forbid a turn by name.
+fn edge_at(container: &[u8], name: &str) -> usize {
+    let id = trama_format::edge_id(name);
+    graph_of(container).edges.iter().position(|edge| edge.id == id).expect("the edge is in the graph")
+}
+
+/// The node nearest a coordinate, so a test can name a junction by where it drew it.
+fn node_at(container: &[u8], longitude: f64, latitude: f64) -> usize {
+    let exported = trama_format::export(container).unwrap();
+    let id = exported.nodes["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .min_by(|left, right| {
+            let distance = |feature: &Value| {
+                let point = feature["geometry"]["coordinates"].as_array().unwrap();
+                (point[0].as_f64().unwrap() - longitude).hypot(point[1].as_f64().unwrap() - latitude)
+            };
+            distance(left).partial_cmp(&distance(right)).unwrap()
+        })
+        .map(|feature| feature["properties"]["_trama_id"].as_str().unwrap().parse::<u64>().unwrap())
+        .unwrap();
+    graph_of(container).nodes.iter().position(|node| node.id == id).unwrap()
+}
 
 const CHANNEL: fn() -> Value = || json!({"name": "reach", "entity_kind": "edge", "unit": "1", "min": 0, "max": 1});
 
@@ -66,7 +95,7 @@ fn downstream_from_the_head_covers_the_fork() {
     let head = sources(&graph);
     assert_eq!(head.len(), 1, "the fork has one head");
 
-    let reached = trace(&graph, &hops(&graph), &head, Direction::Forward, None).unwrap();
+    let reached = trace(&graph, &hops(&graph), &no_turns(), &head, Direction::Forward, None).unwrap();
 
     assert_eq!(reached.len(), 3, "everything below the head");
 }
@@ -78,7 +107,7 @@ fn downstream_from_a_tail_reaches_nothing() {
 
     // The one rule the whole crate rests on: a directed edge has a single CSR entry, at its
     // source, so walking the adjacency as written cannot cross it backwards.
-    let reached = trace(&graph, &hops(&graph), &[sinks(&graph)[0]], Direction::Forward, None).unwrap();
+    let reached = trace(&graph, &hops(&graph), &no_turns(), &[sinks(&graph)[0]], Direction::Forward, None).unwrap();
 
     assert!(reached.is_empty(), "nothing flows out of a tail, and nothing may be crossed against its arrow");
 }
@@ -90,7 +119,7 @@ fn upstream_from_a_tail_finds_what_feeds_it() {
     let tail = sinks(&graph);
     assert_eq!(tail.len(), 2, "the fork has two tails");
 
-    let reached = trace(&graph, &hops(&graph), &tail[..1], Direction::Backward, None).unwrap();
+    let reached = trace(&graph, &hops(&graph), &no_turns(), &tail[..1], Direction::Backward, None).unwrap();
 
     // Its own branch and the trunk above it, never the sibling branch.
     assert_eq!(reached.len(), 2);
@@ -101,7 +130,7 @@ fn ignoring_direction_connects_the_whole_fork() {
     let container = container_of(&fork()[..3]);
     let graph = graph_of(&container);
 
-    let reached = trace(&graph, &hops(&graph), &[sinks(&graph)[0]], Direction::Both, None).unwrap();
+    let reached = trace(&graph, &hops(&graph), &no_turns(), &[sinks(&graph)[0]], Direction::Both, None).unwrap();
 
     assert_eq!(reached.len(), 3, "connectivity does not care which way the arrows point");
 }
@@ -112,8 +141,8 @@ fn a_budget_stops_the_search_where_it_says() {
     let graph = graph_of(&container);
     let head = sources(&graph);
 
-    let one = trace(&graph, &hops(&graph), &head, Direction::Forward, Some(1.0)).unwrap();
-    let two = trace(&graph, &hops(&graph), &head, Direction::Forward, Some(2.0)).unwrap();
+    let one = trace(&graph, &hops(&graph), &no_turns(), &head, Direction::Forward, Some(1.0)).unwrap();
+    let two = trace(&graph, &hops(&graph), &no_turns(), &head, Direction::Forward, Some(2.0)).unwrap();
 
     assert_eq!(one.len(), 1, "one hop is the trunk alone");
     assert_eq!(two.len(), 3, "two hops is both branches as well");
@@ -130,8 +159,8 @@ fn an_isochrone_is_the_same_search_costed_in_seconds() {
     let trunk_index = graph.edges.iter().position(|edge| edge.source as usize == head).unwrap();
     let trunk = seconds[trunk_index];
 
-    let short = trace(&graph, &seconds, &[head], Direction::Forward, Some(trunk)).unwrap();
-    let long = trace(&graph, &seconds, &[head], Direction::Forward, Some(trunk * 10.0)).unwrap();
+    let short = trace(&graph, &seconds, &no_turns(), &[head], Direction::Forward, Some(trunk)).unwrap();
+    let long = trace(&graph, &seconds, &no_turns(), &[head], Direction::Forward, Some(trunk * 10.0)).unwrap();
 
     assert_eq!(short.len(), 1, "only what fits in the budget");
     assert_eq!(short[0].edge_index, trunk_index);
@@ -158,7 +187,7 @@ fn a_seed_outside_the_graph_is_refused() {
     let container = container_of(&fork());
     let graph = graph_of(&container);
 
-    let refused = trace(&graph, &hops(&graph), &[graph.nodes.len()], Direction::Forward, None);
+    let refused = trace(&graph, &hops(&graph), &no_turns(), &[graph.nodes.len()], Direction::Forward, None);
 
     assert!(refused.is_err());
 }
@@ -171,6 +200,7 @@ fn a_trace_is_emitted_as_a_progression_the_scrub_can_unwind() {
         channel: "reach".into(),
         operation: Operation::Trace { seeds: sources(&graph), direction: Direction::Forward, budget: None },
         cost: Cost::Hops,
+        restriction_property: None,
         step_seconds: 1.0,
     };
 
@@ -260,8 +290,9 @@ fn cutting_a_ring_edge_costs_nothing_and_cutting_the_tail_costs_the_tail() {
     // Serve the network from the far end of the ring, away from the tail.
     let source = graph.edges[ring_edge].source as usize;
 
-    let cut_ring = trama_trace::isolation(&graph, &costs, &[ring_edge], &[source], Direction::Both).unwrap();
-    let cut_tail = trama_trace::isolation(&graph, &costs, &[tail], &[source], Direction::Both).unwrap();
+    let cut_ring =
+        trama_trace::isolation(&graph, &costs, &no_turns(), &[ring_edge], &[source], Direction::Both).unwrap();
+    let cut_tail = trama_trace::isolation(&graph, &costs, &no_turns(), &[tail], &[source], Direction::Both).unwrap();
 
     assert_eq!(
         cut_ring.iter().filter(|lost| **lost).count(),
@@ -280,7 +311,7 @@ fn a_cut_that_severs_a_branch_takes_everything_past_it() {
     let head = sources(&graph)[0];
     let trunk = graph.edges.iter().position(|edge| edge.source as usize == head).unwrap();
 
-    let lost = trama_trace::isolation(&graph, &costs, &[trunk], &[head], Direction::Forward).unwrap();
+    let lost = trama_trace::isolation(&graph, &costs, &no_turns(), &[trunk], &[head], Direction::Forward).unwrap();
 
     assert_eq!(lost.iter().filter(|lost| **lost).count(), 3, "cutting the trunk loses the trunk and both branches");
 }
@@ -298,7 +329,8 @@ fn each_edge_goes_to_the_source_that_reaches_it_first() {
         .collect();
     let corners: Vec<usize> = (0..graph.nodes.len()).filter(|node| !ends.contains(node)).collect();
 
-    let owners = trama_trace::allocation(&graph, &costs, &[corners[0], corners[1]], Direction::Both).unwrap();
+    let owners =
+        trama_trace::allocation(&graph, &costs, &no_turns(), &[corners[0], corners[1]], Direction::Both).unwrap();
 
     assert!(owners.iter().all(Option::is_some), "a connected network leaves no edge unserved");
     let first = owners.iter().filter(|owner| **owner == Some(0)).count();
@@ -312,7 +344,8 @@ fn an_edge_no_source_reaches_belongs_to_nobody() {
     let graph = graph_of(&container);
     let costs = hops(&graph);
 
-    let owners = trama_trace::allocation(&graph, &costs, &[sources(&graph)[0]], Direction::Forward).unwrap();
+    let owners =
+        trama_trace::allocation(&graph, &costs, &no_turns(), &[sources(&graph)[0]], Direction::Forward).unwrap();
 
     assert!(owners.iter().any(Option::is_none), "the separate network is served by nothing");
 }
@@ -322,7 +355,137 @@ fn isolation_refuses_a_cut_that_is_not_in_the_graph() {
     let container = container_of(&fork());
     let graph = graph_of(&container);
 
-    let refused = trama_trace::isolation(&graph, &hops(&graph), &[graph.edges.len()], &[0], Direction::Both);
+    let refused =
+        trama_trace::isolation(&graph, &hops(&graph), &no_turns(), &[graph.edges.len()], &[0], Direction::Both);
 
     assert!(refused.is_err());
+}
+
+/// The junction where a spread has to remember how it arrived.
+///
+/// ```text
+///   s --------- v --- t     `sv` is the cheap way to v, and may not continue onto `vt`
+///    \         /
+///     -- q ---              `qv` is dearer, and may
+/// ```
+///
+/// The same shape `trama-routing` settles arcs for, asked as an isochrone instead of a route.
+/// A search that settled nodes would reach `v` along `sv` at one hop, record that as the way to
+/// `v`, and then leave along `vt` — a movement `sv` was told it could not make. Arriving along
+/// `qv` costs two hops and is the only arrival `vt` is open to, so within two hops `vt` is not
+/// reached at all. Node-settling puts it inside the isochrone; arc-settling does not, and that
+/// one edge is the whole difference between a spread that obeys the restrictions and one that
+/// only looks like it does.
+fn junction() -> Vec<Value> {
+    let s = [-3.7080, 40.4160];
+    let v = [-3.7000, 40.4160];
+    let q = [-3.7040, 40.4100];
+    let t = [-3.6960, 40.4160];
+    vec![
+        line("sv", json!([s, v]), false),
+        line("sq", json!([s, q]), false),
+        line("qv", json!([q, v]), false),
+        line("vt", json!([v, t]), false),
+    ]
+}
+
+/// The edge ids the spread reached, so an assertion can name streets rather than indices.
+fn streets(container: &[u8], reached: &[trama_trace::Reached]) -> Vec<u64> {
+    let graph = graph_of(container);
+    let mut ids: Vec<u64> = reached.iter().map(|reached| graph.edges[reached.edge_index].id).collect();
+    ids.sort_unstable();
+    ids
+}
+
+fn ids(names: &[&str]) -> Vec<u64> {
+    let mut ids: Vec<u64> = names.iter().map(|name| trama_format::edge_id(name)).collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn a_forbidden_turn_keeps_the_street_beyond_it_out_of_the_isochrone() {
+    let container = container_of(&junction());
+    let graph = graph_of(&container);
+    let start = node_at(&container, -3.7080, 40.4160);
+    let forbidden = Turns::from([(edge_at(&container, "sv"), vec![edge_at(&container, "vt")])]);
+
+    let open = trace(&graph, &hops(&graph), &no_turns(), &[start], Direction::Forward, Some(2.0)).unwrap();
+    let shut = trace(&graph, &hops(&graph), &forbidden, &[start], Direction::Forward, Some(2.0)).unwrap();
+
+    assert_eq!(streets(&container, &open), ids(&["sv", "sq", "qv", "vt"]), "with nothing forbidden two hops reach t");
+    assert_eq!(
+        streets(&container, &shut),
+        ids(&["sv", "sq", "qv"]),
+        "the cheap arrival at v cannot leave along vt, and the dear one is a hop too far"
+    );
+
+    // And the part only an arc-settling search gets right. Lift the budget and `vt` is reachable
+    // again — along `qv`, at three hops instead of two. A search that settled nodes would have
+    // fixed `v` at one hop by way of `sv`, refused the turn, and never reconsidered the junction
+    // when the dearer arrival showed up: `vt` would drop out of the isochrone entirely, at every
+    // budget, which is a street the spread can plainly reach reported as unreachable.
+    let far = trace(&graph, &hops(&graph), &forbidden, &[start], Direction::Forward, None).unwrap();
+    let arrival = |street: &str| {
+        let edge = edge_at(&container, street);
+        far.iter().find(|reached| reached.edge_index == edge).map(|reached| reached.at)
+    };
+
+    assert_eq!(arrival("vt"), Some(3.0), "reached the long way round, not lost with the turn that was refused");
+    assert_eq!(arrival("qv"), Some(2.0), "the dear arrival at v is what opens it");
+}
+
+#[test]
+fn running_the_network_backwards_reads_the_same_restriction_from_the_other_end() {
+    let container = container_of(&junction());
+    let graph = graph_of(&container);
+    let end = node_at(&container, -3.6960, 40.4160);
+    let forbidden = Turns::from([(edge_at(&container, "sv"), vec![edge_at(&container, "vt")])]);
+
+    let backward = trace(&graph, &hops(&graph), &forbidden, &[end], Direction::Backward, Some(2.0)).unwrap();
+
+    // Having crossed `vt`, `sv` is what may not be taken: the same movement, met from the far end.
+    assert_eq!(
+        streets(&container, &backward),
+        ids(&["vt", "qv"]),
+        "sv is shut to an arrival along vt, so two hops back from t stop at qv"
+    );
+}
+
+#[test]
+fn ignoring_direction_ignores_the_turns_with_it() {
+    let container = container_of(&junction());
+    let graph = graph_of(&container);
+    let start = node_at(&container, -3.7080, 40.4160);
+    let forbidden = Turns::from([(edge_at(&container, "sv"), vec![edge_at(&container, "vt")])]);
+
+    let both = trace(&graph, &hops(&graph), &forbidden, &[start], Direction::Both, Some(2.0)).unwrap();
+
+    // "What is connected to this" is not a movement, so there is no turn in it to forbid.
+    assert_eq!(streets(&container, &both), ids(&["sv", "sq", "qv", "vt"]), "connectivity is not a journey");
+}
+
+/// The whole path, from a column in the file to a spread that honours it: this is what the road
+/// importer writes, and naming the column is what makes an isochrone agree with a route over the
+/// same container.
+#[test]
+fn the_solver_reads_the_restriction_column_the_importer_wrote() {
+    let mut features = junction();
+    features[0]["properties"]["roads:no_turn"] = json!(trama_format::edge_id("vt").to_string());
+    let container = compile(&features, &[CHANNEL()], &[]).unwrap();
+    let start = node_at(&container, -3.7080, 40.4160);
+    let spread = |restriction_property: Option<String>| {
+        let parameters = Parameters {
+            operation: Operation::Trace { seeds: vec![start], direction: Direction::Forward, budget: Some(2.0) },
+            cost: Cost::Hops,
+            restriction_property,
+            ..Default::default()
+        };
+        solve(&container, &parameters, 0.0, 0.0).unwrap().len()
+    };
+
+    // Without naming the column the file's restriction is inert: a container carries the fact,
+    // and a caller decides whether this question is one it applies to.
+    assert_eq!(spread(None) / 18, 4, "four streets within two hops when the column is not read");
+    assert_eq!(spread(Some("roads:no_turn".into())) / 18, 3, "three when it is");
 }
