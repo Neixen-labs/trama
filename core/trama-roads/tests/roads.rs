@@ -240,6 +240,42 @@ fn a_street_with_no_limit_falls_back_to_its_road_class() {
     assert!((speed_of(json!({"highway": "primary"})) - 13.888).abs() < 0.01);
 }
 
+/// The classes a fast road is actually tagged with, which the fallback used to miss.
+///
+/// It mattered rather than being tidiness: of the 265 `trunk` ways in the published Teruel
+/// extract only 29 declare a `maxspeed`, so 236 stretches of dual carriageway were costed at the
+/// 30 km/h a residential street gets. Every route and every isochrone that used one was wrong in
+/// the same direction, and nothing in the output said so — a plausible number is the hardest kind
+/// of error to see.
+#[test]
+fn a_fast_road_with_no_limit_is_not_costed_as_a_residential_street() {
+    assert!((speed_of(json!({"highway": "motorway"})) - 33.333).abs() < 0.01, "120 km/h");
+    assert!((speed_of(json!({"highway": "trunk"})) - 25.0).abs() < 0.01, "90 km/h");
+}
+
+/// A slip road is slower than the road it joins and faster than the street it lands on.
+///
+/// Giving a link its parent's speed would make every interchange look like a shortcut; leaving it
+/// on the 30 km/h default makes the only legal way onto a motorway look like a back street. Both
+/// distort the same junction, in opposite directions.
+#[test]
+fn a_slip_road_is_costed_between_the_roads_it_joins() {
+    let (motorway, link, residential) = (
+        speed_of(json!({"highway": "motorway"})),
+        speed_of(json!({"highway": "motorway_link"})),
+        speed_of(json!({"highway": "residential"})),
+    );
+
+    assert!(link < motorway, "a slip road is not the motorway: {link} against {motorway}");
+    assert!(link > residential, "nor a back street: {link} against {residential}");
+    for class in ["trunk_link", "primary_link", "secondary_link", "tertiary_link"] {
+        let speed = speed_of(json!({"highway": class}));
+        assert!(speed > residential, "{class} fell through to the residential default: {speed}");
+    }
+    // A declared limit still wins over the class, on a link like anywhere else.
+    assert!((speed_of(json!({"highway": "motorway_link", "maxspeed": "40"})) - 11.111).abs() < 0.01);
+}
+
 #[test]
 fn an_unparseable_limit_falls_back_instead_of_reading_as_zero() {
     // `signals` and `variable` appear in real data. A zero would make the edge infinitely slow.
