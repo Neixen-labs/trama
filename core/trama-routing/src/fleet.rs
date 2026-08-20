@@ -34,6 +34,16 @@ pub struct Fleet {
     pub capacity: f64,
     /// The most vehicles available. Fewer are used when fewer suffice.
     pub vehicles: usize,
+    /// When each stop may be served, measured from the start of the round in whatever unit
+    /// `costs` carries — seconds, when the solver builds them from a speed column. Empty means the
+    /// problem has no windows at all and every route is feasible in time, which is the plain
+    /// capacitated problem this crate solved before.
+    ///
+    /// Arriving early is allowed and the vehicle waits; arriving after the close is not, and the
+    /// route is refused rather than driven late. That asymmetry is the whole of what a window is.
+    pub windows: Vec<(f64, f64)>,
+    /// How long serving each stop takes, in seconds. Empty means instantaneous.
+    pub service: Vec<f64>,
 }
 
 /// One vehicle's work: the stops it serves in order, and the edges it crosses to do it.
@@ -85,6 +95,37 @@ impl Distances {
     }
 }
 
+/// When each stop on a route is served, or `None` if a window shuts before the vehicle arrives.
+///
+/// This is the only place that knows what a window means, and every other pass asks it rather than
+/// reasoning about time itself: the construction asks before merging two routes, the improvement
+/// asks before keeping a reversal, and the assembly asks to put the waiting into the clock. One
+/// definition, three callers, and no way for them to disagree about whether a round can be driven.
+///
+/// A fleet with no windows is feasible by construction, and this says so in its first line rather
+/// than walking the route to discover it.
+fn schedule(distances: &Distances, fleet: &Fleet, route: &[usize]) -> Option<Vec<f64>> {
+    if fleet.windows.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut served = Vec::with_capacity(route.len());
+    let mut clock = 0.0;
+    let mut previous = 0;
+    for stop in route {
+        clock += distances.cost[previous][stop + 1];
+        let (opens, closes) = fleet.windows[*stop];
+        // Early is a wait, late is a refusal. A vehicle can stand still; it cannot arrive sooner.
+        clock = clock.max(opens);
+        if clock > closes {
+            return None;
+        }
+        served.push(clock);
+        clock += fleet.service.get(*stop).copied().unwrap_or(0.0);
+        previous = stop + 1;
+    }
+    Some(served)
+}
+
 /// Assign the stops to vehicles and order each one's round.
 pub fn plan(graph: &Graph, costs: &[f64], forbidden: &Turns, fleet: &Fleet) -> Result<Vec<Assignment>, String> {
     if fleet.stops.is_empty() {
@@ -109,10 +150,48 @@ pub fn plan(graph: &Graph, costs: &[f64], forbidden: &Turns, fleet: &Fleet) -> R
     if fleet.demands.iter().any(|demand| *demand < 0.0 || !demand.is_finite()) {
         return Err("a demand must be a finite, non-negative number".into());
     }
+    if !fleet.windows.is_empty() && fleet.windows.len() != fleet.stops.len() {
+        return Err(format!(
+            "{} stops carry {} time windows; there must be one for each, or none at all",
+            fleet.stops.len(),
+            fleet.windows.len()
+        ));
+    }
+    if !fleet.service.is_empty() && fleet.service.len() != fleet.stops.len() {
+        return Err(format!(
+            "{} stops carry {} service times; there must be one for each, or none at all",
+            fleet.stops.len(),
+            fleet.service.len()
+        ));
+    }
+    if let Some(bad) = fleet
+        .windows
+        .iter()
+        .position(|(opens, closes)| !(opens.is_finite() && closes.is_finite() && *opens >= 0.0 && opens <= closes))
+    {
+        let (opens, closes) = fleet.windows[bad];
+        return Err(format!("stop {bad} opens at {opens} and closes at {closes}, which is not a window"));
+    }
+    if fleet.service.iter().any(|seconds| *seconds < 0.0 || !seconds.is_finite()) {
+        return Err("a service time must be a finite, non-negative number".into());
+    }
 
     let mut points = vec![fleet.depot];
     points.extend(&fleet.stops);
     let distances = Distances::build(graph, costs, forbidden, &points)?;
+
+    // A stop the depot cannot reach before its own window shuts is not a stop that makes a plan
+    // expensive — it is one no plan contains, because the direct run is the earliest any vehicle
+    // could possibly arrive. Saying so here is the difference between a refusal and a plan that
+    // silently breaks the constraint it was given: every later pass only ever adds time.
+    if let Some(unreachable) = (0..fleet.stops.len()).find(|stop| schedule(&distances, fleet, &[*stop]).is_none()) {
+        let (opens, closes) = fleet.windows[unreachable];
+        return Err(format!(
+            "stop {unreachable} closes at {closes} and the depot cannot reach it before {:.0}, so no round serves it \
+             in time (it opens at {opens})",
+            distances.cost[0][unreachable + 1]
+        ));
+    }
 
     let mut routes = savings(&distances, fleet);
     if routes.len() > fleet.vehicles {
@@ -123,7 +202,7 @@ pub fn plan(graph: &Graph, costs: &[f64], forbidden: &Turns, fleet: &Fleet) -> R
         ));
     }
     for route in routes.iter_mut() {
-        two_opt(&distances, route);
+        two_opt(&distances, fleet, route);
     }
     Ok(routes.into_iter().map(|stops| assemble(&distances, costs, fleet, stops)).collect())
 }
@@ -169,6 +248,20 @@ fn savings(distances: &Distances, fleet: &Fleet) -> Vec<Vec<usize>> {
         if routes[from].last() != Some(&i) || routes[to].first() != Some(&j) {
             continue;
         }
+        // Capacity is a sum and can be checked on the totals; time is not. Whether the merged
+        // round can be driven depends on the order the stops end up in, so the only way to know
+        // is to lay the clock along it.
+        //
+        // ponytail: the merged route is rebuilt and walked per candidate pair, so this is O(n³)
+        // where the plain problem is O(n²). Fine for the tens of stops a van does in a day; if a
+        // caller ever plans hundreds, carry each route's latest feasible start alongside its load
+        // and the check becomes O(1) like the capacity one beside it.
+        if !fleet.windows.is_empty() {
+            let merged: Vec<usize> = routes[from].iter().chain(&routes[to]).copied().collect();
+            if schedule(distances, fleet, &merged).is_none() {
+                continue;
+            }
+        }
         let moved = std::mem::take(&mut routes[to]);
         for stop in &moved {
             owner[*stop] = from;
@@ -186,7 +279,7 @@ fn savings(distances: &Distances, fleet: &Fleet) -> Vec<Vec<usize>> {
 /// The classical 2-opt move on a round trip. It repairs the crossings the savings pass leaves
 /// behind, which are the cheapest kind of mistake to find: a route that crosses itself is always
 /// improved by reversing the section between the crossings.
-fn two_opt(distances: &Distances, route: &mut Vec<usize>) {
+fn two_opt(distances: &Distances, fleet: &Fleet, route: &mut Vec<usize>) {
     let leg = |a: usize, b: usize| distances.cost[a][b];
     // The depot at both ends, as matrix indices, so the ends are ordinary moves.
     let at = |route: &Vec<usize>, position: usize| {
@@ -205,7 +298,14 @@ fn two_opt(distances: &Distances, route: &mut Vec<usize>) {
                 let after = leg(a, c) + leg(b, d) + (i..j).map(|k| leg(at(route, k + 1), at(route, k))).sum::<f64>();
                 if after + 1e-9 < before {
                     route[i - 1..j].reverse();
-                    improved = true;
+                    // Cheaper is not the same as drivable. Reversing a run reorders the arrivals
+                    // behind it, which is precisely the move a window is most likely to refuse —
+                    // so a shorter round that misses an appointment is put straight back.
+                    if schedule(distances, fleet, route).is_some() {
+                        improved = true;
+                    } else {
+                        route[i - 1..j].reverse();
+                    }
                 }
             }
         }
@@ -214,11 +314,14 @@ fn two_opt(distances: &Distances, route: &mut Vec<usize>) {
 
 /// One route's stops into the edges a vehicle actually drives, with the clock at each.
 fn assemble(distances: &Distances, costs: &[f64], fleet: &Fleet, stops: Vec<usize>) -> Assignment {
+    // The same schedule the construction was checked against, so the clock the map draws and the
+    // clock that decided this round is drivable are one number rather than two that agree today.
+    let served = schedule(distances, fleet, &stops).expect("the plan only keeps feasible routes");
     let mut edges = Vec::new();
     let mut reached_at = Vec::new();
     let mut elapsed = 0.0;
     let mut previous = 0;
-    for stop in stops.iter().chain(std::iter::once(&usize::MAX)) {
+    for (position, stop) in stops.iter().chain(std::iter::once(&usize::MAX)).enumerate() {
         // The sentinel is the leg home: every round ends where it started.
         let next = if *stop == usize::MAX { 0 } else { stop + 1 };
         for edge in &distances.path[previous][next] {
@@ -227,6 +330,12 @@ fn assemble(distances: &Distances, costs: &[f64], fleet: &Fleet, stops: Vec<usiz
             elapsed += costs[*edge];
             edges.push(*edge);
             reached_at.push(elapsed);
+        }
+        // Standing at the stop: the wait for it to open, then the serving itself. Both push every
+        // later edge back, which is why a van that idles an hour shows the round taking an hour
+        // longer rather than the map pretending it drove straight on.
+        if let Some(start) = served.get(position) {
+            elapsed = *start + fleet.service.get(*stop).copied().unwrap_or(0.0);
         }
         previous = next;
     }
@@ -252,8 +361,18 @@ pub fn manifest(assignments: &[Assignment]) -> BTreeMap<usize, Vec<usize>> {
 /// whose parameters are mutually exclusive, which is a schema saying "this is really two things".
 pub struct FleetSolver;
 
-const KNOWN: [&str; 8] =
-    ["channel", "depot", "stops", "demands", "capacity", "vehicles", "speed_property", "restriction_property"];
+const KNOWN: [&str; 10] = [
+    "channel",
+    "depot",
+    "stops",
+    "demands",
+    "capacity",
+    "vehicles",
+    "speed_property",
+    "restriction_property",
+    "windows",
+    "service",
+];
 
 impl Solver for FleetSolver {
     fn id(&self) -> &'static str {
@@ -300,12 +419,38 @@ impl Solver for FleetSolver {
                 .collect::<Result<Vec<f64>, Rejection>>()?,
             _ => return Err(Rejection::request("demands is an array of numbers")),
         };
+        // `[[opens, closes], ...]`, in seconds from the start of the round. Absent means the plain
+        // capacitated problem, where any order is as drivable as any other.
+        let windows = match &request.params["windows"] {
+            Value::Null => Vec::new(),
+            Value::Array(values) => values
+                .iter()
+                .map(|value| match value.as_array().map(|pair| (pair.len(), pair)) {
+                    Some((2, pair)) => match (pair[0].as_f64(), pair[1].as_f64()) {
+                        (Some(opens), Some(closes)) => Ok((opens, closes)),
+                        _ => Err(Rejection::request("a window is two numbers")),
+                    },
+                    _ => Err(Rejection::request("a window is a [opens, closes] pair")),
+                })
+                .collect::<Result<Vec<(f64, f64)>, Rejection>>()?,
+            _ => return Err(Rejection::request("windows is an array of [opens, closes] pairs")),
+        };
+        let service = match &request.params["service"] {
+            Value::Null => Vec::new(),
+            Value::Array(values) => values
+                .iter()
+                .map(|value| value.as_f64().ok_or_else(|| Rejection::request("service holds numbers")))
+                .collect::<Result<Vec<f64>, Rejection>>()?,
+            _ => return Err(Rejection::request("service is an array of numbers")),
+        };
         let fleet = Fleet {
             depot,
             stops,
             demands,
             capacity: request.params["capacity"].as_f64().unwrap_or(f64::INFINITY),
             vehicles: request.params["vehicles"].as_u64().unwrap_or(1) as usize,
+            windows,
+            service,
         };
 
         let channel_name = request.params["channel"].as_str().unwrap_or("vehicle");
@@ -347,5 +492,82 @@ impl Solver for FleetSolver {
             }
         }
         Ok(records)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A matrix written by hand, so a route can be put in a state the construction would not
+    /// build. `path` stays empty: the improvement pass reads costs and never the edges behind
+    /// them, which is what makes it testable this way.
+    fn distances(cost: Vec<Vec<f64>>) -> Distances {
+        let n = cost.len();
+        Distances { cost, path: vec![vec![Vec::new(); n]; n] }
+    }
+
+    fn fleet_of(windows: Vec<(f64, f64)>) -> Fleet {
+        Fleet {
+            depot: 0,
+            stops: vec![1, 2, 3],
+            demands: vec![1.0, 1.0, 1.0],
+            capacity: 10.0,
+            vehicles: 1,
+            windows,
+            service: Vec::new(),
+        }
+    }
+
+    /// Three stops on a line at 10, 20 and 30, with one leg made dear in one direction only.
+    ///
+    /// The asymmetry is the point and not a typo: driving from the far stop back to the near one
+    /// costs 50 rather than 20, as a one-way street would make it. Without it the line is too
+    /// even — several orders tie at 60, so a pass that ignored the windows entirely could still
+    /// land on a feasible one by accident and the test would prove nothing. With it, `[0, 1, 2]`
+    /// at 60 is the strictly best order and the only one the windows forbid, so the reversal the
+    /// improvement pass is offered is exactly the one it must refuse.
+    ///
+    /// `[1, 0, 2]` costs 80, `[1, 2, 0]` costs 90.
+    fn line() -> Distances {
+        distances(vec![
+            vec![0.0, 10.0, 20.0, 30.0],
+            vec![10.0, 0.0, 10.0, 20.0],
+            vec![20.0, 10.0, 0.0, 10.0],
+            vec![30.0, 50.0, 10.0, 0.0],
+        ])
+    }
+
+    /// The improvement pass does its job when nothing forbids it.
+    #[test]
+    fn a_reversal_that_shortens_the_round_is_taken() {
+        let mut route = vec![1, 0, 2];
+        two_opt(&line(), &fleet_of(Vec::new()), &mut route);
+        assert_eq!(route, vec![0, 1, 2], "80 down to 60 by reversing the first two");
+    }
+
+    /// And declines it when the shorter round cannot be driven.
+    ///
+    /// The same route and the same saving, with windows the reversal breaks. Note where the
+    /// breakage comes from: on a line the cheap order reaches every stop *no later* than the dear
+    /// one, so a close alone could never rule it out. It is the **wait** that does it — stop 0
+    /// does not open until 40, and `[0, 1, 2]` goes there first and stands still for 30, which
+    /// pushes stop 1 out to 50 against a door that shuts at 25. `[1, 0, 2]` serves stop 1 on the
+    /// way out at 20 and does its waiting afterwards, where nothing is queued behind it.
+    ///
+    /// That is the shape of nearly every real infeasibility a window creates, and it is why the
+    /// check cannot be replaced by comparing arrival times pairwise.
+    #[test]
+    fn a_reversal_that_breaks_a_window_is_put_back() {
+        let (distances, fleet) = (line(), fleet_of(vec![(40.0, 100.0), (0.0, 25.0), (0.0, 100.0)]));
+        let mut route = vec![1, 0, 2];
+
+        two_opt(&distances, &fleet, &mut route);
+
+        assert!(schedule(&distances, &fleet, &route).is_some(), "the pass left a round that cannot be driven");
+        assert_eq!(route, vec![1, 0, 2], "the cheaper order idles at stop 0 and reaches stop 1 twenty-five late");
+        // Spelled out, so the test still says what it is about if the numbers above ever move:
+        // the move it declined was a real saving and a real infeasibility, not a no-op.
+        assert!(schedule(&distances, &fleet, &[0, 1, 2]).is_none());
     }
 }
