@@ -165,6 +165,8 @@ fn every_stop_is_served_once_and_no_vehicle_is_overloaded() {
         demands: vec![3.0, 4.0, 2.0, 5.0, 3.0, 1.0],
         capacity: 10.0,
         vehicles: 3,
+        windows: Vec::new(),
+        service: Vec::new(),
     };
     let plan = fleet::plan(&graph, &costs, &no_turns(), &fleet).unwrap_or_else(|error| panic!("{error}"));
 
@@ -189,7 +191,15 @@ fn the_plan_is_within_a_tenth_of_the_true_optimum() {
 
     let stops = nodes[1..6].to_vec();
     let demands = vec![4.0, 4.0, 4.0, 4.0, 4.0];
-    let fleet = Fleet { depot: nodes[0], stops: stops.clone(), demands: demands.clone(), capacity: 10.0, vehicles: 3 };
+    let fleet = Fleet {
+        depot: nodes[0],
+        stops: stops.clone(),
+        demands: demands.clone(),
+        capacity: 10.0,
+        vehicles: 3,
+        windows: Vec::new(),
+        service: Vec::new(),
+    };
     let plan = fleet::plan(&graph, &costs, &no_turns(), &fleet).unwrap();
     let planned = fleet::total_cost(&plan);
 
@@ -217,6 +227,8 @@ fn a_stop_bigger_than_a_vehicle_is_refused_rather_than_split() {
         demands: vec![2.0, 20.0],
         capacity: 10.0,
         vehicles: 4,
+        windows: Vec::new(),
+        service: Vec::new(),
     };
     match fleet::plan(&graph, &costs, &no_turns(), &fleet) {
         Err(message) => assert!(message.contains("no vehicle can serve it"), "{message}"),
@@ -237,6 +249,8 @@ fn too_few_vehicles_says_how_many_it_would_need() {
         demands: vec![8.0, 8.0, 8.0, 8.0],
         capacity: 10.0,
         vehicles: 1,
+        windows: Vec::new(),
+        service: Vec::new(),
     };
     match fleet::plan(&graph, &costs, &no_turns(), &fleet) {
         Err(message) => assert!(message.contains("vehicles"), "{message}"),
@@ -247,4 +261,243 @@ fn too_few_vehicles_says_how_many_it_would_need() {
 /// No turn restrictions: what every test here but the restriction ones asks for.
 fn no_turns() -> Turns {
     Turns::new()
+}
+
+/// When each stop on a round is served, worked out here rather than asked of the planner.
+///
+/// Deliberately a second implementation of the rule, not a call into the first: a test that asked
+/// `fleet::plan` whether its own answer was feasible would agree with itself no matter what the
+/// rule was. Early is a wait, late is a refusal — that is the whole statement, and this is the
+/// place it gets written down twice on purpose.
+fn arrivals(costs: &[Vec<f64>], windows: &[(f64, f64)], service: &[f64], order: &[usize]) -> Option<Vec<f64>> {
+    let mut served = Vec::new();
+    let mut clock = 0.0;
+    let mut previous = 0;
+    for stop in order {
+        clock += costs[previous][stop + 1];
+        clock = clock.max(windows[*stop].0);
+        if clock > windows[*stop].1 {
+            return None;
+        }
+        served.push(clock);
+        clock += service.get(*stop).copied().unwrap_or(0.0);
+        previous = stop + 1;
+    }
+    Some(served)
+}
+
+/// One vehicle, two stops, and a window that only one order satisfies.
+///
+/// ```text
+///   depot --85m-- near ------1190m------ far
+/// ```
+///
+/// On a line the two orders cost the same to drive, so nothing about distance chooses between
+/// them: the round goes out and comes back either way. What chooses is the clock. `near` does not
+/// open until 1500, and leaving it that late puts `far` past its own close — so the only round
+/// that can be driven serves `far` first and doubles back, which is the order a planner that
+/// ignored windows would have no reason to pick.
+#[test]
+fn a_window_decides_an_order_that_distance_is_indifferent_to() {
+    let container = ladder(5);
+    let graph = graph_of(&container);
+    let nodes = nodes_along(&graph);
+    let costs = trama_format::edge_lengths(&container).unwrap();
+    let stops = vec![nodes[1], nodes[5]];
+    let windows = vec![(1500.0, 3000.0), (0.0, 2000.0)];
+
+    let with = fleet::plan(
+        &graph,
+        &costs,
+        &no_turns(),
+        &Fleet {
+            depot: nodes[0],
+            stops: stops.clone(),
+            demands: vec![1.0, 1.0],
+            capacity: 10.0,
+            vehicles: 1,
+            windows: windows.clone(),
+            service: Vec::new(),
+        },
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+
+    let mut points = vec![nodes[0]];
+    points.extend(&stops);
+    let matrix = matrix(&graph, &costs, &points);
+
+    assert_eq!(with.len(), 1, "one vehicle, one round");
+    assert_eq!(with[0].stops, vec![1, 0], "the far stop first, because the near one is not open yet");
+    assert!(
+        arrivals(&matrix, &windows, &[], &with[0].stops).is_some(),
+        "the planned round misses a window it was given"
+    );
+    // And the order the planner picks when nobody mentions time is the one that breaks them, so
+    // the assertion above is not passing by luck.
+    let without = fleet::plan(
+        &graph,
+        &costs,
+        &no_turns(),
+        &Fleet {
+            depot: nodes[0],
+            stops,
+            demands: vec![1.0, 1.0],
+            capacity: 10.0,
+            vehicles: 1,
+            windows: Vec::new(),
+            service: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(
+        arrivals(&matrix, &windows, &[], &without[0].stops).is_none(),
+        "the unconstrained order happens to satisfy the windows, so this instance proves nothing"
+    );
+}
+
+/// The optimum again, with the enumeration filtered by feasibility rather than by capacity alone.
+#[test]
+fn the_plan_with_windows_is_within_a_tenth_of_the_best_feasible_one() {
+    let container = ladder(5);
+    let graph = graph_of(&container);
+    let nodes = nodes_along(&graph);
+    let costs = trama_format::edge_lengths(&container).unwrap();
+
+    let stops = nodes[1..6].to_vec();
+    let demands = vec![4.0, 4.0, 4.0, 4.0, 4.0];
+    // Wide enough that plenty of orders work and a few do not, which is where a heuristic can
+    // still be wrong without being obviously wrong.
+    let windows = vec![(0.0, 4000.0), (0.0, 3000.0), (500.0, 5000.0), (0.0, 6000.0), (0.0, 2500.0)];
+    let fleet = Fleet {
+        depot: nodes[0],
+        stops: stops.clone(),
+        demands: demands.clone(),
+        capacity: 10.0,
+        vehicles: 3,
+        windows: windows.clone(),
+        service: Vec::new(),
+    };
+    let plan = fleet::plan(&graph, &costs, &no_turns(), &fleet).unwrap_or_else(|error| panic!("{error}"));
+
+    let mut points = vec![nodes[0]];
+    points.extend(&stops);
+    let matrix = matrix(&graph, &costs, &points);
+    for assignment in &plan {
+        assert!(
+            arrivals(&matrix, &windows, &[], &assignment.stops).is_some(),
+            "a planned round misses a window: {:?}",
+            assignment.stops
+        );
+    }
+
+    let best = feasible_optimum(&matrix, &demands, &windows, 10.0, 3);
+    let planned = fleet::total_cost(&plan);
+    assert!(best.is_finite(), "the instance has no feasible plan at all, so the comparison is empty");
+    assert!(planned >= best - 1e-6, "no plan can beat the optimum: {planned} against {best}");
+    assert!(
+        planned <= best * 1.1,
+        "planned {planned}, best feasible {best}, gap {:.1}%",
+        (planned / best - 1.0) * 100.0
+    );
+}
+
+/// The optimum over the orders a window actually allows.
+fn feasible_optimum(
+    costs: &[Vec<f64>],
+    demands: &[f64],
+    windows: &[(f64, f64)],
+    capacity: f64,
+    vehicles: usize,
+) -> f64 {
+    let n = demands.len();
+    let mut best = f64::INFINITY;
+    for labelling in 0..vehicles.pow(n as u32) {
+        let mut groups: Vec<Vec<usize>> = vec![Vec::new(); vehicles];
+        let mut code = labelling;
+        for stop in 0..n {
+            groups[code % vehicles].push(stop);
+            code /= vehicles;
+        }
+        if groups.iter().any(|group| group.iter().map(|stop| demands[*stop]).sum::<f64>() > capacity) {
+            continue;
+        }
+        let total: f64 = groups.iter().map(|group| best_feasible_order(costs, windows, group)).sum();
+        best = best.min(total);
+    }
+    best
+}
+
+fn best_feasible_order(costs: &[Vec<f64>], windows: &[(f64, f64)], group: &[usize]) -> f64 {
+    if group.is_empty() {
+        return 0.0;
+    }
+    let mut order: Vec<usize> = group.to_vec();
+    let mut best = f64::INFINITY;
+    permute(&mut order, 0, &mut |candidate| {
+        if arrivals(costs, windows, &[], candidate).is_some() {
+            best = best.min(round_trip(costs, candidate));
+        }
+    });
+    best
+}
+
+/// A window nothing can meet is refused, and the message says which stop and by how much.
+#[test]
+fn a_stop_that_shuts_before_anyone_could_arrive_is_refused_rather_than_missed() {
+    let container = ladder(5);
+    let graph = graph_of(&container);
+    let nodes = nodes_along(&graph);
+    let costs = trama_format::edge_lengths(&container).unwrap();
+
+    let fleet = Fleet {
+        depot: nodes[0],
+        stops: vec![nodes[1], nodes[5]],
+        demands: vec![1.0, 1.0],
+        capacity: 10.0,
+        vehicles: 4,
+        // The far stop shuts at 10, and the direct run there is the earliest any vehicle could
+        // possibly arrive — so no ordering, no extra van and no capacity saves it.
+        windows: vec![(0.0, 5000.0), (0.0, 10.0)],
+        service: Vec::new(),
+    };
+
+    match fleet::plan(&graph, &costs, &no_turns(), &fleet) {
+        Err(message) => {
+            assert!(message.contains("stop 1"), "the message names the stop: {message}");
+            assert!(message.contains("in time"), "{message}");
+        }
+        Ok(plan) => panic!("a stop nobody can reach in time has no plan: {} rounds", plan.len()),
+    }
+}
+
+/// Waiting and serving are on the clock the map draws, not just in the feasibility check.
+#[test]
+fn a_van_that_waits_shows_the_round_taking_longer() {
+    let container = ladder(5);
+    let graph = graph_of(&container);
+    let nodes = nodes_along(&graph);
+    let costs = trama_format::edge_lengths(&container).unwrap();
+    let round = |windows: Vec<(f64, f64)>, service: Vec<f64>| {
+        let fleet = Fleet {
+            depot: nodes[0],
+            stops: vec![nodes[1]],
+            demands: vec![1.0],
+            capacity: 10.0,
+            vehicles: 1,
+            windows,
+            service,
+        };
+        fleet::total_cost(&fleet::plan(&graph, &costs, &no_turns(), &fleet).unwrap())
+    };
+
+    let driving = round(Vec::new(), Vec::new());
+    let waiting = round(vec![(5000.0, 9000.0)], Vec::new());
+    let serving = round(vec![(0.0, 9000.0)], vec![600.0]);
+
+    // The stop is a couple of hundred metres out, so a window opening at 5000 is a long idle.
+    assert!(waiting > driving + 4000.0, "waiting {waiting} against driving {driving}");
+    assert!(
+        (serving - driving - 600.0).abs() < 1e-6,
+        "serving should add exactly its own 600: {serving} against {driving}"
+    );
 }
