@@ -5,8 +5,8 @@ equivalence test compares, so neither changes without a deliberate reason.
 
 ## `teruel.trama`
 
-The whole street network of Teruel, Spain — 2,772 nodes, 3,651 edges — shipped **compiled**.
-That is the point of it: 240 kB as a container against the 1.9 MB of Overpass JSON it came from,
+The whole street network of Teruel, Spain — 2,870 nodes, 3,855 edges — shipped **compiled**.
+That is the point of it: 256 kB as a container against the 2.1 MB of Overpass JSON it came from,
 and the playground opens it without a compile step. The example is the first pillar's claim in
 the one place a visitor can weigh it.
 
@@ -14,11 +14,19 @@ A whole small city rather than a slice of a large one, so the questions asked of
 a route across town, how far you get in ten minutes, and which streets are the only way through.
 Nothing in it is hydraulic and nothing needed to be invented for it.
 
-It also carries the turns the city forbids: 151 `type=restriction` relations, of which 69 land on
-an edge as a `roads:no_turn` column. The rest name a junction the split did not separate or a way
-outside the extract, and are dropped rather than guessed at. The counts move when OSM moves —
-this file is a snapshot of a live database, and regenerating it is expected to shift the graph by
-a street or two.
+It also carries the turns the city forbids: 153 `type=restriction` relations, of which 135 edges
+carry a `roads:no_turn` column. What is still dropped is one restriction whose `via` is a way
+rather than a node — 0.7% of this city's, and under 1% of Madrid's or Zaragoza's — and two of a
+kind that describes priority rather than permission. Both are refused rather than guessed at.
+
+**The query asks for `*_link` ways and this matters more than it sounds.** Slip roads are how a
+city joins its fast roads, and leaving them out did not merely lose the 68 restrictions that name
+one: it left parts of the network reachable only in principle. Including them took the largest
+connected component from 95.2% of the streets to 99.0%, and made four of 52 sampled node pairs
+routable that previously had no path at all.
+
+The counts move when OSM moves — this file is a snapshot of a live database, and regenerating it
+is expected to shift the graph by a street or two.
 
 **© OpenStreetMap contributors**, licensed under the
 [Open Database License](https://opendatacommons.org/licenses/odbl/) (ODbL). ODbL governs this

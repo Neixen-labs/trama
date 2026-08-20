@@ -304,6 +304,14 @@ fn speed_metres_per_second(maxspeed: Option<&str>, highway: Option<&str>) -> f64
         Some("living_street") => 20.0,
         Some("residential") | Some("unclassified") => 30.0,
         Some("primary") | Some("secondary") | Some("tertiary") => 50.0,
+        // A slip road is not the road it joins: it is taken slower, and giving it the parent's
+        // speed makes every interchange look like a shortcut. Cheaper than the road it leaves and
+        // dearer than the street it lands on, which is what driving one feels like.
+        Some("motorway_link") => 60.0,
+        Some("trunk_link") => 50.0,
+        Some("primary_link") | Some("secondary_link") | Some("tertiary_link") => 40.0,
+        Some("motorway") => 120.0,
+        Some("trunk") => 90.0,
         _ => 30.0,
     });
     kilometres_per_hour / 3.6

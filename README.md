@@ -88,7 +88,7 @@ Your data leaves the same way it came in. GeoJSON exports as two FeatureCollecti
 ./target/release/trama export ../fixtures/teruel.trama tiles/ --to mvt
 ```
 
-The third is the exit that needs no TRAMA at the other end: one `{z}/{x}/{y}.mvt` per stored tile, which a plain MapLibre or Mapbox client already knows how to draw. Teruel becomes 107 tiles. Decoded and reassembled by an unrelated MVT reader, all 3,649 edges and 2,770 nodes are present and no vertex has moved more than **0.32 m** — the cost of MVT's 4,096-unit tile space against the 65,535 the container stores. Topology does not survive: a tile is a picture of a network, and `docs/SPEC.md` §9 lists exactly what is lost.
+The third is the exit that needs no TRAMA at the other end: one `{z}/{x}/{y}.mvt` per stored tile, which a plain MapLibre or Mapbox client already knows how to draw. Teruel becomes 107 tiles. Decoded and reassembled by an unrelated MVT reader, every one of its edges and nodes is present and no vertex has moved more than **0.32 m** — the cost of MVT's 4,096-unit tile space against the 65,535 the container stores. Topology does not survive: a tile is a picture of a network, and `docs/SPEC.md` §9 lists exactly what is lost.
 
 A whole city is 234 kB as a container against 1.1 MB as the GeoPackage and 604 kB as the tile pyramid it exports to — the anti-lock-in promise costs something to leave with, which is the point of measuring it.
 
