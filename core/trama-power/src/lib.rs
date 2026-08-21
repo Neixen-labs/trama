@@ -8,9 +8,11 @@
 //! features carrying `power:` properties, and one opaque record holding what it cannot type.
 //!
 //! What travels in `XTRA` is the rest of the network — loads, generators, the external grid,
-//! switches, standard types — plus the *schema* of the three tables this importer expresses.
-//! The schema is not data another section could carry (SPEC 330): it is the column order a
-//! reader needs to put the rows back, and the rows themselves are in `GRPH` and `PROP`.
+//! switches, standard types — plus the *schema* of the tables this importer expresses. The schema
+//! is not data another section could carry (SPEC 330): it is the column order a reader needs to
+//! put the rows back, and the rows themselves are in `GRPH` and `PROP`. It also says which columns
+//! the file *had*, which is how an empty `tap_changer_type` can be told from a network written
+//! before there was one to fill in.
 
 pub mod flow;
 pub mod network;
@@ -24,8 +26,8 @@ use trama_format::{Extra, Import, Importer};
 
 pub const OWNER: &str = "power";
 pub const MEDIA_TYPE: &str = "application/vnd.pandapower.network+json";
-/// The three tables this importer turns into entities. Everything else travels whole.
-const EXPRESSED: [&str; 3] = ["bus", "line", "trafo"];
+/// The tables this importer turns into entities. Everything else travels whole.
+const EXPRESSED: [&str; 4] = ["bus", "line", "trafo", "trafo3w"];
 /// How far apart two buses drawn at the same coordinate are placed, in metres.
 ///
 /// A substation's high and low sides sit at one point on any map, and the transformer between
@@ -81,16 +83,24 @@ pub fn import(text: &str) -> Result<Import, String> {
         .ok_or("a pandapower JSON has an '_object' map of tables; write it with pandapower.to_json")?;
 
     let buses = frame(tables, "bus")?;
-    let mut positions: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
+    let mut placed: BTreeMap<i64, Placed> = BTreeMap::new();
     let mut taken: BTreeMap<(u64, u64), u32> = BTreeMap::new();
     let mut features: Vec<Value> = Vec::new();
     for (index, row) in buses.rows() {
+        // A three-winding transformer's star point becomes a bus of its own under a negative
+        // index, which is only free because pandapower's own are not. Say so rather than let a
+        // star point and a bus quietly become one node.
+        if index < 0 {
+            return Err(format!(
+                "bus {index} has a negative index, which this importer reserves for the star point \
+                 of a three-winding transformer"
+            ));
+        }
         let drawn = point(row.get("geo"))
             .ok_or_else(|| format!("bus {index} carries no point geometry, so it cannot be placed on a map"))?;
-        let occupants = taken.entry((drawn.0.to_bits(), drawn.1.to_bits())).or_default();
-        let position = separate(drawn, *occupants);
-        *occupants += 1;
-        positions.insert(index, position);
+        let position = separate(drawn, &mut taken);
+        let vn_kv = row.get("vn_kv").and_then(|value| value.as_f64());
+        placed.insert(index, Placed { drawn, position, vn_kv });
         let mut properties = named(&row);
         properties.insert("power:kind".into(), json!("bus"));
         properties.insert("power:index".into(), json!(index));
@@ -107,13 +117,63 @@ pub fn import(text: &str) -> Result<Import, String> {
     // where two lines share an endpoint, and "nearly the same point" is not shared.
     for (table, from, to) in [("line", "from_bus", "to_bus"), ("trafo", "hv_bus", "lv_bus")] {
         for (index, row) in frame(tables, table)?.rows() {
-            let ends = [terminal(&row, from, &positions, table, index)?, terminal(&row, to, &positions, table, index)?];
+            let ends = [
+                terminal(&row, from, &placed, table, index)?.position,
+                terminal(&row, to, &placed, table, index)?.position,
+            ];
             let mut path = vec![json!([ends[0].0, ends[0].1])];
             path.extend(interior(row.get("geo")));
             path.push(json!([ends[1].0, ends[1].1]));
             let mut properties = named(&row);
             properties.insert("power:kind".into(), json!(table));
             properties.insert("power:index".into(), json!(index));
+            features.push(json!({
+                "type": "Feature",
+                "properties": Value::Object(properties),
+                "geometry": {"type": "LineString", "coordinates": path},
+            }));
+        }
+    }
+
+    // A three-winding transformer is a star of three, and pandapower says so itself: it solves one
+    // by splitting it into three two-winding transformers against an auxiliary bus that exists in
+    // the calculation and not in `net.bus`. Here that bus is made real, because the file has to
+    // carry the topology a solver will rebuild — three edges need a node to meet at, and SPEC 3.3
+    // has no other shape for one entity touching three.
+    for (index, row) in optional(tables, "trafo3w")?.rows() {
+        let hv = terminal(&row, "hv_bus", &placed, "trafo3w", index)?;
+        let mv = terminal(&row, "mv_bus", &placed, "trafo3w", index)?;
+        let lv = terminal(&row, "lv_bus", &placed, "trafo3w", index)?;
+
+        // The star point sits inside the transformer, which stands where its high side does, and
+        // takes the next free slot on that coordinate under the same rule that separates a
+        // substation's own buses. Placing it at the centroid of the three instead would land it
+        // exactly on the middle one whenever all three are drawn at one point — the common case,
+        // since a substation is one place on any map.
+        let star = separate(hv.drawn, &mut taken);
+        // pandapower gives its auxiliary bus the high side's base voltage, which is why the
+        // equivalent transformer between the two is the one that steps nothing.
+        let mut properties: Map<String, Value> = Map::new();
+        properties.insert("power:kind".into(), json!("trafo3w_star"));
+        properties.insert("power:index".into(), json!(-(index + 1)));
+        properties.insert("power:vn_kv".into(), json!(hv.vn_kv));
+        properties.insert("power:name".into(), json!(format!("trafo3w {index} star point")));
+        features.push(json!({
+            "type": "Feature",
+            "properties": Value::Object(properties),
+            "geometry": {"type": "Point", "coordinates": [star.0, star.1]},
+        }));
+
+        // Drawn the way pandapower orders them — high side into the star, star out to the other
+        // two — so that a branch's `from` and `to` mean the same thing on both sides of the
+        // comparison the tests make.
+        for (side, end) in [("hv", hv), ("mv", mv), ("lv", lv)] {
+            let (a, b) = if side == "hv" { (end.position, star) } else { (star, end.position) };
+            let path = vec![json!([a.0, a.1]), json!([b.0, b.1])];
+            let mut properties = named(&row);
+            properties.insert("power:kind".into(), json!("trafo3w"));
+            properties.insert("power:index".into(), json!(index));
+            properties.insert("power:side".into(), json!(side));
             features.push(json!({
                 "type": "Feature",
                 "properties": Value::Object(properties),
@@ -140,6 +200,11 @@ pub fn import(text: &str) -> Result<Import, String> {
 fn remainder(document: &Value, tables: &Map<String, Value>) -> Result<String, String> {
     let mut trimmed = document.clone();
     for name in EXPRESSED {
+        // A network written before a table existed simply does not carry it, and there is then
+        // nothing to empty. `bus`, `line` and `trafo` are required by [`import`] itself.
+        if !tables.contains_key(name) {
+            continue;
+        }
         let frame = frame(tables, name)?;
         let emptied = json!({"columns": frame.columns, "index": [], "data": []});
         trimmed["_object"][name]["_object"] = json!(serde_json::to_string(&emptied).map_err(|e| e.to_string())?);
@@ -164,6 +229,14 @@ impl Frame {
                 (*index, self.columns.iter().map(String::as_str).zip(values).collect::<BTreeMap<&str, &Value>>())
             })
             .collect()
+    }
+}
+
+/// The same, for a table a network is allowed not to have at all.
+fn optional(tables: &Map<String, Value>, name: &str) -> Result<Frame, String> {
+    match tables.contains_key(name) {
+        true => frame(tables, name),
+        false => Ok(Frame { columns: Vec::new(), index: Vec::new(), data: Vec::new() }),
     }
 }
 
@@ -202,26 +275,37 @@ fn named(row: &BTreeMap<&str, &Value>) -> Map<String, Value> {
         .collect()
 }
 
-fn terminal(
-    row: &BTreeMap<&str, &Value>,
-    column: &str,
-    positions: &BTreeMap<i64, (f64, f64)>,
-    table: &str,
-    index: i64,
-) -> Result<(f64, f64), String> {
-    let bus =
-        row.get(column).and_then(|value| value.as_i64()).ok_or_else(|| format!("{table} {index} names no {column}"))?;
-    positions
-        .get(&bus)
-        .copied()
-        .ok_or_else(|| format!("{table} {index} connects to bus {bus}, which this network does not have"))
+/// A bus as the map got it, as the graph got it, and at what voltage.
+///
+/// The two coordinates differ only where a substation drew several buses at one point. The drawn
+/// one is what a later star point is placed against, because that is the coordinate whose
+/// occupants are being counted.
+struct Placed {
+    drawn: (f64, f64),
+    position: (f64, f64),
+    vn_kv: Option<f64>,
 }
 
-/// The `nth` bus drawn at one coordinate, stepped east so each keeps its own node.
+fn terminal<'a>(
+    row: &BTreeMap<&str, &Value>,
+    column: &str,
+    placed: &'a BTreeMap<i64, Placed>,
+    table: &str,
+    index: i64,
+) -> Result<&'a Placed, String> {
+    let bus =
+        row.get(column).and_then(|value| value.as_i64()).ok_or_else(|| format!("{table} {index} names no {column}"))?;
+    placed.get(&bus).ok_or_else(|| format!("{table} {index} connects to bus {bus}, which this network does not have"))
+}
+
+/// The next free place at one coordinate, stepped east so each occupant keeps its own node.
 ///
 /// The first one stays exactly where the source put it, so a network without coincident buses
 /// is untouched and the common case compiles to the same bytes it always did.
-fn separate(drawn: (f64, f64), nth: u32) -> (f64, f64) {
+fn separate(drawn: (f64, f64), taken: &mut BTreeMap<(u64, u64), u32>) -> (f64, f64) {
+    let occupants = taken.entry((drawn.0.to_bits(), drawn.1.to_bits())).or_default();
+    let nth = *occupants;
+    *occupants += 1;
     if nth == 0 {
         return drawn;
     }
