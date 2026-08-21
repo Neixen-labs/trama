@@ -308,12 +308,33 @@ fn junction() -> Vec<Value> {
     ]
 }
 
-fn no_turn(imported: &trama_format::Import, id: &str) -> Vec<u64> {
+/// The runs the column forbids, each the edges to be crossed after the one carrying it.
+///
+/// An ordinary turn is a run of one. A `via`-way restriction is longer, and the helper returns
+/// both shapes the same way so a test asserting on one cannot silently pass on the other.
+fn runs(imported: &trama_format::Import, id: &str) -> Vec<Vec<u64>> {
     let feature = imported.features.iter().find(|f| f["id"] == json!(id)).expect("the piece is there");
     match feature["properties"].get("roads:no_turn") {
         None => Vec::new(),
-        Some(value) => value.as_str().unwrap().split(' ').map(|id| id.parse().unwrap()).collect(),
+        Some(value) => value
+            .as_str()
+            .unwrap()
+            .split(' ')
+            .map(|run| run.split('>').map(|id| id.parse().unwrap()).collect())
+            .collect(),
     }
+}
+
+/// The single edges forbidden after this one, for the tests written before runs existed. A run
+/// longer than one is not a turn and would be a silent pass here, so it is refused out loud.
+fn no_turn(imported: &trama_format::Import, id: &str) -> Vec<u64> {
+    runs(imported, id)
+        .into_iter()
+        .map(|run| match run.as_slice() {
+            [only] => *only,
+            longer => panic!("{id} forbids a run of {} edges, which this helper cannot state", longer.len()),
+        })
+        .collect()
 }
 
 #[test]
@@ -376,11 +397,14 @@ fn a_way_running_through_the_via_node_forbids_the_turn_from_both_sides() {
     assert_eq!(no_turn(&imported, "osm:way/1/1"), forbidden, "both halves arrive along way 1");
 }
 
-/// A restriction whose `via` is a way spans two junctions and cannot be a property of one edge.
-/// It is skipped rather than half-applied — applying it to either junction alone would forbid a
-/// movement the relation does not forbid.
+/// A `via` way that does not actually lead from `from` to `to` forbids nothing.
+///
+/// Here way 2 leaves the junction and ends at node 12, which way 3 never touches — so there is no
+/// crossing to forbid, whatever the relation says. Skipping it is the only honest answer: applying
+/// it to the junction alone would forbid a movement the relation does not mention, and inventing a
+/// route to way 3 would forbid one nobody can drive.
 #[test]
-fn a_restriction_across_a_via_way_is_skipped_rather_than_guessed() {
+fn a_via_way_that_does_not_reach_the_exit_forbids_nothing() {
     let mut elements = junction();
     elements.push(json!({
         "type": "relation",
@@ -432,4 +456,129 @@ fn a_mandatory_turn_does_not_quietly_forbid_the_u_turn_as_well() {
     let forbidden = no_turn(&imported, "osm:way/1/0");
     assert_eq!(forbidden, vec![trama_format::edge_id("osm:way/3/0")]);
     assert!(!forbidden.contains(&trama_format::edge_id("osm:way/1/0")), "the U-turn is no_u_turn's to forbid");
+}
+
+/// A restriction whose `via` is a way: the no-U-turn across a dual carriageway.
+///
+/// ```text
+///        way 1 (north carriageway)          way 3 (continues north)
+///   9 ------------> 10 ----------------> 11 ------------>
+///                    |
+///                 way 2 (the link between the carriageways)
+///                    |
+///   ... <----------- 12 <---------------- ...
+///        way 4 (south carriageway)
+/// ```
+///
+/// Coming down way 1, crossing the link, and turning back along way 4 is the U-turn the sign
+/// forbids. No property of any single edge can say so: way 2 is perfectly crossable, way 4 is
+/// perfectly drivable, and it is only the three of them in that order that is refused.
+fn carriageways() -> Vec<Value> {
+    let north = [[-3.704, 40.418], [-3.702, 40.418], [-3.700, 40.418]];
+    let link = [[-3.702, 40.418], [-3.702, 40.416]];
+    let south = [[-3.702, 40.416], [-3.704, 40.416]];
+    vec![
+        way(1, vec![9, 10], vec![north[0], north[1]], json!({"highway": "trunk", "oneway": "yes"})),
+        way(2, vec![10, 12], vec![link[0], link[1]], json!({"highway": "trunk_link"})),
+        way(3, vec![10, 11], vec![north[1], north[2]], json!({"highway": "trunk", "oneway": "yes"})),
+        way(4, vec![12, 13], vec![south[0], south[1]], json!({"highway": "trunk", "oneway": "yes"})),
+    ]
+}
+
+/// A `via`-way restriction, whose `via` member is one or more ways rather than a node.
+fn restriction_via_way(id: u64, from: u64, via: &[u64], to: u64, kind: &str) -> Value {
+    let mut members = vec![json!({"type": "way", "ref": from, "role": "from"})];
+    members.extend(via.iter().map(|way| json!({"type": "way", "ref": way, "role": "via"})));
+    members.push(json!({"type": "way", "ref": to, "role": "to"}));
+    json!({"type": "relation", "id": id, "members": members, "tags": {"type": "restriction", "restriction": kind}})
+}
+
+#[test]
+fn a_restriction_across_a_link_forbids_the_whole_run_and_not_the_link() {
+    let mut elements = carriageways();
+    elements.push(restriction_via_way(100, 1, &[2], 4, "no_u_turn"));
+    let imported = import(&extract(elements)).unwrap();
+
+    // The run hangs off the edge a driver arrives on, and names the link and then the far
+    // carriageway — in that order, because the order is the whole of what is forbidden.
+    assert_eq!(
+        runs(&imported, "osm:way/1/0"),
+        vec![vec![trama_format::edge_id("osm:way/2/0"), trama_format::edge_id("osm:way/4/0")]]
+    );
+    // The link itself forbids nothing: crossing it is legal, and a file that closed it would
+    // strand everything on the other carriageway.
+    assert!(runs(&imported, "osm:way/2/0").is_empty(), "the link is crossable");
+    assert!(runs(&imported, "osm:way/3/0").is_empty(), "and so is carrying straight on");
+    assert!(runs(&imported, "osm:way/4/0").is_empty());
+}
+
+/// The chain is walked rather than read off the member list, because a `via` way splits too.
+///
+/// Way 2 is cut in half at node 11 by a street crossing it, so the crossing is two edges and the
+/// forbidden run is four long. A reader that trusted the relation to name its pieces would have
+/// found one member and produced a run that skips the second half — a run no driver can walk,
+/// which forbids nothing at all.
+#[test]
+fn a_via_way_split_at_a_junction_is_crossed_piece_by_piece() {
+    let elements = vec![
+        way(1, vec![9, 10], vec![[-3.704, 40.418], [-3.702, 40.418]], json!({"highway": "trunk"})),
+        // The link, crossed midway at node 11 by way 5.
+        way(
+            2,
+            vec![10, 11, 12],
+            vec![[-3.702, 40.418], [-3.702, 40.417], [-3.702, 40.416]],
+            json!({"highway": "trunk_link"}),
+        ),
+        way(4, vec![12, 13], vec![[-3.702, 40.416], [-3.704, 40.416]], json!({"highway": "trunk"})),
+        way(5, vec![11, 14], vec![[-3.702, 40.417], [-3.700, 40.417]], json!({"highway": "residential"})),
+        restriction_via_way(100, 1, &[2], 4, "no_u_turn"),
+    ];
+    let imported = import(&extract(elements)).unwrap();
+
+    assert_eq!(
+        runs(&imported, "osm:way/1/0"),
+        vec![vec![
+            trama_format::edge_id("osm:way/2/0"),
+            trama_format::edge_id("osm:way/2/1"),
+            trama_format::edge_id("osm:way/4/0"),
+        ]],
+        "both halves of the link are in the run, in the order they are driven"
+    );
+}
+
+/// A `via` naming several ways is crossed in topological order, not member order.
+#[test]
+fn a_via_of_several_ways_is_ordered_by_how_they_join() {
+    let elements = vec![
+        way(1, vec![9, 10], vec![[-3.704, 40.418], [-3.702, 40.418]], json!({"highway": "trunk"})),
+        way(2, vec![10, 11], vec![[-3.702, 40.418], [-3.702, 40.417]], json!({"highway": "trunk_link"})),
+        way(3, vec![11, 12], vec![[-3.702, 40.417], [-3.702, 40.416]], json!({"highway": "trunk_link"})),
+        way(4, vec![12, 13], vec![[-3.702, 40.416], [-3.704, 40.416]], json!({"highway": "trunk"})),
+        // Deliberately listed the wrong way round: OSM guarantees no order among members.
+        restriction_via_way(100, 1, &[3, 2], 4, "no_u_turn"),
+    ];
+    let imported = import(&extract(elements)).unwrap();
+
+    assert_eq!(
+        runs(&imported, "osm:way/1/0"),
+        vec![vec![
+            trama_format::edge_id("osm:way/2/0"),
+            trama_format::edge_id("osm:way/3/0"),
+            trama_format::edge_id("osm:way/4/0"),
+        ]],
+        "walked from where `from` meets the via, whatever order the relation listed"
+    );
+}
+
+/// A `via`-way restriction naming a way the extract does not hold is dropped, not guessed at.
+#[test]
+fn a_via_way_that_leads_nowhere_in_this_extract_forbids_nothing() {
+    let mut elements = carriageways();
+    // Way 77 is outside the bounding box: nothing can be walked across it.
+    elements.push(restriction_via_way(100, 1, &[77], 4, "no_u_turn"));
+    let imported = import(&extract(elements)).unwrap();
+
+    for id in ["osm:way/1/0", "osm:way/2/0", "osm:way/3/0", "osm:way/4/0"] {
+        assert!(runs(&imported, id).is_empty(), "{id} carries a restriction nobody could place");
+    }
 }

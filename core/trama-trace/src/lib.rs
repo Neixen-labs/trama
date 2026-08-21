@@ -13,10 +13,12 @@
 //! knows that some *pairs* of edges may not be crossed in succession, which is a fact no single
 //! edge can hold and the reason the search settles arcs rather than nodes.
 
-use std::collections::{BTreeMap, BinaryHeap, VecDeque};
+use std::collections::{BinaryHeap, VecDeque};
 
 use serde_json::Value;
-use trama_format::{Graph, edge_lengths, edge_properties, parse_graph, read_sections};
+use trama_format::{Graph, Progress, edge_lengths, edge_properties, parse_graph, read_sections};
+
+pub use trama_format::Turns;
 use trama_solver::server::{Rejection, Request, Solver};
 use trama_solver::{declared, pack};
 
@@ -167,13 +169,6 @@ pub fn solve(container: &[u8], parameters: &Parameters, t0: f32, t1: f32) -> Res
     Ok(records)
 }
 
-/// Which edges an edge may not be followed by, by edge index. Empty when nobody asked.
-///
-/// A restriction is a fact about a *pair* of edges, which is why it cannot live on either one
-/// alone as a cost or a flag. This crate learns it as a relation between indices and nothing
-/// more: what a left turn is, and which tag spells it, stays with whoever produced the container.
-pub type Turns = BTreeMap<usize, Vec<usize>>;
-
 /// Every edge the search can cross, with the cost standing on it when it does.
 ///
 /// Multi-seed Dijkstra, which degenerates to a breadth-first search when every edge costs the
@@ -231,25 +226,49 @@ fn search(
     // metre or milliseconds of a second: below anything a network is measured to.
     let scale = 1000.0;
     let ceiling = budget.map(|limit| (limit * scale).round() as i64);
-    let mut best = vec![i64::MAX; arcs.len()];
+    // A walk is an arc together with how far along the forbidden runs it stands, packed into one
+    // index. With nothing forbidden the automaton has a single state, `states` is 1, and this is
+    // exactly the arc-settling search it was before — the general case costs the common case
+    // nothing but a multiplication by one.
+    // A walk is an arc together with how far along the forbidden runs it stands. Held per arc
+    // rather than as one array of arc × state: the automaton over a city has hundreds of states
+    // and the dense form would allocate — and clear — tens of megabytes for a search that only
+    // ever visits a handful of them. Nearly every arc is reached at one progress only, so the
+    // inner list holds a single entry and looking through it is a comparison.
+    let mut best: Vec<Vec<(Progress, i64)>> = vec![Vec::new(); arcs.len()];
     let mut reached: Vec<Option<i64>> = vec![None; graph.edges.len()];
     let mut queue = BinaryHeap::new();
-    let open = |arc: usize, arrival: i64, best: &mut Vec<i64>, queue: &mut BinaryHeap<(i64, usize)>| {
-        if blocked[arcs[arc].0] || ceiling.is_some_and(|limit| arrival > limit) || arrival >= best[arc] {
+    let settled = |best: &[Vec<(Progress, i64)>], arc: usize, progress: Progress| -> i64 {
+        best[arc].iter().find(|(at, _)| *at == progress).map_or(i64::MAX, |(_, cost)| *cost)
+    };
+    let open = |arc: usize,
+                progress: Progress,
+                arrival: i64,
+                best: &mut Vec<Vec<(Progress, i64)>>,
+                queue: &mut BinaryHeap<(i64, usize, Progress)>| {
+        if blocked[arcs[arc].0] || ceiling.is_some_and(|limit| arrival > limit) {
             return;
         }
-        best[arc] = arrival;
-        queue.push((-arrival, arc));
+        match best[arc].iter_mut().find(|(at, _)| *at == progress) {
+            Some((_, cost)) if arrival >= *cost => return,
+            Some((_, cost)) => *cost = arrival,
+            None => best[arc].push((progress, arrival)),
+        }
+        queue.push((-arrival, arc, progress));
     };
-    // The arcs leaving the seeds. There is no arc before them, so no turn to check.
+    // The arcs leaving the seeds. Nothing was crossed before them, so each starts the automaton
+    // from scratch: a search that begins here has not walked the edge a run would begin with.
     for seed in seeds {
         for arc in leaving[*seed]..leaving[*seed + 1] {
-            open(arc, (costs[arcs[arc].0] * scale).round() as i64, &mut best, &mut queue);
+            let Some(progress) = closed.advance(Turns::START, arcs[arc].0) else {
+                continue;
+            };
+            open(arc, progress, (costs[arcs[arc].0] * scale).round() as i64, &mut best, &mut queue);
         }
     }
-    while let Some((negated, arc)) = queue.pop() {
+    while let Some((negated, arc, progress)) = queue.pop() {
         let spent = -negated;
-        if spent > best[arc] {
+        if spent > settled(&best, arc, progress) {
             continue;
         }
         let (edge_index, node) = arcs[arc];
@@ -258,14 +277,14 @@ fn search(
         if reached[edge_index].is_none_or(|previous| spent < previous) {
             reached[edge_index] = Some(spent);
         }
-        let shut = closed.get(&edge_index);
         for next in leaving[node]..leaving[node + 1] {
-            // The turn itself: crossing this edge and then that one is what a restriction names.
-            if shut.is_some_and(|shut| shut.contains(&arcs[next].0)) {
+            // The movement itself: this run of edges, ending with that one, is what a restriction
+            // names. `None` is the step the run forbids.
+            let Some(onward) = closed.advance(progress, arcs[next].0) else {
                 continue;
-            }
+            };
             let crossing = (costs[arcs[next].0] * scale).round() as i64;
-            open(next, spent.saturating_add(crossing), &mut best, &mut queue);
+            open(next, onward, spent.saturating_add(crossing), &mut best, &mut queue);
         }
     }
     Ok(reached
@@ -285,15 +304,7 @@ fn search(
 fn oriented(forbidden: &Turns, direction: Direction) -> Turns {
     match direction {
         Direction::Forward => forbidden.clone(),
-        Direction::Backward => {
-            let mut inverted = Turns::new();
-            for (entry, exits) in forbidden {
-                for exit in exits {
-                    inverted.entry(*exit).or_default().push(*entry);
-                }
-            }
-            inverted
-        }
+        Direction::Backward => forbidden.reversed(),
         Direction::Both => Turns::new(),
     }
 }
@@ -501,43 +512,14 @@ fn costs_of(container: &[u8], graph: &Graph, cost: &Cost) -> Result<Vec<f64>, St
     }
 }
 
-/// Which edges each edge may not be followed by, read from a `PROP` column of stable ids.
+/// The forbidden runs of edges named by a `PROP` column, ready for the search to walk.
 ///
-/// The column holds ids rather than indices because an id is what the file is addressed by and
-/// what survives a recompilation; an index is an artefact of this reader's own ordering. So the
-/// translation happens once, here, and the search works in indices from then on.
-///
-/// An id naming no edge in this container is skipped rather than refused: a restriction can point
-/// at a street outside the extract, and an edge that is not here is one the search could never
-/// have taken anyway.
-///
-/// ponytail: the same twenty lines live in `trama-routing`, deliberately. The two searches want
-/// different things — a route wants one path and stops early, a spread wants every edge's cost
-/// and runs the queue dry — so sharing them would mean a search with four parameters its first
-/// caller never uses. Extract to a common crate when a third reader appears, not before.
+/// The reading lives in `trama_format::Turns`, shared with `trama-routing`. It used to be copied
+/// here on purpose — two searches wanting different things from one column — and the copy was
+/// undone when what had to be duplicated stopped being twenty lines of parsing and became an
+/// automaton. A miscopied automaton is a file two crates disagree about, silently.
 pub fn forbidden_turns(container: &[u8], graph: &Graph, key: Option<&str>) -> Result<Turns, String> {
-    let Some(key) = key else {
-        return Ok(Turns::new());
-    };
-    let rows = edge_properties(container)?;
-    let by_id: BTreeMap<u64, usize> = graph.edges.iter().enumerate().map(|(index, edge)| (edge.id, index)).collect();
-    let mut turns = Turns::new();
-    for (index, edge) in graph.edges.iter().enumerate() {
-        let Some(listed) = rows.get(edge.property_row as usize).and_then(|row| row.get(key)).and_then(Value::as_str)
-        else {
-            continue;
-        };
-        let closed: Vec<usize> = listed
-            .split_whitespace()
-            .filter_map(|id| id.parse().ok())
-            .filter_map(|id| by_id.get(&id))
-            .copied()
-            .collect();
-        if !closed.is_empty() {
-            turns.insert(index, closed);
-        }
-    }
-    Ok(turns)
+    Turns::read(container, graph, key)
 }
 
 pub struct TraceSolver;

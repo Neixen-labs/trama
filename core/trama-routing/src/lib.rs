@@ -164,39 +164,13 @@ fn traversal_seconds(container: &[u8], graph: &Graph, parameters: &Parameters) -
         .collect())
 }
 
-/// Which edges each edge may not be followed by, read from a `PROP` column of stable ids.
+/// The forbidden runs of edges named by a `PROP` column, ready for the search to walk.
 ///
-/// The column holds ids rather than indices because an id is what the file is addressed by and
-/// what survives a recompilation; an index is an artefact of this reader's own ordering. So the
-/// translation happens once, here, and the search works in indices from then on.
-///
-/// An id naming no edge in this container is skipped rather than refused. A restriction can point
-/// at a street outside the extract — the relation is one object and the bounding box cut through
-/// it — and that is a fact about the clip, not a corrupt file. It costs nothing to ignore: an
-/// edge that is not here is one the search could never have taken anyway.
-fn forbidden_turns(container: &[u8], graph: &Graph, key: Option<&str>) -> Result<Turns, String> {
-    let Some(key) = key else {
-        return Ok(Turns::new());
-    };
-    let rows = edge_properties(container)?;
-    let by_id: BTreeMap<u64, usize> = graph.edges.iter().enumerate().map(|(index, edge)| (edge.id, index)).collect();
-    let mut turns = Turns::new();
-    for (index, edge) in graph.edges.iter().enumerate() {
-        let Some(listed) = rows.get(edge.property_row as usize).and_then(|row| row.get(key)).and_then(|v| v.as_str())
-        else {
-            continue;
-        };
-        let closed: Vec<usize> = listed
-            .split_whitespace()
-            .filter_map(|id| id.parse().ok())
-            .filter_map(|id| by_id.get(&id))
-            .copied()
-            .collect();
-        if !closed.is_empty() {
-            turns.insert(index, closed);
-        }
-    }
-    Ok(turns)
+/// The reading lives in `trama_format::Turns` rather than here: `trama-trace` asks the same
+/// question of the same column, and a run automaton copied into two crates is one that can come to
+/// disagree about which movements exist over a single file.
+pub(crate) fn forbidden_turns(container: &[u8], graph: &Graph, key: Option<&str>) -> Result<Turns, String> {
+    Turns::read(container, graph, key)
 }
 
 /// Every edge's length in metres, from the geometry the container already stores.
@@ -241,12 +215,7 @@ fn shortest_path(
     Ok(search.retrace(to))
 }
 
-/// Which edges an edge forbids continuing onto, by edge index. Empty when nobody asked.
-///
-/// A turn restriction is a fact about a *pair* of edges, which is why it cannot live on either
-/// one alone as a cost or a flag. This crate learns it as a relation between indices and nothing
-/// more: what a left turn is, and which tag spells it, stays with whoever produced the container.
-pub type Turns = BTreeMap<usize, Vec<usize>>;
+pub use trama_format::Turns;
 
 /// A completed search: what each node cost to reach, and the arc it was reached by.
 ///
@@ -256,28 +225,40 @@ pub type Turns = BTreeMap<usize, Vec<usize>>;
 /// situations, because they permit different exits. Two searches that agree on the cheapest way
 /// to a node can disagree on whether the road out of it is open.
 pub(crate) struct Search {
-    /// Cheapest cost to each node, over every arc that reaches it.
+    /// Cheapest cost to each node, over every walk that reaches it.
     pub cost: BTreeMap<u32, u64>,
-    /// The arc each node was most cheaply reached by.
-    pub arrival: BTreeMap<u32, u32>,
-    /// For each arc: the edge crossed, and the arc crossed before it. `u32::MAX` is the start.
-    came_from: BTreeMap<u32, (usize, u32)>,
+    /// The walk each node was most cheaply reached by.
+    pub arrival: BTreeMap<u32, Walk>,
+    /// For each walk: the edge crossed, and the walk it continued. `NOWHERE` is the start.
+    came_from: BTreeMap<Walk, (usize, Walk)>,
 }
+
+/// Where a search stands: the arc it is on, and how far along the forbidden runs it has got.
+///
+/// The second half is what makes a run longer than a turn expressible. Arriving on one arc having
+/// just crossed the link between two carriageways is a different situation from arriving on the
+/// same arc off an ordinary street, because one of them may not turn back and the other may. With
+/// no runs declared the automaton has a single state, every walk carries the same zero, and this
+/// is the arc-settling search it was before — the general case costs the common case nothing.
+pub(crate) type Walk = (u32, trama_format::Progress);
+
+/// The walk before the first one, which no arc continues.
+const NOWHERE: Walk = (u32::MAX, 0);
 
 impl Search {
     /// The edges of the path to `to`, in order.
     ///
-    /// Walked backwards along arcs rather than nodes. Retracing by node would be free to pick a
-    /// different arc into each junction than the search actually used, and under a turn
-    /// restriction that is not merely a different path of the same cost — it is a path through a
-    /// turn the search refused to take.
+    /// Walked backwards along walks rather than nodes. Retracing by node would be free to pick a
+    /// different arrival at each junction than the search actually used, and under a restriction
+    /// that is not merely a different path of the same cost — it is a path through a movement the
+    /// search refused to make.
     pub fn retrace(&self, to: usize) -> Vec<usize> {
         let mut path = Vec::new();
-        let mut arc = self.arrival.get(&(to as u32)).copied();
-        while let Some(current) = arc.filter(|arc| *arc != u32::MAX) {
+        let mut walk = self.arrival.get(&(to as u32)).copied();
+        while let Some(current) = walk.filter(|walk| *walk != NOWHERE) {
             let (edge_index, previous) = self.came_from[&current];
             path.push(edge_index);
-            arc = Some(previous);
+            walk = Some(previous);
         }
         path.reverse();
         path
@@ -292,60 +273,68 @@ impl Search {
 ///
 /// One-way needs no special case. SPEC 4 gives a directed edge one CSR entry, at its source, so
 /// an edge that may not be crossed backwards simply does not appear among what leaves its target
-/// — the topology states the restriction and the search cannot violate it. A turn restriction is
-/// the opposite: nothing in the topology forbids it, because both edges are perfectly crossable
-/// and it is only the pair that is not. So it is checked on the step between them.
+/// — the topology states the restriction and the search cannot violate it. A restriction is the
+/// opposite: nothing in the topology forbids it, because every edge in the run is perfectly
+/// crossable and it is only the succession that is not. So it is checked on each step, against the
+/// automaton the walk carries.
 pub(crate) fn explore(graph: &Graph, costs: &[f64], forbidden: &Turns, from: usize, until: Option<usize>) -> Search {
     // Scaled to integers so the queue can order them: a thousandth of the unit, which for
     // seconds is a millisecond and for metres a millimetre. The geometry is quantized to about
     // 4 cm, so neither reading discards anything that was ever there.
     let mut search =
         Search { cost: BTreeMap::from([(from as u32, 0)]), arrival: BTreeMap::new(), came_from: BTreeMap::new() };
-    let mut best_arc: BTreeMap<u32, u64> = BTreeMap::new();
+    let mut best: BTreeMap<Walk, u64> = BTreeMap::new();
     let mut queue = BinaryHeap::new();
 
-    // The arcs leaving the origin. There is no arc before them, so no turn to check.
+    // The arcs leaving the origin. Nothing was crossed before them, so each starts the automaton
+    // from scratch: a vehicle that begins here has not driven the edge a run would begin with.
     let leaving = |node: usize| graph.csr_offsets[node] as usize..graph.csr_offsets[node + 1] as usize;
     for arc in leaving(from) {
         let entry = &graph.adjacency[arc];
+        let Some(progress) = forbidden.advance(Turns::START, entry.edge_index as usize) else {
+            continue;
+        };
+        let walk = (arc as u32, progress);
         let step = (costs[entry.edge_index as usize] * 1000.0).round() as u64;
-        if step < *best_arc.get(&(arc as u32)).unwrap_or(&u64::MAX) {
-            best_arc.insert(arc as u32, step);
-            search.came_from.insert(arc as u32, (entry.edge_index as usize, u32::MAX));
-            queue.push((std::cmp::Reverse(step), arc as u32));
+        if step < *best.get(&walk).unwrap_or(&u64::MAX) {
+            best.insert(walk, step);
+            search.came_from.insert(walk, (entry.edge_index as usize, NOWHERE));
+            queue.push((std::cmp::Reverse(step), walk));
         }
     }
 
-    while let Some((std::cmp::Reverse(cost), arc)) = queue.pop() {
-        // A stale queue entry for an arc already settled more cheaply.
-        if cost > *best_arc.get(&arc).unwrap_or(&u64::MAX) {
+    while let Some((std::cmp::Reverse(cost), walk)) = queue.pop() {
+        // A stale queue entry for a walk already settled more cheaply.
+        if cost > *best.get(&walk).unwrap_or(&u64::MAX) {
             continue;
         }
+        let (arc, progress) = walk;
         let entry = &graph.adjacency[arc as usize];
         let edge = &graph.edges[entry.edge_index as usize];
         let node = if entry.traversal_direction > 0 { edge.target } else { edge.source };
-        // The cheapest arc into a node is the cheapest way to the node. The origin sits at zero
-        // and stays there: no arc can return to it for less than nothing.
+        // The cheapest walk into a node is the cheapest way to the node. The origin sits at zero
+        // and stays there: no walk can return to it for less than nothing.
         if cost < *search.cost.get(&node).unwrap_or(&u64::MAX) {
             search.cost.insert(node, cost);
-            search.arrival.insert(node, arc);
+            search.arrival.insert(node, walk);
         }
         if Some(node as usize) == until {
             break;
         }
-        let closed = forbidden.get(&(entry.edge_index as usize));
         for next in leaving(node as usize) {
             let onward = &graph.adjacency[next];
-            // The turn itself: crossing this edge and then that one is what a restriction names.
-            if closed.is_some_and(|closed| closed.contains(&(onward.edge_index as usize))) {
+            // The movement itself: this run of edges, ending with that one, is what a restriction
+            // names. `None` is the step the run forbids.
+            let Some(onward_progress) = forbidden.advance(progress, onward.edge_index as usize) else {
                 continue;
-            }
+            };
+            let onward_walk = (next as u32, onward_progress);
             let step = (costs[onward.edge_index as usize] * 1000.0).round() as u64;
             let candidate = cost + step;
-            if candidate < *best_arc.get(&(next as u32)).unwrap_or(&u64::MAX) {
-                best_arc.insert(next as u32, candidate);
-                search.came_from.insert(next as u32, (onward.edge_index as usize, arc));
-                queue.push((std::cmp::Reverse(candidate), next as u32));
+            if candidate < *best.get(&onward_walk).unwrap_or(&u64::MAX) {
+                best.insert(onward_walk, candidate);
+                search.came_from.insert(onward_walk, (onward.edge_index as usize, walk));
+                queue.push((std::cmp::Reverse(candidate), onward_walk));
             }
         }
     }

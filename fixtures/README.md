@@ -14,10 +14,10 @@ A whole small city rather than a slice of a large one, so the questions asked of
 a route across town, how far you get in ten minutes, and which streets are the only way through.
 Nothing in it is hydraulic and nothing needed to be invented for it.
 
-It also carries the turns the city forbids: 153 `type=restriction` relations, of which 135 edges
-carry a `roads:no_turn` column. What is still dropped is one restriction whose `via` is a way
-rather than a node — 0.7% of this city's, and under 1% of Madrid's or Zaragoza's — and two of a
-kind that describes priority rather than permission. Both are refused rather than guessed at.
+It also carries the turns the city forbids: 153 `type=restriction` relations, of which 136 edges
+carry a `roads:no_turn` column — including the one whose `via` is a way rather than a node, which
+lands as a run of three edges rather than a pair. What is still dropped is two of a kind that
+describes priority rather than permission, which are refused rather than guessed at.
 
 **The query asks for `*_link` ways and this matters more than it sounds.** Slip roads are how a
 city joins its fast roads, and leaving them out did not merely lose the 68 restrictions that name

@@ -349,7 +349,7 @@ fn a_forbidden_turn_sends_the_route_the_long_way_round() {
     );
 
     // Coming in along `ab`, you may not continue onto `bc`.
-    let forbidden = Turns::from([(edge_at(&container, "ab"), vec![edge_at(&container, "bc")])]);
+    let forbidden = Turns::from_sequences([vec![edge_at(&container, "ab"), edge_at(&container, "bc")]]);
     let round = plan(&graph, &lengths, &forbidden, &[a, c]).unwrap();
 
     assert_eq!(
@@ -391,7 +391,7 @@ fn the_cheapest_way_to_a_junction_is_not_always_part_of_the_cheapest_way_through
     let lengths = lengths_of(&container);
     let (start, end) = (node_at(&container, -3.7080, 40.4160), node_at(&container, -3.6960, 40.4160));
 
-    let forbidden = Turns::from([(edge_at(&container, "sv"), vec![edge_at(&container, "vt")])]);
+    let forbidden = Turns::from_sequences([vec![edge_at(&container, "sv"), edge_at(&container, "vt")]]);
     let route = plan(&graph, &lengths, &forbidden, &[start, end]).unwrap();
 
     assert_eq!(
@@ -431,5 +431,124 @@ fn the_solver_reads_the_restriction_column_the_importer_wrote() {
         routed_edges(&honoured),
         std::collections::BTreeSet::from([trama_format::edge_id("ad"), trama_format::edge_id("dc")]),
         "naming the column is what makes the file's own restriction bite"
+    );
+}
+
+/// The dual carriageway, end to end: a run of three edges the route may not make.
+///
+/// ```text
+///        a ----ab----> b ----bc----> c        `ab` then `bl` then `ld` is the U-turn
+///                      |
+///                     bl  (the link)
+///                      |
+///        e <---le----- l <---dl----- d
+/// ```
+///
+/// Every edge here is crossable and every pair of them is a legal movement. Only the three in that
+/// order are refused, which is why nothing shorter than a run can say it: forbidding `ab` then
+/// `bl` would close the link, and forbidding `bl` then `ld` would also close it to traffic coming
+/// the other way, which the sign does not.
+#[test]
+fn a_run_of_three_edges_is_refused_where_every_pair_in_it_is_allowed() {
+    let a = [-3.7080, 40.4180];
+    let b = [-3.7040, 40.4180];
+    let c = [-3.7000, 40.4180];
+    let l = [-3.7040, 40.4160];
+    let d = [-3.7000, 40.4160];
+    let e = [-3.7080, 40.4160];
+    let features = vec![
+        line("ab", json!([a, b]), false),
+        line("bc", json!([b, c]), false),
+        line("bl", json!([b, l]), false),
+        line("ld", json!([l, d]), false),
+        line("le", json!([l, e]), false),
+    ];
+    let container = compile(&features, &[CHANNEL()], &[]).unwrap();
+    let graph = graph_of(&container);
+    let lengths = lengths_of(&container);
+    let (start, target) = (node_at(&container, -3.7080, 40.4180), node_at(&container, -3.7000, 40.4160));
+    let edge = |name: &str| edge_at(&container, name);
+
+    // Unrestricted, the U-turn is the short way: down the link and straight along.
+    let direct = plan(&graph, &lengths, &no_turns(), &[start, target]).unwrap();
+    assert_eq!(
+        crossed(&container, &direct),
+        vec![trama_format::edge_id("ab"), trama_format::edge_id("bl"), trama_format::edge_id("ld")]
+    );
+
+    let forbidden = Turns::from_sequences([vec![edge("ab"), edge("bl"), edge("ld")]]);
+    let round = plan(&graph, &lengths, &forbidden, &[start, target]).unwrap();
+
+    // The run is refused, so the route has to reach the far carriageway some other way.
+    assert_ne!(crossed(&container, &round), crossed(&container, &direct), "the forbidden run was driven anyway");
+    let ids = crossed(&container, &round);
+    let consecutive = ids.windows(3).any(|window| {
+        window == [trama_format::edge_id("ab"), trama_format::edge_id("bl"), trama_format::edge_id("ld")]
+    });
+    assert!(!consecutive, "the three edges appear in the forbidden order: {ids:?}");
+
+    // And the link itself is still open — reaching `e` across it is untouched, which is the whole
+    // reason a run cannot be flattened into a pair.
+    let across = plan(&graph, &lengths, &forbidden, &[start, node_at(&container, -3.7080, 40.4160)]).unwrap();
+    assert!(
+        crossed(&container, &across).contains(&trama_format::edge_id("bl")),
+        "forbidding the run closed the link, which forbids a movement nobody forbade"
+    );
+}
+
+/// Why the progress belongs in the settled state, not merely in the check on each step.
+///
+/// ```text
+///   s --sa--> a --ab--> b --bl--> l --ld--> d     `ab` then `bl` then `ld` is refused
+///    \                 /
+///     --sy--> y --yz--> z --zb-->
+/// ```
+///
+/// The search reaches `bl` twice: cheaply along `ab`, partway through the forbidden run, and
+/// dearly along `zb`, clear of it. Those are different situations on one edge — the first may not
+/// go on to `ld` and the second may. Keeping only the cheaper one, as a search settling arcs alone
+/// would, leaves `d` unreachable and reports no route to a place a driver can plainly get to.
+///
+/// It is the node-settling bug of the turn restrictions one level further in, and it is invisible
+/// to any test whose forbidden run can be reached only one way.
+#[test]
+fn the_cheapest_way_onto_an_edge_is_not_always_part_of_the_cheapest_way_past_it() {
+    let s = [-3.7120, 40.4180];
+    let a = [-3.7080, 40.4180];
+    let b = [-3.7040, 40.4180];
+    let l = [-3.7000, 40.4180];
+    let d = [-3.6960, 40.4180];
+    let y = [-3.7080, 40.4140];
+    let z = [-3.7040, 40.4140];
+    let features = vec![
+        line("sa", json!([s, a]), true),
+        line("ab", json!([a, b]), true),
+        line("bl", json!([b, l]), true),
+        line("ld", json!([l, d]), true),
+        line("sy", json!([s, y]), true),
+        line("yz", json!([y, z]), true),
+        line("zb", json!([z, b]), true),
+    ];
+    let container = compile(&features, &[CHANNEL()], &[]).unwrap();
+    let graph = graph_of(&container);
+    let lengths = lengths_of(&container);
+    let (start, target) = (node_at(&container, s[0], s[1]), node_at(&container, d[0], d[1]));
+    let edge = |name: &str| edge_at(&container, name);
+
+    let direct = plan(&graph, &lengths, &no_turns(), &[start, target]).unwrap();
+    assert_eq!(
+        crossed(&container, &direct),
+        ["sa", "ab", "bl", "ld"].map(trama_format::edge_id).to_vec(),
+        "unrestricted, the short way is the one through the run"
+    );
+
+    let forbidden = Turns::from_sequences([vec![edge("ab"), edge("bl"), edge("ld")]]);
+    let round = plan(&graph, &lengths, &forbidden, &[start, target])
+        .unwrap_or_else(|error| panic!("the long way exists and the search lost it: {error}"));
+
+    assert_eq!(
+        crossed(&container, &round),
+        ["sy", "yz", "zb", "bl", "ld"].map(trama_format::edge_id).to_vec(),
+        "the route reaches the link the dear way, because the cheap way may not leave it"
     );
 }

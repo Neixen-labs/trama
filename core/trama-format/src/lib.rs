@@ -8,6 +8,7 @@
 mod export;
 mod import;
 mod read;
+mod turns;
 mod write;
 
 pub use export::{
@@ -16,6 +17,7 @@ pub use export::{
 };
 pub use import::{Import, Importer, parse_options};
 pub use read::{Adjacency, Edge, GeometryReference, Graph, Node, Section, parse_graph, read_sections};
+pub use turns::{Progress, Turns};
 pub use write::{Extra, compile, edge_id};
 
 /// CRC-32C (Castagnoli), the checksum every section carries.
