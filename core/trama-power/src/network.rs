@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use trama_format::{edge_properties, node_properties, parse_graph, read_sections};
 
 use crate::flow::{self, Branch, Bus, BusKind, C};
@@ -45,7 +45,12 @@ pub enum Rating {
     /// the two agree only where the bus sits at the winding's nominal voltage, so a network solved
     /// away from nominal reports one number under the first rule and a different one under the
     /// second. A winding burns on current.
-    Winding { sn_mva: f64, vn_from_kv: f64, vn_to_kv: f64 },
+    ///
+    /// An end is `None` where there is no winding to measure. That is the star point of a
+    /// three-winding transformer: the equivalent branch reaching it has one real winding and one
+    /// end inside the machine, and taking the worse of the two would charge that branch the series
+    /// losses of the other end as if a coil somewhere were carrying them.
+    Winding { sn_mva: f64, vn_from_kv: Option<f64>, vn_to_kv: Option<f64> },
     /// The source declared no limit. Nothing is written to the loading channel for this branch:
     /// a percentage of an unknown rating is not a number, and a NaN delta would poison the
     /// colour ramp of every other branch on the map.
@@ -126,6 +131,18 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
         }
     }
 
+    // Each expressed table's columns travel in the record even though its rows do not, which is
+    // the only thing that can tell a column nobody filled in from one that never existed.
+    let declares_changer = |table: &str| {
+        tables
+            .get(table)
+            .and_then(|frame| frame.get("_object"))
+            .and_then(Value::as_str)
+            .and_then(|encoded| serde_json::from_str::<Value>(encoded).ok())
+            .and_then(|parsed| parsed["columns"].as_array().cloned())
+            .is_some_and(|columns| columns.iter().any(|column| column == "tap_changer_type"))
+    };
+
     let mut branches = Vec::with_capacity(graph.edges.len());
     let mut branch_entity = Vec::with_capacity(graph.edges.len());
     let mut rating = Vec::new();
@@ -136,13 +153,21 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
         if !boolean(row, "power:in_service") {
             continue;
         }
-        let (from_column, to_column) = match kind.as_str() {
-            "line" => ("power:from_bus", "power:to_bus"),
-            "trafo" => ("power:hv_bus", "power:lv_bus"),
+        // Which two buses an edge runs between. A branch of a three-winding transformer has one
+        // end on a bus of the network and the other on the star point the importer gave it, which
+        // carries the negative of the transformer's own index and no row of its own.
+        let side = text(row, "power:side").unwrap_or_default();
+        let ends = match kind.as_str() {
+            "line" => (integer(row, "power:from_bus"), integer(row, "power:to_bus")),
+            "trafo" => (integer(row, "power:hv_bus"), integer(row, "power:lv_bus")),
+            "trafo3w" => match side.as_str() {
+                "hv" => (integer(row, "power:hv_bus"), Some(-(index + 1))),
+                "mv" | "lv" => (Some(-(index + 1)), integer(row, &format!("power:{side}_bus"))),
+                other => return Err(format!("trafo3w {index} carries side '{other}'")),
+            },
             other => return Err(format!("edge {} is a '{other}', which this solver does not know", edge.id)),
         };
-        let ends = [from_column, to_column].map(|column| integer(row, column));
-        let (Some(from_index), Some(to_index)) = (ends[0], ends[1]) else {
+        let (Some(from_index), Some(to_index)) = ends else {
             return Err(format!("{kind} {index} does not name both of its buses"));
         };
         let mut from = *by_index
@@ -162,9 +187,21 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
             *end = auxiliary;
         }
 
+        // A tap changer counts where the file's own schema has somewhere to name one and this row
+        // did. A network written before pandapower 3.0 has no such column at all, and there a tap
+        // position is all there is to go on — so absence of the column means the old reading and
+        // absence of the value under it means no changer.
+        let terms = Terms {
+            sn_mva,
+            f_hz,
+            study,
+            correction: Correction::Apply,
+            regulated: !declares_changer(&kind) || row.contains_key("power:tap_changer_type"),
+        };
         let (branch, rated) = match kind.as_str() {
-            "line" => line(row, from, to, base_kv[from], sn_mva, f_hz, study)?,
-            _ => transformer(row, from, to, base_kv[from], base_kv[to], sn_mva, study)?,
+            "line" => line(row, from, to, base_kv[from], terms)?,
+            "trafo3w" => transformer3w(row, &side, from, to, base_kv[from], base_kv[to], terms)?,
+            _ => transformer(row, from, to, base_kv[from], base_kv[to], terms)?,
         };
         branches.push(branch);
         branch_entity.push(edge.id);
@@ -314,10 +351,9 @@ fn line(
     from: usize,
     to: usize,
     base_kv: f64,
-    sn_mva: f64,
-    f_hz: f64,
-    study: Study,
+    terms: Terms,
 ) -> Result<(Branch, Rating), String> {
+    let Terms { sn_mva, f_hz, study, .. } = terms;
     let value = |key: &str, fallback: f64| number(row, key).unwrap_or(fallback);
     let length = value("power:length_km", 0.0);
     let parallel = value("power:parallel", 1.0).max(1.0);
@@ -354,6 +390,178 @@ fn line(
     ))
 }
 
+/// What a branch needs that its own row does not carry.
+///
+/// `regulated` is the one that is not obvious: pandapower moves a transformer's ratio only where
+/// the file names a tap changer in `tap_changer_type`, and a `tap_pos` beside an empty one is a
+/// column nobody filled in rather than a transformer on tap three. Reading the position alone
+/// moves a voltage the reference does not move — by a percent or two, in whichever direction the
+/// position happens to sit.
+#[derive(Clone, Copy)]
+struct Terms {
+    sn_mva: f64,
+    f_hz: f64,
+    study: Study,
+    correction: Correction,
+    regulated: bool,
+}
+
+/// Whether a transformer's short-circuit voltage still needs IEC 60909 §3.7's correction.
+///
+/// A three-winding transformer's three branches carry it already. The standard corrects the
+/// impedance of a *pair* of windings, which is what the nameplate declares and what the star split
+/// consumes, so the factor has to go on before the split rather than on the three branches that
+/// come out of it — applying it twice, or to the wrong quantity, moves every downstream fault
+/// current by a couple of percent and nothing says so.
+#[derive(Clone, Copy, PartialEq)]
+enum Correction {
+    Apply,
+    Already,
+}
+
+/// One branch of a three-winding transformer: the equivalent two-winding one pandapower solves.
+///
+/// This is `_trafo_df_from_trafo3w` in pandapower's `build_branch.py`, one row at a time. It builds
+/// a two-winding transformer table out of the three-winding one and hands it to the very code that
+/// handles ordinary transformers, and so does this — the equivalent's nameplate is assembled here
+/// and [`transformer`] does the physics, which keeps the two kinds from drifting apart.
+///
+/// The impedances are not a third each. A three-winding transformer's nameplate gives the
+/// short-circuit voltage of each *pair* of windings, measured with the third open, each on the
+/// smaller rating of its own pair. Referring all three onto the high side's rating and running the
+/// delta-star transform is what turns three pairwise measurements into three branch impedances,
+/// and one of them is routinely negative — the star point is a calculation, not a place, and the
+/// middle winding of a real machine sits close enough to the others that its share comes out below
+/// zero. That is not an error to guard against; a negative reactance in one leg is the standard
+/// model, and `vk_percent` keeps the sign so [`transformer`] rebuilds it rather than the magnitude.
+fn transformer3w(
+    row: &BTreeMap<String, Value>,
+    side: &str,
+    from: usize,
+    to: usize,
+    hv_base_kv: f64,
+    lv_base_kv: f64,
+    terms: Terms,
+) -> Result<(Branch, Rating), String> {
+    // Every quantity below is per winding, so each is read as a triple in `hv, mv, lv` order.
+    let three = |prefix: &str, suffix: &str| -> Result<[f64; 3], String> {
+        let mut ends = [0.0; 3];
+        for (position, end) in ["hv", "mv", "lv"].into_iter().enumerate() {
+            let key = format!("power:{prefix}{end}{suffix}");
+            ends[position] =
+                number(row, &key).ok_or_else(|| format!("a three-winding transformer declares no '{key}'"))?;
+        }
+        Ok(ends)
+    };
+    // A tap on the star point re-refers the ratio onto the other end of its own branch and turns
+    // the step complex. It is a real arrangement — regulation in the tertiary — and refused rather
+    // than approximated, because a wrong ratio is a plausible voltage.
+    // ponytail: refused, not modelled. pandapower's `_calculate_3w_tap_changers` has the six lines
+    // it takes; what is missing is a fixture that would catch getting them wrong.
+    if row.get("power:tap_at_star_point").and_then(Value::as_bool).unwrap_or(false) {
+        return Err("a three-winding transformer taps at its star point, which this solver does not model".into());
+    }
+
+    let sn = three("sn_", "_mva")?;
+    let vk = three("vk_", "_percent")?;
+    let vkr = three("vkr_", "_percent")?;
+    let vn = three("vn_", "_kv")?;
+    if sn.iter().any(|rating| *rating <= 0.0) {
+        return Err("a three-winding transformer declares a winding rated at zero".into());
+    }
+
+    // Each pair's short-circuit voltage referred onto the high winding's rating. The pairs run
+    // hv-mv, mv-lv, hv-lv, and each is measured on the smaller of its own two ratings.
+    let pairs = [(0, 1), (1, 2), (0, 2)];
+    let referred = |percent: &[f64; 3]| {
+        let mut out = [0.0; 3];
+        for (leg, (a, b)) in pairs.iter().enumerate() {
+            out[leg] = sn[0] * percent[leg] / sn[*a].min(sn[*b]);
+        }
+        out
+    };
+    let mut vk_pair = referred(&vk);
+    let mut vkr_pair = referred(&vkr);
+
+    // §3.7, on each pair and before the split, with the pair's reactance in its own per-unit.
+    if let Study::Fault { c_max } = terms.study {
+        for leg in 0..3 {
+            let x = ((vk[leg] / 100.0).powi(2) - (vkr[leg] / 100.0).powi(2)).max(0.0).sqrt();
+            let kt = 0.95 * c_max / (1.0 + 0.6 * x);
+            vk_pair[leg] *= kt;
+            vkr_pair[leg] *= kt;
+        }
+    }
+
+    // Delta to star, on the resistive and reactive parts separately, each branch then re-referred
+    // onto its own winding's rating.
+    let vki_pair: Vec<f64> =
+        (0..3).map(|leg| (vk_pair[leg] * vk_pair[leg] - vkr_pair[leg] * vkr_pair[leg]).max(0.0).sqrt()).collect();
+    let star = |pair: &[f64]| {
+        [
+            0.5 * sn[0] / sn[0] * (pair[0] + pair[2] - pair[1]),
+            0.5 * sn[1] / sn[0] * (pair[1] + pair[0] - pair[2]),
+            0.5 * sn[2] / sn[0] * (pair[2] + pair[1] - pair[0]),
+        ]
+    };
+    let vkr_branch = star(&vkr_pair);
+    let vki_branch = star(&vki_pair);
+    let leg = match side {
+        "hv" => 0,
+        "mv" => 1,
+        "lv" => 2,
+        other => return Err(format!("a three-winding transformer branch carries side '{other}'")),
+    };
+    let vk_branch = vki_branch[leg].signum() * (vki_branch[leg].powi(2) + vkr_branch[leg].powi(2)).sqrt();
+    if vk_branch == 0.0 {
+        return Err("a three-winding transformer splits into a branch with no impedance".into());
+    }
+
+    // Iron losses and no-load current belong to one branch only, or the machine would magnetise
+    // three times over. pandapower puts them on the side its `trafo3w_losses` option names, which
+    // defaults to the high one.
+    let losses = text(row, "power:loss_side").unwrap_or_else(|| "hv".into());
+    let mine = |key: &str| if losses == side { number(row, key).unwrap_or(0.0) } else { 0.0 };
+
+    let (vn_hv, vn_own) = (vn[0], vn[leg]);
+    let mut equivalent: BTreeMap<String, Value> = BTreeMap::new();
+    let mut set = |key: &str, value: f64| equivalent.insert(format!("power:{key}"), json!(value));
+    set("vk_percent", vk_branch);
+    set("vkr_percent", vkr_branch[leg]);
+    set("sn_mva", sn[leg]);
+    // The high winding's nominal voltage on both sides of the branch that reaches the star point:
+    // it steps nothing, which is what makes the star point sit at the high side's base.
+    set("vn_hv_kv", vn_hv);
+    set("vn_lv_kv", vn_own);
+    set("pfe_kw", mine("power:pfe_kw"));
+    set("i0_percent", mine("power:i0_percent"));
+    set(
+        "shift_degree",
+        if side == "hv" { 0.0 } else { number(row, &format!("power:shift_{side}_degree")).unwrap_or(0.0) },
+    );
+
+    // The tap belongs to whichever branch carries the winding it sits on, and to no other. On the
+    // high branch it is a tap on that branch's high side; on the other two the regulated winding is
+    // the one away from the star point, so it becomes a tap on the low side.
+    if text(row, "power:tap_side").as_deref() == Some(side) {
+        equivalent.insert("power:tap_side".into(), json!(if side == "hv" { "hv" } else { "lv" }));
+        for key in ["tap_pos", "tap_neutral", "tap_step_percent", "tap_step_degree"] {
+            if let Some(value) = number(row, &format!("power:{key}")) {
+                equivalent.insert(format!("power:{key}"), json!(value));
+            }
+        }
+    }
+
+    let (branch, _) =
+        transformer(&equivalent, from, to, hv_base_kv, lv_base_kv, Terms { correction: Correction::Already, ..terms })?;
+    // Only the far end of each branch is a winding. The star point is not.
+    let (vn_from_kv, vn_to_kv) = match side {
+        "hv" => (Some(vn_own), None),
+        _ => (None, Some(vn_own)),
+    };
+    Ok((branch, Rating::Winding { sn_mva: sn[leg], vn_from_kv, vn_to_kv }))
+}
+
 /// A two-winding transformer, modelled in T and converted to π exactly as pandapower does.
 ///
 /// The T model puts the magnetising branch between the two leakage impedances rather than at one
@@ -367,9 +575,9 @@ fn transformer(
     to: usize,
     hv_base_kv: f64,
     lv_base_kv: f64,
-    sn_mva: f64,
-    study: Study,
+    terms: Terms,
 ) -> Result<(Branch, Rating), String> {
+    let Terms { sn_mva, study, correction, regulated, .. } = terms;
     let value = |key: &str, fallback: f64| number(row, key).unwrap_or(fallback);
     let rated_mva = value("power:sn_mva", 0.0);
     if rated_mva <= 0.0 {
@@ -381,8 +589,18 @@ fn transformer(
 
     // The tap moves the nominal voltage of the side it sits on. `tap_step_degree` would also swing
     // the angle; it is absent on a ratio changer, which is what a distribution transformer has.
-    let steps =
-        value("power:tap_step_percent", 0.0) * (value("power:tap_pos", 0.0) - value("power:tap_neutral", 0.0)) / 100.0;
+    //
+    // A fault has no tap at all. IEC 60909 computes the current from the equivalent voltage source
+    // through the *nominal* ratio, and the correction factor above is what stands in for the
+    // network not being at that voltage — putting the tap back would count the same departure
+    // twice. pandapower returns the untapped voltages outright when its mode is `sc`.
+    let steps = match regulated && matches!(study, Study::Flow { .. }) {
+        true => {
+            value("power:tap_step_percent", 0.0) * (value("power:tap_pos", 0.0) - value("power:tap_neutral", 0.0))
+                / 100.0
+        }
+        false => 0.0,
+    };
     let angle = value("power:tap_step_degree", 0.0).to_radians();
     let tapped = |nominal: f64| {
         let delta = nominal * steps;
@@ -421,6 +639,7 @@ fn transformer(
     // — small enough to look like rounding, large enough to size a breaker wrongly.
     let (r, x) = match study {
         Study::Flow { .. } => (r, x),
+        Study::Fault { .. } if correction == Correction::Already => (r, x),
         Study::Fault { c_max } => {
             // The reactance relative to the transformer's own rating, which is what §3.7 asks for.
             let relative = x * rated_mva / ((vn_lv_tapped / lv_base_kv).powi(2) * sn_mva);
@@ -474,7 +693,11 @@ fn transformer(
         },
         // The nominal voltages here are the windings' own, untapped: a tap changes what the
         // transformer does to the network, not what its windings are built to carry.
-        Rating::Winding { sn_mva: rated_mva * parallel * value("power:df", 1.0), vn_from_kv: vn_hv, vn_to_kv: vn_lv },
+        Rating::Winding {
+            sn_mva: rated_mva * parallel * value("power:df", 1.0),
+            vn_from_kv: Some(vn_hv),
+            vn_to_kv: Some(vn_lv),
+        },
     ))
 }
 
@@ -549,9 +772,10 @@ pub fn loadings(model: &Model, solution: &flow::Solution) -> Vec<Option<f64>> {
             }
             Rating::Winding { sn_mva, vn_from_kv, vn_to_kv } => {
                 let branch = &model.branches[index];
-                let from = flow.current_from.abs() * base_current(branch.from) * vn_from_kv;
-                let to = flow.current_to.abs() * base_current(branch.to) * vn_to_kv;
-                Some(from.max(to) * 3f64.sqrt() / sn_mva * 100.0)
+                let from = vn_from_kv.map(|kv| flow.current_from.abs() * base_current(branch.from) * kv);
+                let to = vn_to_kv.map(|kv| flow.current_to.abs() * base_current(branch.to) * kv);
+                let worst = from.into_iter().chain(to).fold(f64::NEG_INFINITY, f64::max);
+                Some(worst * 3f64.sqrt() / sn_mva * 100.0)
             }
         })
         .collect()
