@@ -106,6 +106,7 @@ pub enum BusKind {
     Voltage { q_min_pu: f64, q_max_pu: f64 },
 }
 
+#[derive(Clone)]
 pub struct Bus {
     pub kind: BusKind,
     /// Net injection in per-unit on the system base, generation positive.
@@ -135,6 +136,7 @@ impl Bus {
 /// `ratio` is applied at the `from` end, which is where a tap changer sits on the high-voltage
 /// side of a distribution transformer. A line is `ratio = 1 + 0j` and the arithmetic collapses to
 /// the plain π model, so lines and transformers need no separate path through the solver.
+#[derive(Clone)]
 pub struct Branch {
     pub from: usize,
     pub to: usize,
