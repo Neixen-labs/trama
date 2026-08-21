@@ -210,7 +210,7 @@ fn a_trace_is_emitted_as_a_progression_the_scrub_can_unwind() {
     let mut reached_per_instant: Vec<usize> = Vec::new();
     for step in 0..4 {
         let mut count = 0;
-        for record in deltas.chunks_exact(18) {
+        for record in deltas.as_chunks::<18>().0.iter() {
             let t = f32::from_le_bytes(record[10..14].try_into().unwrap());
             let value = f32::from_le_bytes(record[14..18].try_into().unwrap());
             if t == step as f32 && value == 1.0 {
@@ -408,7 +408,7 @@ fn a_forbidden_turn_keeps_the_street_beyond_it_out_of_the_isochrone() {
     let container = container_of(&junction());
     let graph = graph_of(&container);
     let start = node_at(&container, -3.7080, 40.4160);
-    let forbidden = Turns::from([(edge_at(&container, "sv"), vec![edge_at(&container, "vt")])]);
+    let forbidden = Turns::from_sequences([vec![edge_at(&container, "sv"), edge_at(&container, "vt")]]);
 
     let open = trace(&graph, &hops(&graph), &no_turns(), &[start], Direction::Forward, Some(2.0)).unwrap();
     let shut = trace(&graph, &hops(&graph), &forbidden, &[start], Direction::Forward, Some(2.0)).unwrap();
@@ -440,7 +440,7 @@ fn running_the_network_backwards_reads_the_same_restriction_from_the_other_end()
     let container = container_of(&junction());
     let graph = graph_of(&container);
     let end = node_at(&container, -3.6960, 40.4160);
-    let forbidden = Turns::from([(edge_at(&container, "sv"), vec![edge_at(&container, "vt")])]);
+    let forbidden = Turns::from_sequences([vec![edge_at(&container, "sv"), edge_at(&container, "vt")]]);
 
     let backward = trace(&graph, &hops(&graph), &forbidden, &[end], Direction::Backward, Some(2.0)).unwrap();
 
@@ -457,7 +457,7 @@ fn ignoring_direction_ignores_the_turns_with_it() {
     let container = container_of(&junction());
     let graph = graph_of(&container);
     let start = node_at(&container, -3.7080, 40.4160);
-    let forbidden = Turns::from([(edge_at(&container, "sv"), vec![edge_at(&container, "vt")])]);
+    let forbidden = Turns::from_sequences([vec![edge_at(&container, "sv"), edge_at(&container, "vt")]]);
 
     let both = trace(&graph, &hops(&graph), &forbidden, &[start], Direction::Both, Some(2.0)).unwrap();
 
@@ -488,4 +488,99 @@ fn the_solver_reads_the_restriction_column_the_importer_wrote() {
     // and a caller decides whether this question is one it applies to.
     assert_eq!(spread(None) / 18, 4, "four streets within two hops when the column is not read");
     assert_eq!(spread(Some("roads:no_turn".into())) / 18, 3, "three when it is");
+}
+
+/// The same three edges, forbidden from one direction of approach and allowed from another.
+///
+/// ```text
+///   a --ab--> b --bl--> l --ld--> d      `ab` then `bl` then `ld` is refused
+///   z --zb-->/                           `zb` then `bl` then `ld` is not
+/// ```
+///
+/// This is what a run of three says that no pair can. Forbidding `bl` then `ld` would shut the
+/// movement for traffic arriving from `z` as well, which nobody forbade; forbidding `ab` then `bl`
+/// would shut the link outright. Only the whole run, matched against how the spread actually
+/// arrived, distinguishes the two.
+///
+/// It is also the case that catches a search which checks the automaton but does not carry it: the
+/// restriction bites on the *second* step out of the seed, so a walk that recomputed its progress
+/// from scratch at each arc — or dropped it — would refuse nothing here while still passing every
+/// test whose restriction bites on the first step.
+#[test]
+fn a_run_is_refused_by_how_the_spread_arrived_and_not_by_which_edges_it_holds() {
+    let a = [-3.7080, 40.4180];
+    let z = [-3.7080, 40.4140];
+    let b = [-3.7040, 40.4180];
+    let l = [-3.7000, 40.4180];
+    let d = [-3.6960, 40.4180];
+    let features = vec![
+        line("ab", json!([a, b]), true),
+        line("zb", json!([z, b]), true),
+        line("bl", json!([b, l]), true),
+        line("ld", json!([l, d]), true),
+    ];
+    let container = container_of(&features);
+    let graph = graph_of(&container);
+    let edge = |name: &str| edge_at(&container, name);
+    let forbidden = Turns::from_sequences([vec![edge("ab"), edge("bl"), edge("ld")]]);
+    let spread = |seed: [f64; 2], turns: &Turns| {
+        let from = node_at(&container, seed[0], seed[1]);
+        streets(&container, &trace(&graph, &hops(&graph), turns, &[from], Direction::Forward, None).unwrap())
+    };
+
+    assert_eq!(spread(a, &no_turns()), ids(&["ab", "bl", "ld"]), "with nothing forbidden the spread runs to d");
+    assert_eq!(spread(a, &forbidden), ids(&["ab", "bl"]), "the run is refused on its last edge, not its first");
+    assert_eq!(spread(z, &forbidden), ids(&["zb", "bl", "ld"]), "arriving along zb is a different run, and allowed");
+}
+
+/// Why the progress belongs in the settled state and not merely in the check.
+///
+/// ```text
+///   s --sa--> a --ab--> b --bl--> l --ld--> d     `ab` then `bl` then `ld` is refused
+///    \                 /
+///     --sy--> y --yz--> z --zb-->
+/// ```
+///
+/// The spread reaches `bl` twice: cheaply at three hops having come along `ab`, which is partway
+/// through the forbidden run, and dearly at four having come along `zb`, which is not. Those are
+/// different situations on the same edge — one of them may go on to `ld` and the other may not.
+///
+/// A search that settled arcs alone would keep the cheap arrival, discard the dear one as
+/// redundant, and then find `ld` shut: it would report a street unreachable that the spread can
+/// plainly reach, at five hops, by the other road. This is the same shape as the node-settling bug
+/// arcs were introduced to fix, one level further in, and it is invisible to any test whose run is
+/// reachable only one way.
+#[test]
+fn arriving_at_one_edge_partway_through_a_run_and_clear_of_it_are_different_states() {
+    let s = [-3.7120, 40.4180];
+    let a = [-3.7080, 40.4180];
+    let b = [-3.7040, 40.4180];
+    let l = [-3.7000, 40.4180];
+    let d = [-3.6960, 40.4180];
+    let y = [-3.7080, 40.4140];
+    let z = [-3.7040, 40.4140];
+    let features = vec![
+        line("sa", json!([s, a]), true),
+        line("ab", json!([a, b]), true),
+        line("bl", json!([b, l]), true),
+        line("ld", json!([l, d]), true),
+        line("sy", json!([s, y]), true),
+        line("yz", json!([y, z]), true),
+        line("zb", json!([z, b]), true),
+    ];
+    let container = container_of(&features);
+    let graph = graph_of(&container);
+    let edge = |name: &str| edge_at(&container, name);
+    let forbidden = Turns::from_sequences([vec![edge("ab"), edge("bl"), edge("ld")]]);
+    let from = node_at(&container, s[0], s[1]);
+
+    let reached = trace(&graph, &hops(&graph), &forbidden, &[from], Direction::Forward, None).unwrap();
+
+    let at = |name: &str| reached.iter().find(|r| r.edge_index == edge(name)).map(|r| r.at);
+    assert_eq!(at("bl"), Some(3.0), "the cheap arrival at the link stands");
+    assert_eq!(
+        at("ld"),
+        Some(5.0),
+        "and `ld` is still reached, the long way round — a search settling arcs alone loses it entirely"
+    );
 }

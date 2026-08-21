@@ -76,6 +76,10 @@ pub fn import(text: &str) -> Result<Import, String> {
     let mut features = Vec::new();
     // OSM node id -> the pieces that end on it, each with the way it came from.
     let mut touching: BTreeMap<u64, Vec<(u64, String)>> = BTreeMap::new();
+    // Way id -> its pieces and the two OSM nodes each one runs between. A restriction whose `via`
+    // is a way has to be walked across those pieces, which needs both ends and not just the fact
+    // that a piece touches a node — `touching` cannot say which end of which piece leads where.
+    let mut spans_of: BTreeMap<u64, Vec<Span>> = BTreeMap::new();
     for element in elements {
         if element["type"] != "way" {
             continue;
@@ -126,6 +130,14 @@ pub fn import(text: &str) -> Result<Import, String> {
             for node in boundaries.get(piece).into_iter().flatten() {
                 touching.entry(*node).or_default().push((way_id, name.clone()));
             }
+            if let Some([first, last]) = boundaries
+                .get(piece)
+                .map(Vec::as_slice)
+                .and_then(|ends| ends.first().zip(ends.last()))
+                .map(|(a, b)| [*a, *b])
+            {
+                spans_of.entry(way_id).or_default().push((name.clone(), first, last));
+            }
             features.push(json!({
                 "type": "Feature",
                 // Stable across recompilations because OSM's own way id is, and the piece index
@@ -140,7 +152,7 @@ pub fn import(text: &str) -> Result<Import, String> {
     if features.is_empty() {
         return Err("the extract holds no way with geometry; query with `out geom;`".into());
     }
-    apply_restrictions(elements, &touching, &mut features);
+    apply_restrictions(elements, &touching, &spans_of, &mut features);
     Ok(Import { features, extras: Vec::new(), channels: channels() })
 }
 
@@ -196,22 +208,29 @@ fn piece_boundaries(spans: &[Vec<Value>], coordinates: &[Value], nodes: &[u64]) 
 
 /// Writes each turn restriction onto the edge a driver would be arriving on.
 ///
-/// An OSM restriction names two ways and the node between them: come in along `from`, and at
+/// An OSM restriction names two ways and what lies between them: come in along `from`, and past
 /// `via` you may not take `to`. The pieces are what the graph actually holds, so the relation is
-/// resolved to the one piece of each way that touches `via` — the rest of either way is somewhere
+/// resolved to the pieces of each way that actually meet — the rest of either way is somewhere
 /// else entirely and unaffected.
 ///
-/// `only_*` is the same statement inverted: taking anything but `to` is what is forbidden, so it
-/// expands to a prohibition against every other piece at that node. Storing it expanded rather
-/// than as a mode keeps the reader trivial — a router asks one question, "may I go from here to
-/// there", and never has to know which spelling produced the answer.
+/// `via` is usually a node, and then the restriction is a movement between two edges. Sometimes it
+/// is one or more *ways*: a no-U-turn across a dual carriageway comes in on one carriageway,
+/// crosses the link between them, and may not come back down the other. That is the same statement
+/// with more edges in the middle, and it is written as the run of edges it forbids — which is why
+/// the column holds runs rather than pairs, and why a pair is just the run of length two.
 ///
-/// ponytail: `via` must be a node. A restriction whose `via` is a way — a no-U-turn across a dual
-/// carriageway, mostly — spans two junctions and cannot be expressed as a property of one edge;
-/// those are skipped, and a router will happily route through them. Expressing them needs the
-/// path-shaped state a property on an edge does not have.
-fn apply_restrictions(elements: &[Value], touching: &BTreeMap<u64, Vec<(u64, String)>>, features: &mut [Value]) {
-    let mut forbidden: BTreeMap<String, Vec<String>> = BTreeMap::new();
+/// `only_*` is the same statement inverted: taking anything but `to` is what is forbidden, so it
+/// expands to a prohibition against every other piece at the far end. Storing it expanded rather
+/// than as a mode keeps the reader trivial — a router asks one question, "may I make this run of
+/// movements", and never has to know which spelling produced the answer.
+fn apply_restrictions(
+    elements: &[Value],
+    touching: &BTreeMap<u64, Vec<(u64, String)>>,
+    spans_of: &BTreeMap<u64, Vec<Span>>,
+    features: &mut [Value],
+) {
+    // Each entry edge's forbidden continuations, every one a run of pieces to be walked in order.
+    let mut forbidden: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
     for element in elements {
         if element["type"] != "relation" || element["tags"]["type"] != "restriction" {
             continue;
@@ -225,21 +244,41 @@ fn apply_restrictions(elements: &[Value], touching: &BTreeMap<u64, Vec<(u64, Str
             // `restriction=give_way` and friends describe priority, not permission.
             _ => continue,
         };
-        let member = |role: &str, kind: &str| {
-            element["members"].as_array()?.iter().find(|member| member["role"] == role && member["type"] == kind)?
-                ["ref"]
-                .as_u64()
+        let members = |role: &str, kind: &str| -> Vec<u64> {
+            element["members"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|member| member["role"] == role && member["type"] == kind)
+                .filter_map(|member| member["ref"].as_u64())
+                .collect()
         };
-        // A `via` way is a restriction over a path rather than a turn; see the note above.
-        let (Some(from), Some(via), Some(to)) = (member("from", "way"), member("via", "node"), member("to", "way"))
-        else {
+        let (from, to) = (members("from", "way"), members("to", "way"));
+        let (Some(from), Some(to)) = (from.first().copied(), to.first().copied()) else {
             continue;
         };
-        let Some(pieces) = touching.get(&via) else {
+        // A `via` node is the junction itself and needs no crossing; `via` ways are crossed, and
+        // the junctions at their two ends are what `from` and `to` meet. Both end up as a run.
+        let (entries, chain, exit_node) = match members("via", "node").first().copied() {
+            Some(node) => (node, Vec::new(), node),
+            None => {
+                let pieces: Vec<Span> =
+                    members("via", "way").iter().filter_map(|way| spans_of.get(way)).flatten().cloned().collect();
+                let Some(crossing) = cross(&pieces, touching, from, to) else {
+                    continue;
+                };
+                crossing
+            }
+        };
+        let Some(at_entry) = touching.get(&entries) else {
             continue;
         };
-        let arriving: Vec<&String> = pieces.iter().filter(|(way, _)| *way == from).map(|(_, name)| name).collect();
-        let leaving: Vec<&String> = pieces
+        let Some(at_exit) = touching.get(&exit_node) else {
+            continue;
+        };
+        let arriving: Vec<&String> = at_entry.iter().filter(|(way, _)| *way == from).map(|(_, name)| name).collect();
+        let crossed: Vec<String> = chain.iter().map(|(name, _, _)| name.clone()).collect();
+        let leaving: Vec<&String> = at_exit
             .iter()
             .filter(|(way, _)| if only { *way != from && *way != to } else { *way == to })
             .map(|(_, name)| name)
@@ -249,29 +288,91 @@ fn apply_restrictions(elements: &[Value], touching: &BTreeMap<u64, Vec<(u64, Str
             // rather than smuggled in here. A `no_*` keeps its own pieces: `no_u_turn` names the
             // same way as `from` and `to`, and dropping them would leave it forbidding nothing,
             // which is what it did until a real extract turned up 25 of them doing exactly that.
-            .filter(|name| !only || !arriving.contains(name))
+            .filter(|name| !only || (!arriving.contains(name) && !crossed.contains(name)))
             .collect();
         for entry in arriving {
             for exit in &leaving {
-                forbidden.entry(entry.clone()).or_default().push((*exit).clone());
+                let mut run = crossed.clone();
+                run.push((*exit).clone());
+                forbidden.entry(entry.clone()).or_default().push(run);
             }
         }
     }
 
     for feature in features.iter_mut() {
-        let Some(names) = feature["id"].as_str().and_then(|id| forbidden.get(id)) else {
+        let Some(runs) = feature["id"].as_str().and_then(|id| forbidden.get(id)) else {
             continue;
         };
-        // The stable id of each forbidden edge, space-separated. Identity rather than text: an
-        // edge's id is derived from this same declared string, so the importer can name an edge
-        // the file does not hold yet, and a router reads ids without a lookup table. The rule is
-        // imported from `trama-format` rather than copied — a copy would be a bug the moment the
-        // format changed how it derives one.
-        let mut ids: Vec<String> = names.iter().map(|name| trama_format::edge_id(name).to_string()).collect();
-        ids.sort();
-        ids.dedup();
-        feature["properties"][RESTRICTION_KEY] = json!(ids.join(" "));
+        // Each run as the stable ids of the edges it crosses, joined by `>`, and the runs
+        // separated by spaces. Identity rather than text: an edge's id is derived from this same
+        // declared string, so the importer can name an edge the file does not hold yet, and a
+        // router reads ids without a lookup table. The rule is imported from `trama-format`
+        // rather than copied — a copy would be a bug the moment the format changed how it derives
+        // one. A run of one id is the ordinary turn and is written exactly as it always was.
+        let mut written: Vec<String> = runs
+            .iter()
+            .map(|run| run.iter().map(|name| trama_format::edge_id(name).to_string()).collect::<Vec<_>>().join(">"))
+            .collect();
+        written.sort();
+        written.dedup();
+        feature["properties"][RESTRICTION_KEY] = json!(written.join(" "));
     }
+}
+
+/// A piece of a way and the two OSM nodes it runs between.
+type Span = (String, u64, u64);
+
+/// The way across a `via`-way restriction: the junction `from` meets it at, the pieces crossed,
+/// and the junction `to` leaves from.
+type Crossing = (u64, Vec<Span>, u64);
+
+/// The way across a `via`-way restriction: where `from` meets it, the pieces crossed, where `to`
+/// leaves it.
+///
+/// The pieces are walked as an undirected graph rather than trusted in the order OSM listed them:
+/// a relation's members carry no guaranteed order, and a way split at a junction contributes
+/// several pieces whose order is this importer's own. The shortest crossing is taken, since a
+/// restriction describes one manoeuvre and a longer walk through the same pieces is a different
+/// one.
+fn cross(pieces: &[Span], touching: &BTreeMap<u64, Vec<(u64, String)>>, from: u64, to: u64) -> Option<Crossing> {
+    let meets = |node: u64, way: u64| {
+        touching.get(&node).is_some_and(|pieces| pieces.iter().any(|(candidate, _)| *candidate == way))
+    };
+    let ends: Vec<u64> = pieces.iter().flat_map(|(_, first, last)| [*first, *last]).collect();
+    // Breadth-first from every junction where `from` reaches the via, so the first arrival at a
+    // junction `to` leaves from is the shortest crossing.
+    let mut queue: std::collections::VecDeque<u64> = ends.iter().copied().filter(|node| meets(*node, from)).collect();
+    let mut came_from: BTreeMap<u64, (String, u64, u64, u64)> = BTreeMap::new();
+    let mut seen: Vec<u64> = queue.iter().copied().collect();
+    while let Some(node) = queue.pop_front() {
+        if meets(node, to) && came_from.contains_key(&node) {
+            // Walk back to the junction the crossing started at, collecting the pieces in order.
+            let mut chain = Vec::new();
+            let mut at = node;
+            while let Some((name, first, last, previous)) = came_from.get(&at).cloned() {
+                chain.push((name, first, last));
+                at = previous;
+            }
+            chain.reverse();
+            return Some((at, chain, node));
+        }
+        for (name, first, last) in pieces {
+            let next = if *first == node {
+                *last
+            } else if *last == node {
+                *first
+            } else {
+                continue;
+            };
+            if seen.contains(&next) {
+                continue;
+            }
+            seen.push(next);
+            came_from.insert(next, (name.clone(), *first, *last, node));
+            queue.push_back(next);
+        }
+    }
+    None
 }
 
 /// The column a router reads to know which turns are forbidden. Domain knowledge, like
