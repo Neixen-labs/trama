@@ -57,9 +57,33 @@ pub enum Rating {
     Unrated,
 }
 
+/// A machine and its step-up transformer, corrected as one thing by IEC 60909 §3.7.
+///
+/// The network is not the same seen from inside the unit as from outside it, which is why this
+/// has to survive into the model rather than being consumed while building it. A fault on the
+/// machine's own terminals has the unit transformer *behind* it, so the pair correction the rest
+/// of the network is entitled to would be correcting for an impedance that is not in the path.
+/// [`fault_currents`] undoes it for that one bus and no other.
+pub struct Unit {
+    pub bus: usize,
+    pub branch: usize,
+    /// The machine's admittance before any correction, which is what both factors act on.
+    pub raw: C,
+    /// §3.7's `K_S` or `K_SO`: the pair as the network outside sees it.
+    pub whole: f64,
+    /// The machine's own factor, for a fault between it and its transformer.
+    pub inside: f64,
+    /// The machine's rated voltage, which is what its terminals actually sit at — not the bus's
+    /// nominal, and the two are rarely the same on a generator.
+    pub terminal_kv: f64,
+}
+
 pub struct Model {
     pub buses: Vec<Bus>,
     pub branches: Vec<Branch>,
+    /// Empty unless the file declares a power station unit, and empty under a load flow always:
+    /// §3.7 is a short-circuit correction and has nothing to say about a network under load.
+    pub units: Vec<Unit>,
     /// The container's stable id for each bus. Auxiliary buses — the open side of an open switch —
     /// carry none, because they exist in the calculation and not in the network.
     pub bus_entity: Vec<Option<u64>>,
@@ -143,6 +167,9 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
             .is_some_and(|columns| columns.iter().any(|column| column == "tap_changer_type"))
     };
 
+    // Where each two-winding transformer landed and which property row describes it, so a
+    // generator can find the one it is paired with.
+    let mut transformer_branch: BTreeMap<i64, (usize, usize)> = BTreeMap::new();
     let mut branches = Vec::with_capacity(graph.edges.len());
     let mut branch_entity = Vec::with_capacity(graph.edges.len());
     let mut rating = Vec::new();
@@ -191,11 +218,19 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
         // did. A network written before pandapower 3.0 has no such column at all, and there a tap
         // position is all there is to go on — so absence of the column means the old reading and
         // absence of the value under it means no changer.
+        // A transformer that is half of a power station unit takes no §3.7 correction of its own.
+        // The unit is corrected as one below, by `K_S`, and applying both would count the same
+        // departure from nominal twice — which is pandapower's rule too, in as many words:
+        // `_transformer_correction_factor` returns 1 for a row flagged `power_station_unit`.
+        let in_a_unit = row.get("power:power_station_unit").and_then(Value::as_bool).unwrap_or(false);
         let terms = Terms {
             sn_mva,
             f_hz,
             study,
-            correction: Correction::Apply,
+            correction: match in_a_unit {
+                true => Correction::Already,
+                false => Correction::Apply,
+            },
             regulated: !declares_changer(&kind) || row.contains_key("power:tap_changer_type"),
         };
         let (branch, rated) = match kind.as_str() {
@@ -203,6 +238,9 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
             "trafo3w" => transformer3w(row, &side, from, to, base_kv[from], base_kv[to], terms)?,
             _ => transformer(row, from, to, base_kv[from], base_kv[to], terms)?,
         };
+        if kind == "trafo" {
+            transformer_branch.insert(index, (branches.len(), edge.property_row as usize));
+        }
         branches.push(branch);
         branch_entity.push(edge.id);
         rating.push(rated);
@@ -269,6 +307,7 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
     // circuit from behind its subtransient reactance, and it is the second largest contribution on
     // any network that has one. See [`generator`] for the impedance and the correction §3.6 puts
     // on it.
+    let mut units: Vec<Unit> = Vec::new();
     if let Study::Fault { c_max } = study {
         for row in rows(tables, "gen")? {
             if !row.get("in_service").and_then(Value::as_bool).unwrap_or(true) {
@@ -277,7 +316,39 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
             let Some(position) = row.get("bus").and_then(Value::as_i64).and_then(|bus| by_index.get(&bus)) else {
                 continue;
             };
-            buses[*position].y_shunt = buses[*position].y_shunt + generator(&row, base_kv[*position], sn_mva, c_max)?;
+            let raw = machine(&row, base_kv[*position], sn_mva)?;
+            let correction = match row.get("power_station_trafo").and_then(Value::as_i64) {
+                // A machine on a bus of its own: §3.6 corrects it alone.
+                None => alone(&row, base_kv[*position], c_max)?,
+                // A machine and its step-up transformer as one thing. §3.7 corrects the pair, and
+                // the same factor goes on the transformer's impedance a few lines below.
+                Some(index) => {
+                    let (branch, property_row) = *transformer_branch.get(&index).ok_or_else(|| {
+                        format!(
+                            "a generator names transformer {index} as its power station transformer, \
+                             which is not a transformer of this network"
+                        )
+                    })?;
+                    // The transformer's rows live in `PROP` rather than in the record, because it
+                    // is a table this importer expresses — so the branch's own properties are
+                    // where the unit transformer is read from.
+                    let station = pair(&row, &edges[property_row], base_kv[branches[branch].from], c_max)?;
+                    units.push(Unit {
+                        bus: *position,
+                        branch,
+                        raw,
+                        whole: station.whole,
+                        inside: station.inside,
+                        terminal_kv: station.terminal_kv,
+                    });
+                    station.whole
+                }
+            };
+            buses[*position].y_shunt = buses[*position].y_shunt + raw / C::new(correction, 0.0);
+        }
+        // The unit's transformer carries the same correction its machine does.
+        for unit in &units {
+            branches[unit.branch].y_series = (branches[unit.branch].y_series.inv() * C::new(unit.whole, 0.0)).inv();
         }
     }
     if matches!(study, Study::Flow { .. }) {
@@ -342,7 +413,7 @@ pub fn model(container: &[u8], study: Study) -> Result<Model, String> {
         return Err("this network has no external grid in service, so no bus holds a voltage".into());
     }
 
-    Ok(Model { buses, branches, bus_entity, branch_entity, rating, base_kv, sn_mva })
+    Ok(Model { buses, branches, units, bus_entity, branch_entity, rating, base_kv, sn_mva })
 }
 
 /// A line as a π section, per-unit on the bus it runs between.
@@ -701,10 +772,62 @@ fn transformer(
     ))
 }
 
-/// A synchronous machine as a source under a fault: its admittance to earth, per-unit.
+/// A synchronous machine's admittance to earth under a fault, before any correction factor.
 ///
 /// The machine is an EMF behind its subtransient impedance, `Z_G = r_dss + j·x″d·vn²/sn` in ohms
-/// at the machine's own rating, and IEC 60909 §3.6 multiplies it by
+/// at the machine's own rating, referred to the bus it sits on — which is the base every other
+/// impedance here is already in. What multiplies it is §3.6's `K_G` for a machine on a bus and
+/// §3.7's `K_S` for one bolted to a transformer, so the raw value is what both start from.
+fn machine(row: &BTreeMap<String, Value>, base_kv: f64, sn_mva: f64) -> Result<C, String> {
+    let plate = plate(row)?;
+    let reactance_ohm = plate.xdss_pu * plate.rated_kv * plate.rated_kv / plate.rated_mva;
+    let base_ohm = base_kv * base_kv / sn_mva;
+    Ok(C::new(plate.rdss_ohm, reactance_ohm).inv() * C::new(base_ohm, 0.0))
+}
+
+/// What a machine's nameplate has to say before a fault can be computed.
+///
+/// Every quantity is required and none is defaulted. A machine that declares no `xdss_pu` is a
+/// file that never recorded one, and guessing a reactance would put a source of unknown strength
+/// on the bus; the study says which column is missing instead. This is the same refusal an
+/// external grid without `s_sc_max_mva` already gets, for the same reason.
+struct Plate {
+    xdss_pu: f64,
+    rdss_ohm: f64,
+    rated_kv: f64,
+    rated_mva: f64,
+    sin_phi: f64,
+    /// How far above its rating the machine is run, as a fraction. Absent means at rating, which
+    /// is what pandapower assumes too.
+    above_rating: f64,
+}
+
+fn plate(row: &BTreeMap<String, Value>) -> Result<Plate, String> {
+    let required = |key: &str| {
+        row.get(key)
+            .and_then(Value::as_f64)
+            .ok_or_else(|| format!("a generator declares no '{key}', which a short circuit cannot be computed without"))
+    };
+    // `xdss_pu` is asked for first on purpose. It is the column that says whether a file was ever
+    // meant to answer a fault at all — a load flow never reads a subtransient reactance — so it
+    // is the most useful of the four to be told about when several are missing at once.
+    let xdss_pu = required("xdss_pu")?;
+    let (rated_kv, rated_mva) = (required("vn_kv")?, required("sn_mva")?);
+    if rated_mva <= 0.0 || rated_kv <= 0.0 {
+        return Err("a generator declares a rating of zero, so it has no impedance".into());
+    }
+    let cos_phi = required("cos_phi")?;
+    Ok(Plate {
+        xdss_pu,
+        rdss_ohm: required("rdss_ohm")?,
+        rated_kv,
+        rated_mva,
+        sin_phi: (1.0 - cos_phi * cos_phi).max(0.0).sqrt(),
+        above_rating: row.get("pg_percent").and_then(Value::as_f64).unwrap_or(0.0) / 100.0,
+    })
+}
+
+/// IEC 60909 §3.6's `K_G`, for a machine connected directly to the network.
 ///
 /// ```text
 /// K_G = (vn_bus / (vn_gen · (1 + pg%))) · c_max / (1 + x″d · sin φ)
@@ -715,44 +838,78 @@ fn transformer(
 /// a machine's own rated voltage is usually not its bus's nominal. Both ratios are here rather
 /// than assumed to be one, because they only coincide on a machine connected at its own rating —
 /// which is the case that would pass a test written from either.
-///
-/// Every quantity is required and none is defaulted. A machine that declares no `xdss_pu` is a
-/// file that never recorded one, and guessing a reactance would put a source of unknown strength
-/// on the bus; the study says which column is missing instead. This is the same refusal an
-/// external grid without `s_sc_max_mva` already gets, for the same reason.
-fn generator(row: &BTreeMap<String, Value>, base_kv: f64, sn_mva: f64, c_max: f64) -> Result<C, String> {
-    // A power station unit — machine and its step-up transformer as one — carries a different
-    // correction factor, §3.7's `K_S`, computed over the pair rather than the machine. Modelling
-    // it as a bare generator would apply the wrong one, so it is refused rather than approximated.
-    if row.get("power_station_trafo").is_some_and(|value| !value.is_null()) {
-        return Err("a generator declares a power station transformer, which IEC 60909 §3.7 \
-                    corrects as one unit rather than as a machine on a bus; this solver does not \
-                    model that pairing"
-            .into());
-    }
-    let required = |key: &str| {
-        row.get(key)
-            .and_then(Value::as_f64)
-            .ok_or_else(|| format!("a generator declares no '{key}', which a short circuit cannot be computed without"))
-    };
-    let xdss_pu = required("xdss_pu")?;
-    let rated_kv = required("vn_kv")?;
-    let rated_mva = required("sn_mva")?;
-    let cos_phi = required("cos_phi")?;
-    if rated_mva <= 0.0 || rated_kv <= 0.0 {
-        return Err("a generator declares a rating of zero, so it has no impedance".into());
-    }
-    // Absent means the machine runs at its rated voltage, which is what pandapower assumes too.
-    let above_rating = row.get("pg_percent").and_then(Value::as_f64).unwrap_or(0.0) / 100.0;
+fn alone(row: &BTreeMap<String, Value>, base_kv: f64, c_max: f64) -> Result<f64, String> {
+    let plate = plate(row)?;
+    Ok(base_kv / (plate.rated_kv * (1.0 + plate.above_rating)) * c_max / (1.0 + plate.xdss_pu * plate.sin_phi))
+}
 
-    let reactance_ohm = xdss_pu * rated_kv * rated_kv / rated_mva;
-    let resistance_ohm = required("rdss_ohm")?;
-    let sin_phi = (1.0 - cos_phi * cos_phi).max(0.0).sqrt();
-    let correction = base_kv / (rated_kv * (1.0 + above_rating)) * c_max / (1.0 + xdss_pu * sin_phi);
-    // Referred to the bus it sits on, which is the base every other impedance here is already in.
-    let base_ohm = base_kv * base_kv / sn_mva;
-    let impedance = C::new(resistance_ohm, reactance_ohm) * C::new(correction / base_ohm, 0.0);
-    Ok(impedance.inv())
+/// The factors a power station unit needs: one for the network outside it, one for inside.
+struct Station {
+    /// §3.7's `K_S` or `K_SO`, correcting machine *and* transformer as one impedance.
+    whole: f64,
+    /// The machine's own factor, for a fault between it and the transformer — where the
+    /// transformer is not in the path at all and correcting for it would correct for nothing.
+    inside: f64,
+    /// The machine's rated voltage. Its terminals sit there rather than at the bus's nominal.
+    terminal_kv: f64,
+}
+
+/// IEC 60909 §3.7, for a machine and its step-up transformer treated as one unit.
+///
+/// A power station unit is not a machine on a bus. Its transformer has no separate life — nothing
+/// else is connected between the two — so the standard corrects the pair with a single factor and
+/// the machine's `K_G` and the transformer's `K_T` do not apply. Which of two formulas is used
+/// turns on one column: whether the unit transformer has an *on-load* tap changer.
+///
+/// ```text
+/// with OLTC:   K_S  = (v_q²/v_g²)·(v_lv²/v_hv²)·c_max / (1 + |x″d − x_t|·sin φ)
+/// without:     K_SO = (v_q/(v_g·(1+p_g)))·(v_lv/v_hv)·(1 − p_t)·c_max / (1 + x″d·sin φ)
+/// ```
+///
+/// The difference is not cosmetic. With an on-load changer the voltage ratios are squared and the
+/// reactances *subtract* — a regulating transformer holds the machine's terminal voltage, so what
+/// matters is how far the two reactances differ rather than the machine's alone. Without one, the
+/// unit can only be tapped off load, and `p_t` is how far those fixed taps reach.
+fn pair(
+    generator: &BTreeMap<String, Value>,
+    transformer: &BTreeMap<String, Value>,
+    v_q_kv: f64,
+    c_max: f64,
+) -> Result<Station, String> {
+    let plate = plate(generator)?;
+    let value = |key: &str| number(transformer, key);
+    let required = |key: &str| value(key).ok_or_else(|| format!("a power station transformer declares no '{key}'"));
+    let (v_hv, v_lv) = (required("power:vn_hv_kv")?, required("power:vn_lv_kv")?);
+    if required("power:sn_mva")? <= 0.0 {
+        return Err("a power station transformer declares no rating".into());
+    }
+    // The transformer's reactance in its own per-unit, which is what both formulas want.
+    let z = required("power:vk_percent")? / 100.0;
+    let r = required("power:vkr_percent")? / 100.0;
+    let x_t = (z * z - r * r).max(0.0).sqrt();
+    let x_g = plate.xdss_pu;
+    let terminal_kv = plate.rated_kv;
+
+    if transformer.get("power:oltc").and_then(Value::as_bool).unwrap_or(false) {
+        let whole = (v_q_kv * v_q_kv) / (terminal_kv * terminal_kv) * (v_lv * v_lv) / (v_hv * v_hv) * c_max
+            / (1.0 + (x_g - x_t).abs() * plate.sin_phi);
+        // Inside the unit the transformer is behind the fault, so neither its ratio nor its
+        // reactance belongs in the machine's own factor.
+        return Ok(Station { whole, inside: c_max / (1.0 + x_g * plate.sin_phi), terminal_kv });
+    }
+
+    // How far the off-load taps reach. Where the file does not say, pandapower takes it from the
+    // tap range — negative, so that `1 - p_t` raises the correction rather than lowering it.
+    let p_t = match value("power:pt_percent") {
+        Some(percent) => percent / 100.0,
+        None => match (value("power:tap_step_percent"), value("power:tap_max"), value("power:tap_neutral")) {
+            (Some(step), Some(max), Some(neutral)) => -(step * (max - neutral)) / 100.0,
+            _ => 0.0,
+        },
+    };
+    let whole = v_q_kv / (terminal_kv * (1.0 + plate.above_rating)) * (v_lv / v_hv) * (1.0 - p_t) * c_max
+        / (1.0 + x_g * plate.sin_phi);
+    Ok(Station { whole, inside: 1.0 / (1.0 + plate.above_rating) * c_max / (1.0 + x_g * plate.sin_phi), terminal_kv })
 }
 
 /// Loading in percent for each branch, and `None` where the source declared no rating.
@@ -786,16 +943,34 @@ pub fn loadings(model: &Model, solution: &flow::Solution) -> Vec<Option<f64>> {
 /// IEC 60909's `Ikss = c·Un / (√3·|Zk|)`, which in per-unit is `c / |Z_ii|` scaled by the bus's
 /// own base current. It is the number that sizes a breaker and sets what a protection relay must
 /// survive, and the reason a utility runs the study at all.
+///
+/// One Thévenin sweep answers this for a whole network, and that is what a file without a power
+/// station unit costs. Each unit adds one more, because §3.7 makes the network genuinely
+/// different depending on where the fault is: the pair correction holds everywhere except on the
+/// unit's own machine terminals, where the transformer is behind the fault rather than in front
+/// of it. The extra sweeps are per *unit*, not per bus — a station has a handful of sets, not a
+/// switchboard's worth — and each contributes exactly one number.
 pub fn fault_currents(model: &Model, c_max: f64) -> Result<Vec<f64>, flow::Failure> {
+    let base_current = |bus: usize| model.sn_mva / (model.base_kv[bus] * 3f64.sqrt());
     let impedance = flow::thevenin(&model.buses, &model.branches)?;
-    Ok(impedance
-        .iter()
-        .enumerate()
-        .map(|(bus, z)| {
-            let base_current = model.sn_mva / (model.base_kv[bus] * 3f64.sqrt());
-            c_max * base_current / z.abs()
-        })
-        .collect())
+    let mut currents: Vec<f64> =
+        impedance.iter().enumerate().map(|(bus, z)| c_max * base_current(bus) / z.abs()).collect();
+
+    for unit in &model.units {
+        let mut buses = model.buses.clone();
+        let mut branches = model.branches.clone();
+        // The machine goes from `K_S` to its own factor, and the transformer loses `K_S` outright.
+        buses[unit.bus].y_shunt =
+            buses[unit.bus].y_shunt + unit.raw * C::new(1.0 / unit.inside - 1.0 / unit.whole, 0.0);
+        branches[unit.branch].y_series = (branches[unit.branch].y_series.inv() / C::new(unit.whole, 0.0)).inv();
+        let z = flow::thevenin(&buses, &branches)?[unit.bus].abs();
+        // And the current is referred to the machine's rated voltage rather than the bus's
+        // nominal. A generator terminal is a place in the network that sits at the machine's
+        // voltage by construction — the two coincide only where a file happens to declare them
+        // equal, and `c·Un/√3` wants the one the terminals are actually at.
+        currents[unit.bus] = c_max * base_current(unit.bus) / z * (unit.terminal_kv / model.base_kv[unit.bus]);
+    }
+    Ok(currents)
 }
 
 /// The pandapower document the compiler carried without reading it.
