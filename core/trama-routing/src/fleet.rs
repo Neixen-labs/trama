@@ -194,12 +194,28 @@ pub fn plan(graph: &Graph, costs: &[f64], forbidden: &Turns, fleet: &Fleet) -> R
     }
 
     let mut routes = savings(&distances, fleet);
+    consolidate(&distances, fleet, &mut routes);
     if routes.len() > fleet.vehicles {
-        return Err(format!(
-            "these stops need {} vehicles at this capacity and the fleet has {}",
-            routes.len(),
-            fleet.vehicles
-        ));
+        // Two different failures wear the same shape here, and saying which is which is the whole
+        // point of the message. Capacity gives a bound nothing can beat: the total demand needs at
+        // least this many vehicles however cleverly the stops are arranged. Anything short of that
+        // bound is this planner failing to find a plan that may well exist — and it says so,
+        // rather than asserting an impossibility it has not proved.
+        let demanded: f64 = fleet.demands.iter().sum();
+        let unavoidable = (demanded / fleet.capacity).ceil() as usize;
+        return Err(match unavoidable > fleet.vehicles {
+            true => format!(
+                "these stops demand {demanded} in total, which needs at least {unavoidable} vehicles of \
+                 capacity {} and the fleet has {}",
+                fleet.capacity, fleet.vehicles
+            ),
+            false => format!(
+                "this planner could not fit these stops into {} vehicles: it built {} rounds and the time \
+                 windows leave no way to combine them further, though {unavoidable} would carry the load",
+                fleet.vehicles,
+                routes.len()
+            ),
+        });
     }
     for route in routes.iter_mut() {
         two_opt(&distances, fleet, route);
@@ -272,6 +288,84 @@ fn savings(distances: &Distances, fleet: &Fleet) -> Vec<Vec<usize>> {
     }
     routes.retain(|route| !route.is_empty());
     routes
+}
+
+/// What a round costs from the depot and back, by the matrix alone.
+fn round_cost(distances: &Distances, route: &[usize]) -> f64 {
+    let mut total = 0.0;
+    let mut previous = 0;
+    for stop in route {
+        total += distances.cost[previous][stop + 1];
+        previous = stop + 1;
+    }
+    total + distances.cost[previous][0]
+}
+
+/// Fold rounds into each other until the fleet can drive them, by inserting a stop *anywhere* in a
+/// round rather than only at its ends.
+///
+/// Clarke-Wright can join the end of one route to the start of another and nothing else. Without
+/// windows that costs little, because a good order can usually be reached by merging ends and then
+/// reversing runs. With them it is often the one placement that does not work: a stop that would
+/// sit comfortably in the middle of a round — between two stops whose windows straddle its own —
+/// is refused because neither end will take it, and the construction stops with more rounds than
+/// the fleet has.
+///
+/// That was reported as a capacity problem, which it is not. This pass exists so the refusal is
+/// rare and honest rather than common and misleading: it takes the smallest round apart and places
+/// its stops into the others, cheapest feasible position first, and either empties it or puts
+/// everything back untouched.
+///
+/// It runs only when there are too many rounds. A plan the fleet can already drive is never
+/// consolidated, because fewer vans is not the objective — the total is, and a stop moved into
+/// another round only ever adds to it.
+fn consolidate(distances: &Distances, fleet: &Fleet, routes: &mut Vec<Vec<usize>>) {
+    let load = |route: &[usize]| -> f64 { route.iter().map(|stop| fleet.demands[*stop]).sum() };
+    while routes.len() > fleet.vehicles {
+        // The smallest round is the cheapest to take apart and the likeliest to fit elsewhere.
+        let donor = (0..routes.len()).min_by_key(|route| routes[*route].len()).expect("more routes than vehicles");
+        let backup = routes.clone();
+        let moving = routes[donor].clone();
+        let mut placed = true;
+        for stop in &moving {
+            let mut best: Option<(f64, usize, usize)> = None;
+            for (host, route) in routes.iter().enumerate() {
+                if host == donor || load(route) + fleet.demands[*stop] > fleet.capacity {
+                    continue;
+                }
+                let before = round_cost(distances, route);
+                for position in 0..=route.len() {
+                    let mut candidate = route.clone();
+                    candidate.insert(position, *stop);
+                    if schedule(distances, fleet, &candidate).is_none() {
+                        continue;
+                    }
+                    let added = round_cost(distances, &candidate) - before;
+                    if best.is_none_or(|(cheapest, _, _)| added < cheapest) {
+                        best = Some((added, host, position));
+                    }
+                }
+            }
+            match best {
+                Some((_, host, position)) => {
+                    routes[host].insert(position, *stop);
+                    routes[donor].retain(|remaining| remaining != stop);
+                }
+                // One stop with nowhere to go means this round cannot be dissolved. Undo the
+                // whole attempt: a half-emptied round is a worse plan than the one we started
+                // with, and it would still leave the fleet short.
+                None => {
+                    placed = false;
+                    break;
+                }
+            }
+        }
+        if !placed {
+            *routes = backup;
+            return;
+        }
+        routes.remove(donor);
+    }
 }
 
 /// Reverse any run of a route that shortens it, until none does.
@@ -536,6 +630,44 @@ mod tests {
             vec![20.0, 10.0, 0.0, 10.0],
             vec![30.0, 50.0, 10.0, 0.0],
         ])
+    }
+
+    /// A round the savings pass cannot build, because every merge it is allowed to try is one the
+    /// windows refuse — and one van can still drive all three stops.
+    ///
+    /// This is the failure the consolidation pass exists for. Clarke-Wright joins an end to a
+    /// start and nothing else, so it can offer `[0, 1, 2]` and `[1, 2, 0]` but never `[1, 0, 2]`,
+    /// which is the only order these windows allow. Left there, the planner reported that the
+    /// stops needed more vehicles "at this capacity" — with a capacity of ten and three stops
+    /// demanding one each, which is a diagnosis pointing at the wrong constraint entirely.
+    #[test]
+    fn a_round_no_merge_can_reach_is_found_by_inserting_in_the_middle() {
+        let (distances, fleet) = (line(), fleet_of(vec![(40.0, 100.0), (0.0, 25.0), (0.0, 100.0)]));
+        let mut routes = savings(&distances, &fleet);
+        assert!(routes.len() > 1, "the merges the windows allow leave more rounds than the one van can drive");
+
+        consolidate(&distances, &fleet, &mut routes);
+
+        assert_eq!(routes.len(), 1, "one van, one round");
+        assert!(schedule(&distances, &fleet, &routes[0]).is_some(), "and it can be driven");
+        let mut served = routes[0].clone();
+        served.sort();
+        assert_eq!(served, vec![0, 1, 2], "with every stop still served exactly once");
+    }
+
+    /// And a plan the fleet can already drive is left alone: consolidating it would put stops into
+    /// rounds that do not want them, which costs distance and buys nothing.
+    #[test]
+    fn a_plan_the_fleet_can_drive_is_not_consolidated() {
+        let mut fleet = fleet_of(Vec::new());
+        fleet.vehicles = 3;
+        fleet.capacity = 1.0;
+        let mut routes = savings(&line(), &fleet);
+        let before = routes.clone();
+
+        consolidate(&line(), &fleet, &mut routes);
+
+        assert_eq!(routes, before, "three rounds, three vans, nothing to do");
     }
 
     /// The improvement pass does its job when nothing forbids it.

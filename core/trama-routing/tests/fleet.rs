@@ -253,8 +253,51 @@ fn too_few_vehicles_says_how_many_it_would_need() {
         service: Vec::new(),
     };
     match fleet::plan(&graph, &costs, &no_turns(), &fleet) {
-        Err(message) => assert!(message.contains("vehicles"), "{message}"),
+        Err(message) => {
+            // Which constraint is named matters more than that one is. 32 units against a 10-unit
+            // van needs four vans however the stops are arranged, so this is a bound and the
+            // message is entitled to state it as one.
+            assert!(message.contains("at least 4 vehicles"), "{message}");
+            assert!(
+                !message.contains("could not fit"),
+                "this is a real impossibility, not the planner giving up: {message}"
+            );
+        }
         Ok(plan) => panic!("32 units of demand cannot fit in one 10-unit van: {} rounds", plan.len()),
+    }
+}
+
+/// The other refusal, and the one that used to lie. Where capacity is ample and the windows are
+/// what stops the rounds combining, the planner says it could not find a plan rather than claiming
+/// none exists — because it has not proved that, and measurement says such plans usually do exist.
+///
+/// Reproducing that state end to end takes an instance the consolidation pass also fails on, which
+/// is now rare by design. What is pinned here instead is the property that matters and that the
+/// old message got wrong: a refusal never blames capacity for a shortfall capacity does not cause.
+#[test]
+fn a_refusal_names_the_constraint_that_actually_bites() {
+    let container = ladder(4);
+    let graph = graph_of(&container);
+    let nodes = nodes_along(&graph);
+    let costs = trama_format::edge_lengths(&container).unwrap();
+
+    // One unit of demand each against a capacity of ten: capacity could not possibly be the
+    // reason for any refusal here, whatever the windows do.
+    let fleet = Fleet {
+        depot: nodes[0],
+        stops: nodes[1..5].to_vec(),
+        demands: vec![1.0; 4],
+        capacity: 10.0,
+        vehicles: 1,
+        windows: vec![(0.0, 1e9); 4],
+        service: Vec::new(),
+    };
+    match fleet::plan(&graph, &costs, &no_turns(), &fleet) {
+        Ok(plan) => assert_eq!(plan.len(), 1, "one van serves all four stops"),
+        Err(message) => {
+            assert!(message.contains("could not fit"), "capacity is ample, so no refusal may blame it: {message}");
+            assert!(!message.contains("at least"), "{message}");
+        }
     }
 }
 
