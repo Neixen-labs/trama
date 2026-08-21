@@ -210,7 +210,7 @@ fn a_trace_is_emitted_as_a_progression_the_scrub_can_unwind() {
     let mut reached_per_instant: Vec<usize> = Vec::new();
     for step in 0..4 {
         let mut count = 0;
-        for record in deltas.chunks_exact(18) {
+        for record in deltas.as_chunks::<18>().0.iter() {
             let t = f32::from_le_bytes(record[10..14].try_into().unwrap());
             let value = f32::from_le_bytes(record[14..18].try_into().unwrap());
             if t == step as f32 && value == 1.0 {

@@ -167,8 +167,12 @@ fn the_stream_is_whole_deltas_marking_progress_along_the_route() {
     let stream = solve(&container, &parameters(vec![a, c]), 0.0, 600.0).unwrap();
 
     assert_eq!(stream.len() % 18, 0, "a delta stream is a whole number of 18-byte records");
-    let values: Vec<f32> =
-        stream.chunks_exact(18).map(|record| f32::from_le_bytes(record[14..18].try_into().unwrap())).collect();
+    let values: Vec<f32> = stream
+        .as_chunks::<18>()
+        .0
+        .iter()
+        .map(|record| f32::from_le_bytes(record[14..18].try_into().unwrap()))
+        .collect();
     assert!(values.iter().all(|value| *value == 0.0 || *value == 1.0), "the channel is reached or not");
     assert!(values.contains(&1.0), "something is reached");
 }
@@ -182,15 +186,19 @@ fn progress_only_grows_as_time_advances() {
     let stream = solve(&container, &parameters(vec![a, c]), 0.0, 600.0).unwrap();
 
     let mut reached_by_time: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
-    for record in stream.chunks_exact(18) {
+    for record in stream.as_chunks::<18>().0.iter() {
         let t = f32::from_le_bytes(record[10..14].try_into().unwrap());
         let value = f32::from_le_bytes(record[14..18].try_into().unwrap());
         *reached_by_time.entry(t as u32).or_default() += (value == 1.0) as usize;
     }
     let counts: Vec<usize> = reached_by_time.values().copied().collect();
     // Every instant carries one delta per route edge, so the first instant's count is the route.
-    let route_edges =
-        stream.chunks_exact(18).filter(|record| f32::from_le_bytes(record[10..14].try_into().unwrap()) == 0.0).count();
+    let route_edges = stream
+        .as_chunks::<18>()
+        .0
+        .iter()
+        .filter(|record| f32::from_le_bytes(record[10..14].try_into().unwrap()) == 0.0)
+        .count();
     assert!(counts.windows(2).all(|pair| pair[1] >= pair[0]), "a scrub backwards unwinds, never skips");
     assert_eq!(counts[0], 0, "nothing is behind the vehicle before it sets off");
     assert_eq!(*counts.last().unwrap(), route_edges, "by the end the whole route is behind it");
@@ -238,7 +246,7 @@ fn with_speed_column(waypoints: Vec<usize>) -> Parameters {
 }
 
 fn routed_edges(stream: &[u8]) -> std::collections::BTreeSet<u64> {
-    stream.chunks_exact(18).map(|record| u64::from_le_bytes(record[0..8].try_into().unwrap())).collect()
+    stream.as_chunks::<18>().0.iter().map(|record| u64::from_le_bytes(record[0..8].try_into().unwrap())).collect()
 }
 
 #[test]
@@ -290,7 +298,9 @@ fn the_arrival_time_is_a_clock_reading_not_a_distance() {
     let stream = solve(&container, &with_speed_column(vec![a, d]), 0.0, 1200.0).unwrap();
 
     let arrival = stream
-        .chunks_exact(18)
+        .as_chunks::<18>()
+        .0
+        .iter()
         .filter(|record| f32::from_le_bytes(record[14..18].try_into().unwrap()) == 1.0)
         .map(|record| f32::from_le_bytes(record[10..14].try_into().unwrap()))
         .fold(f32::INFINITY, f32::min);
