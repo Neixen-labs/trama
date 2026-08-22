@@ -490,6 +490,37 @@ enum Correction {
     Already,
 }
 
+/// The step of a tap changer that sits at the star point, as the equivalent branch has to see it.
+///
+/// A changer at a terminal moves that winding's nominal voltage and nothing else. One at the star
+/// point moves the point all three branches meet at, so from any one branch's side the step has to
+/// be re-referred through the position the changer is already at — which makes it a *ratio of
+/// complex numbers* rather than a percentage:
+///
+/// ```text
+/// t  = step% · e^{i·step°}
+/// t' = 100·t / (100 + t·(pos − neutral))
+/// ```
+///
+/// and the branch takes `|t'|` as its step, `arg(t') − 180°` as its angle, with `pos` and
+/// `neutral` unchanged. The 180° is what makes the re-referred step subtract where the original
+/// added: it is the same tap seen from the opposite end of the winding.
+///
+/// **A star-point changer with no `tap_step_degree` does nothing at all.** Every term above is
+/// complex, so an undeclared angle makes `t` undefined and pandapower propagates the NaN until the
+/// ratio falls back to one — verified against `runpp`, which returns the untapped voltages to
+/// every digit. Reproducing that is deliberate: agreeing with the reference is this crate's whole
+/// test, and a file declaring a position without an angle has not finished declaring its changer.
+fn star_point_step(row: &BTreeMap<String, Value>) -> Option<(f64, Option<f64>)> {
+    let percent = number(row, "power:tap_step_percent")?;
+    let degree = number(row, "power:tap_step_degree")?;
+    let (position, neutral) =
+        (number(row, "power:tap_pos").unwrap_or(0.0), number(row, "power:tap_neutral").unwrap_or(0.0));
+    let t = C::polar(percent, degree.to_radians());
+    let corrected = (t * C::new(100.0, 0.0)) / (C::new(100.0, 0.0) + t * C::new(position - neutral, 0.0));
+    Some((corrected.abs(), Some(corrected.im.atan2(corrected.re).to_degrees() - 180.0)))
+}
+
 /// One branch of a three-winding transformer: the equivalent two-winding one pandapower solves.
 ///
 /// This is `_trafo_df_from_trafo3w` in pandapower's `build_branch.py`, one row at a time. It builds
@@ -524,15 +555,6 @@ fn transformer3w(
         }
         Ok(ends)
     };
-    // A tap on the star point re-refers the ratio onto the other end of its own branch and turns
-    // the step complex. It is a real arrangement — regulation in the tertiary — and refused rather
-    // than approximated, because a wrong ratio is a plausible voltage.
-    // ponytail: refused, not modelled. pandapower's `_calculate_3w_tap_changers` has the six lines
-    // it takes; what is missing is a fixture that would catch getting them wrong.
-    if row.get("power:tap_at_star_point").and_then(Value::as_bool).unwrap_or(false) {
-        return Err("a three-winding transformer taps at its star point, which this solver does not model".into());
-    }
-
     let sn = three("sn_", "_mva")?;
     let vk = three("vk_", "_percent")?;
     let vkr = three("vkr_", "_percent")?;
@@ -615,10 +637,33 @@ fn transformer3w(
     // high branch it is a tap on that branch's high side; on the other two the regulated winding is
     // the one away from the star point, so it becomes a tap on the low side.
     if text(row, "power:tap_side").as_deref() == Some(side) {
-        equivalent.insert("power:tap_side".into(), json!(if side == "hv" { "hv" } else { "lv" }));
-        for key in ["tap_pos", "tap_neutral", "tap_step_percent", "tap_step_degree"] {
-            if let Some(value) = number(row, &format!("power:{key}")) {
-                equivalent.insert(format!("power:{key}"), json!(value));
+        let at_star = row.get("power:tap_at_star_point").and_then(Value::as_bool).unwrap_or(false);
+        // A changer at the star point regulates its branch from the *other* end — the winding it
+        // physically sits beside is the star point, which on this equivalent transformer is the
+        // side away from the network. So the regulated end is the mirror of the terminal case.
+        let regulated = match (at_star, side == "hv") {
+            (false, true) | (true, false) => "hv",
+            (false, false) | (true, true) => "lv",
+        };
+        let step = match at_star {
+            false => {
+                number(row, "power:tap_step_percent").map(|percent| (percent, number(row, "power:tap_step_degree")))
+            }
+            true => star_point_step(row),
+        };
+        // A step of nothing is not a tap changer. That is how a star-point changer with no
+        // `tap_step_degree` behaves — see [`star_point_step`] — and it must leave the branch at
+        // its nominal ratio rather than at some fraction of one.
+        if let Some((percent, degree)) = step {
+            equivalent.insert("power:tap_side".into(), json!(regulated));
+            equivalent.insert("power:tap_step_percent".into(), json!(percent));
+            if let Some(degree) = degree {
+                equivalent.insert("power:tap_step_degree".into(), json!(degree));
+            }
+            for key in ["tap_pos", "tap_neutral"] {
+                if let Some(value) = number(row, &format!("power:{key}")) {
+                    equivalent.insert(format!("power:{key}"), json!(value));
+                }
             }
         }
     }
