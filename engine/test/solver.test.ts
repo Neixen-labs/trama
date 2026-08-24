@@ -157,3 +157,35 @@ test("stops at an error even after deltas have arrived", async () => {
 
   await assert.rejects(collect(url), (error: SolverFailed) => error.code === "execution_failed");
 });
+
+/**
+ * A solver that rejects the request answers with a status and a body, not with an event stream.
+ * Without looking at the status the run fails as "stream ended without complete", which points at
+ * the transport when the answer was about the request — and sends whoever reads it to the wrong
+ * place. The status and whatever the solver said both survive into the message.
+ */
+test("a refusal is reported as the solver's own, not as a truncated stream", async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(400, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ code: "invalid_params", message: "depot is required" }));
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("server has no port");
+
+  const failure = await solveDeltas(`http://127.0.0.1:${address.port}/solve`, {
+    tramaUrl: "http://example.com/x.trama",
+    t0Seconds: 0,
+    t1Seconds: 1,
+  })
+    .next()
+    .then(() => null)
+    .catch((error: unknown) => error as SolverFailed);
+
+  assert.ok(failure instanceof SolverFailed);
+  assert.equal(failure.code, "invalid_params", "the solver's own code, not a generic one");
+  assert.match(failure.message, /depot is required/);
+  assert.match(failure.message, /400/, "and the status, so the layer it came from is not a guess");
+  assert.doesNotMatch(failure.message, /without complete/);
+});

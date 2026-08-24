@@ -16,12 +16,17 @@
     </script>
     <script type="module">
       import { decompress } from "fzstd";
-      import { parseContainer } from "/engine/dist/container.js";
-      import { readSection, parseGeometry, parseGraph } from "/engine/dist/sections.js";
-      import { buildLineInstances } from "/engine/dist/lines.js";
-      import { createLineRenderer } from "/engine/dist/line-renderer.js";
-      import { parseStateChannels, StateRing } from "/engine/dist/state.js";
-      import { createStateTexture } from "/engine/dist/state-texture.js";
+      import {
+        buildLineInstances,
+        createLineRenderer,
+        createStateTexture,
+        parseContainer,
+        parseGeometry,
+        parseGraph,
+        parseStateChannels,
+        readSection,
+        StateRing,
+      } from "/engine/dist/index.js";
 
       // No MapLibre here on purpose. The number this page reports must belong to the engine's
       // own draw path, not to a basemap's frame budget sitting underneath it.

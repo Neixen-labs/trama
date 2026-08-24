@@ -79,3 +79,28 @@ test("carries no mesh for line geometry", () => {
     assert.equal(tile.meshIndexCount, 0);
   }
 });
+
+/**
+ * The package's own index is the API. `openContainer` and `fetchSection` were missing from it —
+ * the two functions the whole range-loading idea is made of — and the demo in this repository
+ * imported them from `dist/range.js` instead, which is how the omission survived: the one
+ * consumer close enough to notice was also close enough to reach around it.
+ */
+test("the index exports the range-loading entry point, not just the reader that feeds it", async () => {
+  const api = await import("../src/index.js");
+  for (const name of ["openContainer", "fetchSection", "httpRangeReader"]) {
+    assert.equal(typeof (api as Record<string, unknown>)[name], "function", `${name} is part of the API`);
+  }
+
+  // And it works through that door: header and directory over ranges, then one verified section.
+  const read = async (start: number, endInclusive: number) => new Uint8Array(file.slice(start, endInclusive + 1));
+  const container = await api.openContainer(read);
+  const graph = api.parseGraph(await api.fetchSection(read, section(container, "GRPH"), inflate));
+  assert.ok(graph.nodes.length > 0);
+});
+
+function section(container: { sections: readonly { type: string }[] }, type: string) {
+  const found = container.sections.find((candidate) => candidate.type === type);
+  if (found === undefined) throw new Error(`the fixture has no ${type}`);
+  return found as never;
+}

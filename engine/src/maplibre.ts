@@ -121,6 +121,47 @@ function clamp(value: number, tiles: number): number {
   return Math.max(0, Math.min(tiles - 1, value));
 }
 
+/**
+ * How many parsed tiles the layer keeps.
+ *
+ * Every tile that comes into view is decompressed, parsed and turned into instance data, and none
+ * of that was ever released — so panning across a large container grew the layer's memory for as
+ * long as the session lasted. A screenful is tens of tiles even zoomed out, so this is generous
+ * enough that ordinary panning never evicts anything it is about to want back.
+ *
+ * ponytail: oldest-arrival wins, not least-recently-used. Refreshing a tile's position on every
+ * `render` would mean a delete and an insert per visible tile per frame, to protect against an
+ * eviction that costs one re-fetch — the tile comes back the next time it is visible, exactly as
+ * one never seen would. If a workload ever evicts tiles it still wants, that is when to pay for
+ * proper recency.
+ */
+const RETAINED_TILES = 256;
+
+/**
+ * Records a parsed tile and drops the oldest arrivals once there are more than `limit`.
+ *
+ * Free-standing and exported so the eviction can be tested against a small limit; a layer holding
+ * two hundred and fifty-seven real tiles is a slow way to check a `while` loop. Not part of the
+ * package's index — this is the layer's own machinery.
+ */
+export function retainTile(
+  loaded: Map<Section, LineInstances>,
+  requested: Set<Section>,
+  section: Section,
+  instances: LineInstances,
+  limit: number = RETAINED_TILES,
+): void {
+  loaded.delete(section);
+  loaded.set(section, instances);
+  while (loaded.size > limit) {
+    const oldest = loaded.keys().next();
+    if (oldest.done === true) break;
+    loaded.delete(oldest.value);
+    // Dropped from `requested` too, or the tile could never be fetched again.
+    requested.delete(oldest.value);
+  }
+}
+
 export function createTramaLayer(options: TramaLayerOptions): CustomLayer {
   const loaded = new Map<Section, LineInstances>();
   const requested = new Set<Section>();
@@ -148,7 +189,7 @@ export function createTramaLayer(options: TramaLayerOptions): CustomLayer {
     requested.add(section);
     fetchSection(options.read, section, options.decompress)
       .then((payload) => {
-        loaded.set(section, buildLineInstances(parseGeometry(payload), options.edgeEndpoints));
+        retainTile(loaded, requested, section, buildLineInstances(parseGeometry(payload), options.edgeEndpoints));
         host?.triggerRepaint();
       })
       .catch(() => {

@@ -29,7 +29,11 @@ export {
 } from "./sections.js";
 
 // Getting the bytes: over HTTP ranges, or from anywhere else that can answer one.
-export { httpRangeReader, type RangeReader } from "./range.js";
+//
+// `openContainer` and `fetchSection` are the entry point of the whole range-loading idea — two
+// round trips for the header and directory, then one section at a time with its CRC checked — so
+// they belong here rather than only behind the `@trama/core/range` subpath.
+export { fetchSection, httpRangeReader, openContainer, type RangeReader } from "./range.js";
 export { cachedInOpfs, forget, type CacheOptions, type OpfsStorage } from "./opfs.js";
 
 // State over time: the declared channels, the ring buffer, and the texture a shader reads.

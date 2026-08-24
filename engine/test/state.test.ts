@@ -261,3 +261,33 @@ test("reads the channels the compiler declared in a real container", () => {
     },
   ]);
 });
+
+/**
+ * Two channels under one id is a file that cannot say which of them a delta belongs to, and the
+ * damage downstream is silent: `StateRing` sizes its texture from the channel array and indexes
+ * it through a map keyed by id, so duplicates make the two disagree. Rows then overlap between
+ * slots and `#clearSlot` wipes ranges it no longer owns — every index stays inside the buffer, so
+ * nothing throws and a value written at one time is quietly erased by one written at another.
+ */
+test("two state channels sharing an id are refused rather than collapsed", () => {
+  const payload = stchPayload([{ channelId: 7 }, { channelId: 7 }], ["a", "b"]);
+  assert.throws(() => parseStateChannels(payload), /share id 7/);
+});
+
+test("and a ring will not be built from them either, whoever handed them in", () => {
+  const twin: StateChannel = { ...pressure, name: "twin" };
+  assert.throws(() => new StateRing({ ...ringOptions, channels: [pressure, twin] }), /share an id/);
+
+  // The shape the guard protects: three writes at three times, three distinct rows, all readable.
+  const ring = new StateRing({ ...ringOptions, channels: [pressure, { ...twin, channelId: 8 }] });
+  ring.apply(delta(10n, 7, 0, 11));
+  ring.apply(delta(10n, 7, 60, 22));
+  ring.apply(delta(10n, 7, 120, 33));
+  const rows = [0, 60, 120].map((t) => ring.sampleRows(t, 7)?.rowA);
+  assert.equal(new Set(rows).size, 3, "each slot has a row of its own");
+  assert.deepEqual(
+    rows.map((row) => ring.texels[row! * ring.width]),
+    [11, 22, 33],
+    "and none of the three erased another",
+  );
+});

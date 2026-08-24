@@ -48,6 +48,10 @@ function identities(payload: Uint8Array, view: DataView, offset: number, count: 
     let shift = 0n;
     for (;;) {
       if (at >= payload.byteLength) throw new Error("identity block runs past the section");
+      // A gap is a u64, so ten groups carry every value one can hold. Without this a run of
+      // continuation bytes builds a bigint as wide as the section, and each `|=` rewrites all of
+      // it — quadratic work and unbounded memory from a file that is small on disk.
+      if (shift > 63n) throw new Error("identity gap is wider than 64 bits");
       const group = view.getUint8(at);
       at += 1;
       gap |= BigInt(group & 0x7f) << shift;
@@ -60,9 +64,37 @@ function identities(payload: Uint8Array, view: DataView, offset: number, count: 
   return values;
 }
 
+/**
+ * How far a section may claim to expand.
+ *
+ * A directory entry says how many bytes its section holds once inflated, and a decompressor is
+ * handed that number to size its output buffer — before anything can be checked, because the
+ * check needs the bytes. So a hundred-byte file can ask a reader to reserve gigabytes unless the
+ * claim is bounded first. The bound is a ratio rather than an absolute size because a legitimate
+ * container's sections vary hugely in size but not in how well they compress: these are packed
+ * binary structures, where 10× to 50× is the range and a thousand is far outside it.
+ *
+ * ponytail: a fixed ratio, not an option. A caller that genuinely needs more can decompress the
+ * section itself; making it configurable would mean publishing a knob whose safe value nobody
+ * except this file knows.
+ */
+const MAX_EXPANSION = 1000;
+
+/** Rejects a section whose declared size is not something a reader should try to allocate. */
+export function checkExpansion(storedBytes: bigint, uncompressedBytes: bigint): void {
+  // An empty section is the one case where the ratio says nothing.
+  const ceiling = (storedBytes === 0n ? 1n : storedBytes) * BigInt(MAX_EXPANSION);
+  if (uncompressedBytes > ceiling) {
+    throw new Error(
+      `section claims to inflate ${uncompressedBytes} bytes from ${storedBytes}, past ${MAX_EXPANSION}× expansion`,
+    );
+  }
+}
+
 /** Decompresses one section and rejects it unless its length and CRC-32C match the directory. */
 export function readSection(file: ArrayBuffer, section: Section, decompress: Decompress): Uint8Array {
   if (section.codec !== 1) throw new Error("unsupported section codec");
+  checkExpansion(section.storedBytes, section.uncompressedBytes);
   const uncompressedBytes = Number(section.uncompressedBytes);
   const stored = new Uint8Array(file, Number(section.offset), Number(section.storedBytes));
   const payload = decompress(stored, uncompressedBytes);
