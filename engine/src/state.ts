@@ -26,6 +26,7 @@ export function parseStateChannels(payload: Uint8Array): readonly StateChannel[]
     throw new Error("STCH channels exceed payload bounds");
   }
   const strings = readStrings(view, payload, stringsOffset);
+  const seen = new Set<number>();
 
   return Array.from({ length: channelCount }, (_, index) => {
     const at = channelsOffset + index * CHANNEL_BYTES;
@@ -43,6 +44,10 @@ export function parseStateChannels(payload: Uint8Array): readonly StateChannel[]
       linearInterpolation: (flags & 2) !== 0,
     };
     if (channel.channelId === 0) throw new Error("a state channel id must be non-zero");
+    // A delta names the channel it writes by id, so two channels sharing one is a file that
+    // cannot say which of them a value belongs to. See `StateRing` for what it costs downstream.
+    if (seen.has(channel.channelId)) throw new Error(`two state channels share id ${channel.channelId}`);
+    seen.add(channel.channelId);
     if (channel.rangePresent && channel.declaredMin > channel.declaredMax) {
       throw new Error(`channel ${channel.name} declares an inverted range`);
     }
@@ -80,6 +85,14 @@ export class StateRing {
   constructor(options: StateRingOptions) {
     if (options.slots < 1) throw new Error("a state ring needs at least one slot");
     if (!(options.slotSeconds > 0)) throw new Error("a state ring needs a positive slot duration");
+    // Two channels under one id would leave this class holding two counts of the same thing: the
+    // array below sizes the texture and the map indexes into it, and duplicates make them
+    // disagree. Rows then overlap between slots, `#clearSlot` wipes ranges it no longer owns, and
+    // a value written at one time is erased by one written at another — silently, since every
+    // index stays inside the buffer. Checked here as well as in `parseStateChannels` because this
+    // is where the invariant lives and channels may be handed in from anywhere.
+    const ids = new Set(options.channels.map((channel) => channel.channelId));
+    if (ids.size !== options.channels.length) throw new Error("two state channels share an id");
     this.#slots = options.slots;
     this.#step = options.slotSeconds;
     this.#channels = new Map(

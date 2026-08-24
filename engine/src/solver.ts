@@ -45,6 +45,15 @@ export async function* solveDeltas(
       t1_seconds: request.t1Seconds,
     }),
   });
+  // A solver that rejects the request answers with a status and not with an event stream, so
+  // without this the run fails several lines below as "stream ended without complete" — which
+  // points at the transport when the answer was "your parameters are wrong", and is the kind of
+  // message that sends someone looking in the wrong place for an afternoon.
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    const failure = body === "" ? { code: "internal_error", message: `the solver answered ${response.status}` } : parseError(body);
+    throw new SolverFailed({ ...failure, message: `${failure.message} (HTTP ${response.status})` });
+  }
   if (response.body === null) throw new SolverFailed({ code: "internal_error", message: "the solver sent no body" });
 
   let completed = false;

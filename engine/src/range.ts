@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-BSL-1.1
 import { directoryRange, HEADER_RANGE, parsePrefix, type Container, type Section } from "./container.js";
-import { crc32c, type Decompress } from "./sections.js";
+import { checkExpansion, crc32c, type Decompress } from "./sections.js";
 
 /** Fetches `[start, endInclusive]`. Both ends are inclusive, matching HTTP's Range header. */
 export type RangeReader = (start: number, endInclusive: number) => Promise<Uint8Array>;
@@ -25,6 +25,7 @@ export async function openContainer(read: RangeReader): Promise<Container> {
 /** Fetches one section and applies the same verification a local read gets. */
 export async function fetchSection(read: RangeReader, section: Section, decompress: Decompress): Promise<Uint8Array> {
   if (section.codec !== 1) throw new Error("unsupported section codec");
+  checkExpansion(section.storedBytes, section.uncompressedBytes);
   const start = Number(section.offset);
   const stored = await read(start, start + Number(section.storedBytes) - 1);
   if (stored.byteLength !== Number(section.storedBytes)) throw new Error("range reader returned the wrong length");

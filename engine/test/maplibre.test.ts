@@ -6,7 +6,8 @@ import test from "node:test";
 import { decompress } from "fzstd";
 
 import { parseContainer, type Section } from "../src/container.js";
-import { createTramaLayer, tileMatrix, visibleTiles, type HostMap } from "../src/maplibre.js";
+import type { LineInstances } from "../src/lines.js";
+import { createTramaLayer, retainTile, tileMatrix, visibleTiles, type HostMap } from "../src/maplibre.js";
 
 const bytes = readFileSync(new URL("../../fixtures/network.trama", import.meta.url));
 const file = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -181,4 +182,34 @@ test("releases the renderer when removed", () => {
   layer.render(gl, projectionInput(new Array(16).fill(0)).input);
 
   assert.equal(draws.length, 0);
+});
+
+/**
+ * Every tile that comes into view is decompressed, parsed and turned into instance data, and none
+ * of it used to be released — so panning across a large container grew the layer's memory for as
+ * long as the session lasted, with nothing to stop it but closing the tab.
+ *
+ * A dropped tile is dropped from `requested` as well, or it could never be fetched again: it would
+ * be permanently absent from a viewport it is permanently inside.
+ */
+test("a layer stops holding tiles once it has too many, and can fetch them again", () => {
+  const loaded = new Map<Section, LineInstances>();
+  const requested = new Set<Section>();
+  const tile = (index: number) => ({ type: "GEOM", key: [0, index, 0] }) as unknown as Section;
+  const instances = { count: 0 } as unknown as LineInstances;
+
+  const sections = Array.from({ length: 5 }, (_, index) => tile(index));
+  for (const section of sections) {
+    requested.add(section);
+    retainTile(loaded, requested, section, instances, 3);
+  }
+
+  assert.equal(loaded.size, 3, "the limit holds");
+  assert.deepEqual([...loaded.keys()], sections.slice(2), "and it is the oldest arrivals that go");
+  assert.deepEqual([...requested], sections.slice(2), "a forgotten tile is requestable again");
+
+  // Re-recording a tile already held moves it to the back rather than adding a second entry.
+  retainTile(loaded, requested, sections[2]!, instances, 3);
+  assert.equal(loaded.size, 3);
+  assert.deepEqual([...loaded.keys()], [sections[3]!, sections[4]!, sections[2]!]);
 });

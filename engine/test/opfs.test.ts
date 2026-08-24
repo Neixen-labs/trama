@@ -154,3 +154,23 @@ test("keys that are not legal file names still work and stay distinct", async ()
   assert.equal(second.state.calls, 1);
   assert.equal(again.state.calls, 0);
 });
+
+/**
+ * The keys that actually collide are long ones sharing a prefix, which is what URLs from one
+ * bucket look like: same host, same folders, different file at the end. A name built by
+ * truncating alone hands both of them one directory — and with no revalidation by design, that
+ * never corrects itself. It serves one container's bytes as the other's for as long as the cache
+ * lives, which is the worst way to be wrong: silently, and only for some users.
+ */
+test("two long keys sharing their first hundred characters do not share a cache", async () => {
+  const storage = fakeStorage();
+  const folder = "https://example.com/a-rather-long-bucket-name/with/several/nested/folders/underneath/it/and/one/more/level/still/";
+  const first = countingReader();
+  const second = countingReader();
+
+  await cachedInOpfs(first.read, { key: `${folder}madrid.trama`, storage })(0, 15);
+  await cachedInOpfs(second.read, { key: `${folder}zaragoza.trama`, storage })(0, 15);
+
+  assert.ok(folder.length > 100, "the shared prefix outruns any truncation worth doing");
+  assert.equal(second.state.calls, 1, "the second container fetched its own bytes");
+});

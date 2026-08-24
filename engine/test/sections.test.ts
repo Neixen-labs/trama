@@ -137,3 +137,48 @@ test("rejects a path running past the vertex array", () => {
 
   assert.throws(() => parseGeometry(payload), /invalid path vertex range/);
 });
+
+/**
+ * A directory entry says how far its section inflates, and that number sizes the decompressor's
+ * output buffer before anything about it can be checked — the check needs the bytes. So a tiny
+ * file can ask a reader to reserve as much memory as it likes unless the claim is bounded first.
+ */
+test("a section claiming to inflate beyond any real compression ratio is refused", () => {
+  const file = new ArrayBuffer(128);
+  const section: Section = {
+    type: "GRPH",
+    required: true,
+    key: [0, 0, 0],
+    offset: 64n,
+    storedBytes: 64n,
+    uncompressedBytes: 4n * 1024n * 1024n * 1024n,
+    crc32c: 0,
+    codec: 1,
+  };
+  let asked = -1;
+  assert.throws(
+    () =>
+      readSection(file, section, (_stored, uncompressedBytes) => {
+        asked = uncompressedBytes;
+        return new Uint8Array(0);
+      }),
+    /expansion/,
+  );
+  assert.equal(asked, -1, "the decompressor is never asked to allocate it");
+});
+
+/**
+ * A gap is a u64, so ten groups carry anything one can hold. Without a bound on the shift, a run
+ * of continuation bytes builds a bigint as wide as the section and rewrites all of it on every
+ * step — quadratic work and unbounded memory out of a file that is small on disk.
+ */
+test("an identity gap wider than 64 bits is refused rather than grown", () => {
+  // Room for more continuation bytes than a u64 could ever need, so the refusal is the width and
+  // not the section simply running out — which is a different guard and would pass without this
+  // one existing at all.
+  const base = graphPayload();
+  const payload = new Uint8Array(base.byteLength + 64);
+  payload.set(base);
+  payload.fill(0x80, 136);
+  assert.throws(() => parseGraph(payload), /wider than 64 bits/);
+});

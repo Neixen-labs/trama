@@ -8,6 +8,7 @@
  * file downloaded on the chance it might be.
  */
 import type { RangeReader } from "./range.js";
+import { crc32c } from "./sections.js";
 
 /** The part of `navigator.storage` this needs, named so a test can supply its own. */
 export type OpfsStorage = Readonly<{ getDirectory(): Promise<FileSystemDirectoryHandle> }>;
@@ -100,7 +101,16 @@ async function write(folder: FileSystemDirectoryHandle, name: string, bytes: Uin
   }
 }
 
-/** A directory name from an arbitrary key: OPFS accepts most characters, `/` not among them. */
+/**
+ * A directory name from an arbitrary key: OPFS accepts most characters, `/` not among them.
+ *
+ * The suffix is what makes it a name rather than a prefix. Keys are usually URLs, which are often
+ * long and often share their first hundred characters — same bucket, same folder, different file —
+ * so truncating alone would hand two containers one directory. With no revalidation by design,
+ * that does not go stale and get corrected: it serves one file's bytes as another's, forever.
+ */
 function safeName(key: string): string {
-  return key.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "unnamed";
+  const readable = key.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
+  const fingerprint = crc32c(new TextEncoder().encode(key)).toString(16).padStart(8, "0");
+  return `${readable}-${fingerprint}`;
 }

@@ -53,12 +53,23 @@
       import { Map } from "maplibre-gl";
       import { decompress } from "fzstd";
 
-      import { openContainer, httpRangeReader, fetchSection } from "/engine/dist/range.js";
-      import { cachedInOpfs, forget } from "/engine/dist/opfs.js";
-      import { createTramaLayer } from "/engine/dist/maplibre.js";
-      import { parseGeometry, parseGraph } from "/engine/dist/sections.js";
-      import { parseStateChannels, StateRing } from "/engine/dist/state.js";
-      import { solveDeltas } from "/engine/dist/solver.js";
+      // Everything through the package index, the way a consumer gets it. This used to reach into
+      // the individual modules, which is how `openContainer` and `fetchSection` went missing from
+      // the index without anyone noticing: the closest consumer was also the one able to reach
+      // around the front door.
+      import {
+        cachedInOpfs,
+        createTramaLayer,
+        fetchSection,
+        forget,
+        httpRangeReader,
+        openContainer,
+        parseGeometry,
+        parseGraph,
+        parseStateChannels,
+        solveDeltas,
+        StateRing,
+      } from "/engine/dist/index.js";
 
       const stats = document.querySelector("#stats");
       const show = (rows) => {
