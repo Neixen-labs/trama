@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! A power station unit under IEC 60909 §3.7, against pandapower's own answer.
 //!
 //! A machine bolted to its step-up transformer is not a machine on a bus. Nothing is connected

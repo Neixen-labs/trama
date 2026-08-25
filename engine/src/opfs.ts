@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 /**
  * Range reads kept in the origin private file system, so a container fetched once is readable
  * without a network.

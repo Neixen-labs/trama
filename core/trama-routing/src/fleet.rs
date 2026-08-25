@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Several vehicles, one depot, a load at every stop: the capacitated vehicle routing problem.
 //!
 //! Routing one vehicle through waypoints in a given order is a shortest path. Deciding *which*

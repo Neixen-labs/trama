@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Reading and writing EPANET `.inp` text.
 //!
 //! This module knows the file's shape — bracketed sections of whitespace-separated fields with

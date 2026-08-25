@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Reads an electrical network out of a pandapower JSON.
 //!
 //! This crate is where electrical knowledge lives. It knows that a bus is a point in a network

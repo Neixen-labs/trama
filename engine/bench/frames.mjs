@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 /**
  * Frame-time benchmark for the phase 4 criterion: 100k segments with animated state.
  *

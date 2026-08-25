@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! The server runtime of `docs/SOLVER_CONTRACT.md` section 6: POST /solve, Server-Sent Events.
 //!
 //! No web framework. A solver is a plugin, not the product's backend, and one endpoint that

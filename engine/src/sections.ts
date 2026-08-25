@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 import type { Section } from "./container.js";
 
 /** Inflates one zstd frame. Supplied by the host so the parsers stay codec-agnostic. */

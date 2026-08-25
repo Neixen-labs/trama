@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Reading a container back, with the checks a reader must not skip (SPEC 2.2, 7).
 
 use std::collections::BTreeSet;

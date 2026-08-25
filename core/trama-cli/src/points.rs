@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! A CSV of points, read as annotations for the nodes of the network being compiled.
 //!
 //! KICKOFF's third v0 input. It is not a network on its own: a container needs edges, and a row

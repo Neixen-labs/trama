@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! A synthetic grid: the benchmark network, and the demo's.
 //!
 //! Deliberately not a test. It takes seconds and its numbers depend on the machine, so a CI

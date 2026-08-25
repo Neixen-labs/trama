@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! The TRAMA v0 container.
 //!
 //! Ported from the Python compiler and kept byte-identical to it while both exist. Every

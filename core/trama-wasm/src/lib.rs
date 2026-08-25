@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Compiling in a browser, through the same code the command line runs.
 //!
 //! The glue is wasm-bindgen's rather than hand-rolled: `proj4rs` already declares its imports

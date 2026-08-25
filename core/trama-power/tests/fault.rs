@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! The short-circuit calculation against pandapower's own, on a network that carries the data.
 //!
 //! `oberrhein.json` cannot be the fixture here: its external grids declare no `s_sc_max_mva`, so

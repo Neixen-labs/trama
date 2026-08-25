@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! What a pandapower network must survive being compiled: its topology, its electrical
 //! parameters, and everything a reader needs to put it back together.
 

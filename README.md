@@ -56,13 +56,16 @@ The size criterion has two honest answers because "the equivalent GeoJSON" is am
 
 ### Install
 
-Nothing is published yet — the release workflow is written and waits on a tag and an `NPM_TOKEN`. When it runs:
+Nothing is published yet — the release workflow is written and waits on a tag, an `NPM_TOKEN` and a `CARGO_REGISTRY_TOKEN`. When it runs:
 
 ```bash
 npm install @trama/core            # the browser runtime, no runtime dependencies
+cargo install trama-cli            # the compiler and command line, as the binary `trama`
 ```
 
-and `trama`, the compiler and command line, arrives as a binary for Linux, macOS (Intel and Apple silicon) and Windows on the [releases page](https://github.com/Neixen-labs/trama/releases). Until then, build it:
+Ten crates go to crates.io: the container, the solver contract, the four domains and the command line. `trama-example` and `trama-wasm` do not — one is a demonstration of the contract and the other is consumed as the `.wasm` the site ships, and a crate name is claimed forever. Note the `-cli`: the name `trama` on crates.io belongs to an unrelated project.
+
+`trama` also arrives as a binary for Linux, macOS (Intel and Apple silicon) and Windows on the [releases page](https://github.com/Neixen-labs/trama/releases). Until then, build it:
 
 ### Run it
 

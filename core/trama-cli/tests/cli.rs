@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! The command line, exercised as a process rather than as a function call.
 
 use std::path::PathBuf;

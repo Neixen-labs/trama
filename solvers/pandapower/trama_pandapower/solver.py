@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Rebuilds a pandapower network from a container and runs the load flow over it.
 
 The container is the whole input. The three tables the importer expressed come back out of

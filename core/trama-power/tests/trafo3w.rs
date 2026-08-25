@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! A three-winding transformer against pandapower's own answer, in both studies.
 //!
 //! `trafo3w.json` is written rather than downloaded, for the same reason `generators.json` is.

@@ -3,13 +3,18 @@ name = "trama-trace"
 description = "What a network reaches, and what it stops reaching when you cut it."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["graph", "reachability", "isochrone", "network", "trama"]
+categories = ["algorithms", "science::geo"]
 
 [[bin]]
 name = "trama-solver-trace"
 path = "src/main.rs"
 
 [dependencies]
-trama-format = { path = "../trama-format" }
-trama-solver = { path = "../trama-solver" }
+trama-format.workspace = true
+trama-solver.workspace = true
 serde_json.workspace = true

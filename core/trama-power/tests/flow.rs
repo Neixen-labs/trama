@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! The power flow against pandapower, which is the only test that means anything here.
 //!
 //! A load flow that converges is not a load flow that is right: `docs/DECISIONS.md` records an

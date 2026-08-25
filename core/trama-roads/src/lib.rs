@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Reads a road network out of an OpenStreetMap extract.
 //!
 //! This crate is where road knowledge lives. It knows that `oneway` names a traversal

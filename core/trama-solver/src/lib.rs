@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! What every solver shares: the packed delta, channel resolution, and the server runtime.
 //!
 //! In Python these lived twice, once per solver, on the argument that two implementations of

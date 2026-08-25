@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! A pulse diffusing outward over a graph's own topology.
 //!
 //! Deliberately domain-agnostic: the only thing it knows is that edges connect nodes. It

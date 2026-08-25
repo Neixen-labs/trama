@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Shortest paths over a network, written into a state channel as a vehicle's progress.
 //!
 //! The second domain, and the first evidence that `GRPH`, `PROP` and state channels carry

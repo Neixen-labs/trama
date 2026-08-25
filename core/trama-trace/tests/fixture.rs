@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! What the published example has to be true of, checked rather than assumed.
 //!
 //! The first OpenStreetMap extract shipped in twelve hundred fragments and rendered perfectly:

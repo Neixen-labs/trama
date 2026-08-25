@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! An AC power flow, solved by Newton-Raphson in polar coordinates.
 //!
 //! This module knows electricity and nothing about pandapower, containers or solvers: it is given

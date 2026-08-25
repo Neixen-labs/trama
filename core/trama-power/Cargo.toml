@@ -1,16 +1,21 @@
-# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 [package]
 name = "trama-power"
 description = "Reads an electrical network out of a pandapower JSON, expressing buses, lines and transformers for the core."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["pandapower", "power-flow", "short-circuit", "grid", "trama"]
+categories = ["science", "simulation"]
 
 [[bin]]
 name = "trama-solver-power"
 path = "src/bin/server.rs"
 
 [dependencies]
-trama-format = { path = "../trama-format" }
-trama-solver = { path = "../trama-solver" }
+trama-format.workspace = true
+trama-solver.workspace = true
 serde_json.workspace = true

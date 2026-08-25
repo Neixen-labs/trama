@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """A TRAMA reader written from ``docs/SPEC.md``, with nothing borrowed from ``trama-format``.
 
 This module exists twice over. It is what the solver needs to read a network, and it is the

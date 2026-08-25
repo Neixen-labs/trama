@@ -3,23 +3,28 @@ name = "trama-cli"
 description = "The TRAMA command line: compile, validate, export."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["trama", "gis", "geopackage", "mvt", "cli"]
+categories = ["command-line-utilities", "science::geo"]
 
 [[bin]]
 name = "trama"
 path = "src/main.rs"
 
 [dependencies]
-trama-format = { path = "../trama-format" }
-trama-epanet = { path = "../trama-epanet" }
-trama-swmm = { path = "../trama-swmm" }
-trama-roads = { path = "../trama-roads" }
-trama-power = { path = "../trama-power" }
+trama-format.workspace = true
+trama-epanet = { workspace = true, features = ["solver"] }
+trama-swmm = { workspace = true, features = ["solver"] }
+trama-roads.workspace = true
+trama-power.workspace = true
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [dev-dependencies]
-trama-format = { path = "../trama-format" }
+trama-format.workspace = true
 # The GeoPackage test reads the file back through SQLite rather than through the writer.
 rusqlite = { version = "0.40.2", features = ["bundled"] }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! GeoPackage export, per SPEC 9.
 //!
 //! A `.gpkg` is a SQLite database with the tables OGC requires and geometry stored as blobs, so

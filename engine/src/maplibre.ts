@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 import type { Container, Section } from "./container.js";
 import { createLineRenderer, type LineRenderer, type LineStyle } from "./line-renderer.js";
 import { buildLineInstances, type EdgeEndpoints, type LineInstances } from "./lines.js";

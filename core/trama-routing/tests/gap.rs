@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! How far the fleet planner lands from the best feasible plan, and where that distance comes from.
 //!
 //! `tests/fleet.rs` asserts a bound — within a tenth of the optimum on two fixed instances. This

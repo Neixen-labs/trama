@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! The EPANET solver as a WASI command, so a browser can run it.
 //!
 //! Files are the interface because they are what EPANET already speaks and what WASI already

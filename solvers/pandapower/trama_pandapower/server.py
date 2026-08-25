@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """``POST /solve`` over Server-Sent Events, per ``docs/SOLVER_CONTRACT.md`` section 6.
 
 No web framework, for the reason the Rust runtime gives: a solver is a plugin, not the

@@ -3,14 +3,19 @@ name = "trama-epanet"
 description = "EPANET .inp import and export for TRAMA, and the solver that runs it."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["epanet", "water", "hydraulics", "simulation", "trama"]
+categories = ["science::geo", "simulation"]
 
 [dependencies]
-trama-format = { path = "../trama-format" }
+trama-format.workspace = true
 serde_json.workspace = true
 # Default features drag in js-sys and a CLI; the browser module only needs the maths.
 proj4rs = { version = "0.1", default-features = false, features = ["wasm-strict"] }
-trama-solver = { path = "../trama-solver", optional = true }
+trama-solver = { workspace = true, optional = true }
 crs-definitions = { version = "0.5.0", default-features = false, features = ["proj4"] }
 # The solver is optional so the importer can reach a browser: EPANET is C with a file-based
 # API, and wasm32-unknown-unknown has neither libc nor a filesystem to give it.

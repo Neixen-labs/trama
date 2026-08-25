@@ -3,7 +3,12 @@ name = "trama-format"
 description = "The TRAMA v0 container: writer, reader, and GeoJSON export."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["trama", "graph", "gis", "binary-format", "network"]
+categories = ["encoding", "science::geo", "data-structures"]
 
 [dependencies]
 serde_json.workspace = true

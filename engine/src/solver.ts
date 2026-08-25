@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 /** Client for the server runtime of docs/SOLVER_CONTRACT.md section 6. */
 
 export const CONTRACT_VERSION = "0.1.0";

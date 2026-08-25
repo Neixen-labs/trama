@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LicenseRef-BSL-1.1
+/* SPDX-License-Identifier: BUSL-1.1
  *
  * WASI's libc has no mkstemp, and EPANET wants one for its scratch files. A counter is enough
  * here: the module owns its whole filesystem, which the host creates empty for every run.

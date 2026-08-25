@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Compiles the vendored EPA SWMM 5.2.4 solver and links it statically.
 //!
 //! Plain `cc` rather than SWMM's CMake: the engine is C99 with no configuration step, and a

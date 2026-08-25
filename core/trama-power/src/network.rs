@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! A container back into the electrical quantities a power flow needs.
 //!
 //! Every formula here is pandapower's, checked against the matrix pandapower itself builds rather
