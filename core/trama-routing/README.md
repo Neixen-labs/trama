@@ -7,7 +7,8 @@ It also plans a fleet: several vehicles from one depot, a load at every stop and
 van, by Clarke-Wright savings with 2-opt and a consolidation pass, measured against the true
 optimum on instances small enough to enumerate it. Stops may carry time windows — arriving early
 waits, arriving late is refused — and the plan is measured against the best *feasible* round
-rather than the best one.
+rather than the best one. The depot may carry one too: no van leaves before the yard opens, and
+every round is home before it shuts, which is the only constraint here that prices the leg back.
 
 Both honour turn restrictions when told which column holds them, settling an arc together with how
 far along the forbidden runs it stands, because the cheapest way onto an edge is not always part

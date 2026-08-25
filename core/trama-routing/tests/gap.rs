@@ -100,6 +100,7 @@ fn cost_matrix(graph: &trama_format::Graph, costs: &[f64], points: &[usize]) -> 
                 vehicles: 1,
                 windows: Vec::new(),
                 service: Vec::new(),
+                depot_window: None,
             };
             // A one-stop round is out and back, and this grid is undirected, so half is the leg.
             matrix[from][to] = fleet::total_cost(&fleet::plan(graph, costs, &Turns::new(), &leg).unwrap()) / 2.0;
@@ -260,6 +261,7 @@ fn the_gap_and_what_it_is_made_of() {
                 vehicles: VEHICLES,
                 windows: windows.clone(),
                 service: Vec::new(),
+                depot_window: None,
             };
             let best = optimum(&matrix, &demands, against, CAPACITY, VEHICLES);
             let Ok(plan) = fleet::plan(&graph, &costs, &Turns::new(), &fleet) else {
