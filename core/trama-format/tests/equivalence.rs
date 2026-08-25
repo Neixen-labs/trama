@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! The safety net for the migration: the same input through both implementations, compared
 //! as bytes. The format is deterministic by design, so this is checkable rather than argued.
 

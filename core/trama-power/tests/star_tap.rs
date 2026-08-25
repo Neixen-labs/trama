@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! A three-winding transformer whose tap changer sits at the star point, against pandapower.
 //!
 //! `trafo3w.rs` covers a changer at a terminal, which moves one winding's nominal voltage. This is

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! SWMM `.inp` import and export: the drainage network as a graph.
 //!
 //! Every stormwater concept in the project lives in this crate. A SWMM file shares its text

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! What a network reaches, and what it stops reaching when you cut it.
 //!
 //! Upstream, downstream, reach and isochrone are not four algorithms. They are one search from a

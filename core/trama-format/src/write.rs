@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! A port of the TRAMA v0 compiler, kept byte-identical to the Python one.
 //!
 //! Every ordering, rounding and string form here exists to match `compiler/`. Where the two

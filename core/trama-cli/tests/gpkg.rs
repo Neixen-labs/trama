@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! GeoPackage export: the anti-lock-in promise, checked by reading the database back.
 //!
 //! Nothing here trusts the writer's own view of what it wrote. Every assertion goes through

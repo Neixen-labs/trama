@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 /**
  * `@trama/core`: reading a TRAMA container in a browser, and drawing it with time on it.
  *

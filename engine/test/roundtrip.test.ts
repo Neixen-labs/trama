@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";

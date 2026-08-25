@@ -4,19 +4,22 @@ description = "The browser entry point: JSON in, a TRAMA container out."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not published: a cdylib for the browser is consumed as the built .wasm the site ships, not as
+# a crate — and it depends on trama-example, which is not published either.
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-trama-format = { path = "../trama-format" }
-trama-epanet = { path = "../trama-epanet", default-features = false }
-trama-swmm = { path = "../trama-swmm", default-features = false }
-trama-example = { path = "../trama-example" }
-trama-roads = { path = "../trama-roads" }
-trama-power = { path = "../trama-power" }
-trama-routing = { path = "../trama-routing" }
-trama-trace = { path = "../trama-trace" }
-trama-solver = { path = "../trama-solver" }
+trama-format.workspace = true
+trama-epanet.workspace = true
+trama-swmm.workspace = true
+trama-example.workspace = true
+trama-roads.workspace = true
+trama-power.workspace = true
+trama-routing.workspace = true
+trama-trace.workspace = true
+trama-solver.workspace = true
 serde_json.workspace = true
 wasm-bindgen = "0.2"

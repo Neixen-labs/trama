@@ -3,7 +3,12 @@ name = "trama-routing"
 description = "Shortest paths over a network, written into a state channel as a vehicle's progress."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["routing", "shortest-path", "vrp", "fleet", "trama"]
+categories = ["algorithms", "science::geo"]
 
 [[bin]]
 name = "trama-solver-routing"
@@ -14,6 +19,6 @@ name = "trama-solver-fleet"
 path = "src/bin/fleet.rs"
 
 [dependencies]
-trama-format = { path = "../trama-format" }
-trama-solver = { path = "../trama-solver" }
+trama-format.workspace = true
+trama-solver.workspace = true
 serde_json.workspace = true

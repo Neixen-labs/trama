@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 // Serves the demo with real Range support. file:// cannot range-request, so opening the page
 // directly would quietly defeat the very feature this demo exists to show.
 import { createReadStream, statSync } from "node:fs";

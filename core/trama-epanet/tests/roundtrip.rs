@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! `.inp` -> `.trama` -> `.inp`, verified the way SPEC 9 defines it: by simulation.
 //!
 //! Byte equality is not the criterion and could not be met — comments and field spacing are

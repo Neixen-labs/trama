@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! What the fleet planner guarantees, and how far from optimal it lands.
 //!
 //! There is no reference implementation to compare against here, the way the electrical solvers

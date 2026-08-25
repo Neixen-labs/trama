@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! What the trace solver guarantees over a container it did not build.
 
 use serde_json::{Value, json};

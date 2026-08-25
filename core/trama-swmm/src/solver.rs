@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Runs SWMM over a container and returns the state deltas the engine consumes.
 //!
 //! The container is turned back into a `.inp` and handed to the toolkit, which is the point of

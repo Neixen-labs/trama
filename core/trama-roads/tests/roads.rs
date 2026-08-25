@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! What the road importer promises the core, which never learns what `oneway` means.
 
 use serde_json::{Value, json};

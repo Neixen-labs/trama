@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 import { directoryRange, HEADER_RANGE, parsePrefix, type Container, type Section } from "./container.js";
 import { checkExpansion, crc32c, type Decompress } from "./sections.js";
 

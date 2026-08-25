@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 import type { LineInstances } from "./lines.js";
 
 /** Colours a line by its state value; omit it and every line draws in `color`. */

@@ -4,12 +4,15 @@ description = "A pulse diffusing over a graph's own topology, to put the solver 
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Not published: this is the contract's demonstration, not a dependency anyone takes. A crate
+# name on crates.io is claimed forever, so it is only worth claiming for what someone imports.
+publish = false
 
 [[bin]]
 name = "trama-solver-example"
 path = "src/main.rs"
 
 [dependencies]
-trama-format = { path = "../trama-format" }
-trama-solver = { path = "../trama-solver" }
+trama-format.workspace = true
+trama-solver.workspace = true
 serde_json.workspace = true

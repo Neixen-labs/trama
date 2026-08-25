@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! The power flow behind the solver contract.
 //!
 //! The same arithmetic the Python solver runs through pandapower, with no Python: this one is a

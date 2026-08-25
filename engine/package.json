@@ -6,7 +6,7 @@
   "homepage": "https://trama.build",
   "repository": { "type": "git", "url": "git+https://github.com/Neixen-labs/trama.git", "directory": "engine" },
   "bugs": "https://github.com/Neixen-labs/trama/issues",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "BUSL-1.1",
   "type": "module",
   "sideEffects": false,
   "exports": {

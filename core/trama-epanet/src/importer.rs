@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Reads `.inp` into the features and opaque records the compiler accepts.
 //!
 //! The six sections that define entities become nodes, edges and typed properties;

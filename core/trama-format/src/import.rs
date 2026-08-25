@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! The seam through which a source format the core does not know reaches the compiler.
 //!
 //! A format that carries domain meaning is read by the crate that owns that domain, never by

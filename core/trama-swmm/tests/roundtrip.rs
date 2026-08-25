@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! A SWMM network in, a container, and the same network back out.
 //!
 //! Without an engine there is no verification by simulation yet, so the round trip is checked

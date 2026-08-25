@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 # Builds EPANET's C against the WASI sysroot. WASI_SDK points at an unpacked wasi-sdk.
 set(CMAKE_SYSTEM_NAME WASI)
 set(CMAKE_SYSTEM_VERSION 1)

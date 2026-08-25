@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Sequences of edges that may not be traversed in order.
 //!
 //! A turn restriction is a fact about a *run* of edges rather than about any one of them: come in

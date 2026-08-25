@@ -5,12 +5,33 @@ members = ["trama-format", "trama-solver", "trama-epanet", "trama-swmm", "trama-
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "LicenseRef-BSL-1.1"
+license = "BUSL-1.1"
+repository = "https://github.com/Neixen-labs/trama"
+homepage = "https://trama.build"
+# Not a wish: `clippy::incompatible_msrv` checks this against every API the workspace calls, and
+# clippy already gates pull requests, so the number is verified on every change. 1.85 is what
+# edition 2024 needs; `slice::as_chunks` in trama-routing's tests is what makes it 1.88.
+rust-version = "1.88"
 
 [workspace.dependencies]
 serde_json = "1"
 sha2 = "0.10"
 zstd = "0.13"
+# The crates of this workspace, declared once. crates.io refuses a path dependency that does not
+# also name a version, so every internal dependency needs both — and needing them in one place
+# rather than ten is the only reason this block exists.
+trama-format = { path = "trama-format", version = "0.1.0" }
+trama-solver = { path = "trama-solver", version = "0.1.0" }
+# These two default to their C engine; declared off here so a member that only wants the
+# importer inherits the light shape, and the ones that solve ask for `solver` by name.
+trama-epanet = { path = "trama-epanet", version = "0.1.0", default-features = false }
+trama-swmm = { path = "trama-swmm", version = "0.1.0", default-features = false }
+trama-swmm-sys = { path = "trama-swmm-sys", version = "0.1.0" }
+trama-roads = { path = "trama-roads", version = "0.1.0" }
+trama-routing = { path = "trama-routing", version = "0.1.0" }
+trama-power = { path = "trama-power", version = "0.1.0" }
+trama-trace = { path = "trama-trace", version = "0.1.0" }
+trama-example = { path = "trama-example", version = "0.1.0" }
 
 [profile.release]
 opt-level = "z"

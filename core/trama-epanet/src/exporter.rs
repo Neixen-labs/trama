@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Rebuilds a `.inp` from a container.
 //!
 //! The entity sections are written from typed properties and the graph; everything else is the

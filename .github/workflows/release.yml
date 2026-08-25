@@ -3,8 +3,9 @@
 # decision, not a consequence of merging. Run it by hand to rehearse — every job builds and tests,
 # nothing is published and nothing is attached.
 #
-# Needs one secret the repository owner sets: NPM_TOKEN, an automation token for the @trama
-# scope. Without it the npm job fails and the binaries still build, which is the right way round.
+# Needs two secrets the repository owner sets: NPM_TOKEN, an automation token for the @trama
+# scope, and CARGO_REGISTRY_TOKEN for crates.io. Without either, that one job fails and the
+# binaries still build, which is the right way round.
 name: Release
 
 on:
@@ -56,6 +57,45 @@ jobs:
         working-directory: engine
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  crates:
+    name: crates to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check the tag matches the workspace version
+        # Same reason as npm: crates.io does not take a version back either, and a tag that
+        # disagrees with the manifest publishes a version nobody asked for.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          if [ "$tagged" != "$declared" ]; then
+            echo "tag $GITHUB_REF_NAME does not match workspace version $declared" >&2
+            exit 1
+          fi
+        working-directory: core
+      - name: Rehearse the publication
+        # Everything the real run does except the upload: each .crate is built from the checkout
+        # and then compiled from inside the tarball, which is what catches a file left out of the
+        # package or a path dependency missing its version. `--dry-run` rather than
+        # `cargo package --workspace` deliberately — package ignores `publish = false` and would
+        # try to package trama-wasm, whose trama-example dependency is not on crates.io.
+        #
+        # It runs on a tag too, and the duplicated work is the point: cargo verifies each crate
+        # as it uploads it, so a tenth crate that fails to compile would leave nine already
+        # published and unrecallable. This proves all ten build before the first one is sent.
+        run: cargo publish --workspace --dry-run
+        working-directory: core
+      - name: Publish
+        # Ten crates in dependency order, which cargo works out itself; trama-example and
+        # trama-wasm carry publish = false and are skipped by that same rule.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cargo publish --workspace
+        working-directory: core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   cli:
     name: trama ${{ matrix.target }}

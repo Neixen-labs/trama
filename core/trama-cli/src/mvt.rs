@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Mapbox Vector Tiles, per SPEC 9: export-only, one file per `GEOM` record.
 //!
 //! This is the exit that needs no TRAMA at the other end. A `.mvt` pyramid is what a plain

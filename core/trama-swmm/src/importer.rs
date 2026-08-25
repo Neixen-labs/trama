@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! Reads a SWMM `.inp` into the features and opaque records the compiler accepts.
 //!
 //! The node and link sections become entities with typed properties; `[XSECTIONS]` folds into

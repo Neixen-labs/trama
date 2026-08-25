@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! EPANET `.inp` import and export, following `docs/EPANET_BOUNDARY.md`.
 //!
 //! Every hydraulic concept in the project lives in this crate. `trama-format` knows nodes,

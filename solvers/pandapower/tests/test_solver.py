@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LicenseRef-BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """What the fourth domain must survive: the container being the whole input.
 
 The fixture is compiled by `trama compile --importer power` from the same pandapower network

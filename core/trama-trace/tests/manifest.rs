@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 use trama_solver::{manifest_agrees_with, server::Solver};
 
 #[test]

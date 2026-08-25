@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! What the format guarantees, independent of the implementation that wrote it.
 
 use serde_json::{Value, json};

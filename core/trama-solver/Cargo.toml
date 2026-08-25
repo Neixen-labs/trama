@@ -3,8 +3,13 @@ name = "trama-solver"
 description = "The solver contract: packed deltas, channel resolution, and the server runtime."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["trama", "solver", "simulation", "sse", "network"]
+categories = ["science::geo", "simulation"]
 
 [dependencies]
-trama-format = { path = "../trama-format" }
+trama-format.workspace = true
 serde_json.workspace = true

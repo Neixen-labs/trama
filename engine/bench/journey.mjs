@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 /**
  * The phase 5 criterion, timed: a stranger arrives, drops their own `.inp`, and sees their
  * network simulated in under 60 seconds.

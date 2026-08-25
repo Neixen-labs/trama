@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-BSL-1.1
+// SPDX-License-Identifier: BUSL-1.1
 //! GeoJSON export, per SPEC 9.
 //!
 //! Coordinates come back through the inverse of the section 3.1 quantization, so they carry
