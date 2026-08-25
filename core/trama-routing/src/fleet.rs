@@ -44,6 +44,16 @@ pub struct Fleet {
     pub windows: Vec<(f64, f64)>,
     /// How long serving each stop takes, in seconds. Empty means instantaneous.
     pub service: Vec<f64>,
+    /// When the depot itself is open, on the same clock as `windows`. `None` means a day with no
+    /// ends: vehicles leave at zero and come back whenever they are done, which is what this
+    /// planner did before.
+    ///
+    /// The two halves are not the same constraint wearing one name. The open is a floor under
+    /// every departure — a vehicle cannot leave through a shut gate however early its first
+    /// appointment is, and shifting all the stop windows by hand does not say that. The close is
+    /// the working day, and it is the only thing here that prices the leg home: without it, that
+    /// leg is driven and never checked against anything.
+    pub depot_window: Option<(f64, f64)>,
 }
 
 /// One vehicle's work: the stops it serves in order, and the edges it crosses to do it.
@@ -95,35 +105,68 @@ impl Distances {
     }
 }
 
-/// When each stop on a route is served, or `None` if a window shuts before the vehicle arrives.
+/// Whether anything at all constrains the clock, so the passes that only care about time can say
+/// so in one line rather than walking a route to discover there was nothing to check.
+fn timed(fleet: &Fleet) -> bool {
+    !fleet.windows.is_empty() || fleet.depot_window.is_some()
+}
+
+/// Why a round cannot be driven: which door was shut, and when the vehicle got there.
+///
+/// A bare "no" would do for the three passes, which only ever ask whether to keep a move. It is the
+/// refusals that need this: a planner that reports the wrong constraint sends the caller to change
+/// a number that was never the problem, which is exactly what the fleet used to do when it blamed
+/// capacity for what the windows had done.
+#[derive(Debug, PartialEq)]
+enum Missed {
+    /// This stop's own door had shut by the time a vehicle could arrive.
+    Stop { stop: usize, arrived: f64 },
+    /// Every stop was served in time and the round still could not be home before the depot shut.
+    Depot { home: f64 },
+}
+
+/// When each stop on a route is served, or the door that refuses the round.
 ///
 /// This is the only place that knows what a window means, and every other pass asks it rather than
 /// reasoning about time itself: the construction asks before merging two routes, the improvement
 /// asks before keeping a reversal, and the assembly asks to put the waiting into the clock. One
-/// definition, three callers, and no way for them to disagree about whether a round can be driven.
+/// definition, four callers, and no way for them to disagree about whether a round can be driven.
 ///
-/// A fleet with no windows is feasible by construction, and this says so in its first line rather
-/// than walking the route to discover it.
-fn schedule(distances: &Distances, fleet: &Fleet, route: &[usize]) -> Option<Vec<f64>> {
-    if fleet.windows.is_empty() {
-        return Some(Vec::new());
+/// A fleet with no windows at either end is feasible by construction, and this says so in its first
+/// line rather than walking the route to discover it.
+fn schedule(distances: &Distances, fleet: &Fleet, route: &[usize]) -> Result<Vec<f64>, Missed> {
+    if !timed(fleet) {
+        return Ok(Vec::new());
     }
+    let (day_opens, day_closes) = fleet.depot_window.unwrap_or((0.0, f64::INFINITY));
     let mut served = Vec::with_capacity(route.len());
-    let mut clock = 0.0;
+    // The round starts when the yard opens rather than at the origin of the clock, and every stop
+    // behind it moves with the departure.
+    let mut clock = day_opens;
     let mut previous = 0;
     for stop in route {
         clock += distances.cost[previous][stop + 1];
-        let (opens, closes) = fleet.windows[*stop];
-        // Early is a wait, late is a refusal. A vehicle can stand still; it cannot arrive sooner.
-        clock = clock.max(opens);
-        if clock > closes {
-            return None;
+        // Asked for rather than indexed: a depot window on its own is a whole problem, where the
+        // stops are unconstrained and only the working day bounds the round.
+        if let Some((opens, closes)) = fleet.windows.get(*stop) {
+            // Early is a wait, late is a refusal. A vehicle can stand still; it cannot arrive
+            // sooner.
+            clock = clock.max(*opens);
+            if clock > *closes {
+                return Err(Missed::Stop { stop: *stop, arrived: clock });
+            }
         }
         served.push(clock);
         clock += fleet.service.get(*stop).copied().unwrap_or(0.0);
         previous = stop + 1;
     }
-    Some(served)
+    // The leg home is part of the day. Nothing before this priced it, because until a depot could
+    // shut, when a vehicle got back made no difference to whether its round was drivable.
+    let home = clock + distances.cost[previous][0];
+    match home > day_closes {
+        true => Err(Missed::Depot { home }),
+        false => Ok(served),
+    }
 }
 
 /// Assign the stops to vehicles and order each one's round.
@@ -175,22 +218,40 @@ pub fn plan(graph: &Graph, costs: &[f64], forbidden: &Turns, fleet: &Fleet) -> R
     if fleet.service.iter().any(|seconds| *seconds < 0.0 || !seconds.is_finite()) {
         return Err("a service time must be a finite, non-negative number".into());
     }
+    if let Some((opens, closes)) = fleet.depot_window
+        && !(opens.is_finite() && closes.is_finite() && opens >= 0.0 && opens <= closes)
+    {
+        return Err(format!("the depot opens at {opens} and closes at {closes}, which is not a window"));
+    }
 
     let mut points = vec![fleet.depot];
     points.extend(&fleet.stops);
     let distances = Distances::build(graph, costs, forbidden, &points)?;
 
-    // A stop the depot cannot reach before its own window shuts is not a stop that makes a plan
-    // expensive — it is one no plan contains, because the direct run is the earliest any vehicle
-    // could possibly arrive. Saying so here is the difference between a refusal and a plan that
-    // silently breaks the constraint it was given: every later pass only ever adds time.
-    if let Some(unreachable) = (0..fleet.stops.len()).find(|stop| schedule(&distances, fleet, &[*stop]).is_none()) {
-        let (opens, closes) = fleet.windows[unreachable];
-        return Err(format!(
-            "stop {unreachable} closes at {closes} and the depot cannot reach it before {:.0}, so no round serves it \
-             in time (it opens at {opens})",
-            distances.cost[0][unreachable + 1]
-        ));
+    // A stop the depot cannot reach before its own window shuts — or cannot get back from before
+    // its own gate shuts — is not a stop that makes a plan expensive. It is one no plan contains,
+    // because the round that serves it alone is the earliest and shortest any vehicle could drive.
+    // Saying so here is the difference between a refusal and a plan that silently breaks the
+    // constraint it was given: every later pass only ever adds time.
+    if let Some((stop, missed)) =
+        (0..fleet.stops.len()).find_map(|stop| schedule(&distances, fleet, &[stop]).err().map(|missed| (stop, missed)))
+    {
+        return Err(match missed {
+            Missed::Stop { arrived, .. } => {
+                let (opens, closes) = fleet.windows[stop];
+                format!(
+                    "stop {stop} closes at {closes} and the depot cannot reach it before {arrived:.0}, so no round \
+                     serves it in time (it opens at {opens})"
+                )
+            }
+            Missed::Depot { home } => {
+                let (_, closes) = fleet.depot_window.expect("only a depot window refuses a round for coming home late");
+                format!(
+                    "the depot closes at {closes} and the round that serves stop {stop} and nothing else is not home \
+                     until {home:.0}, so no round serves it within the day"
+                )
+            }
+        });
     }
 
     let mut routes = savings(&distances, fleet);
@@ -210,8 +271,8 @@ pub fn plan(graph: &Graph, costs: &[f64], forbidden: &Turns, fleet: &Fleet) -> R
                 fleet.capacity, fleet.vehicles
             ),
             false => format!(
-                "this planner could not fit these stops into {} vehicles: it built {} rounds and the time \
-                 windows leave no way to combine them further, though {unavoidable} would carry the load",
+                "this planner could not fit these stops into {} vehicles: it built {} rounds and the clock \
+                 leaves no way to combine them further, though {unavoidable} would carry the load",
                 fleet.vehicles,
                 routes.len()
             ),
@@ -272,9 +333,9 @@ fn savings(distances: &Distances, fleet: &Fleet) -> Vec<Vec<usize>> {
         // where the plain problem is O(n²). Fine for the tens of stops a van does in a day; if a
         // caller ever plans hundreds, carry each route's latest feasible start alongside its load
         // and the check becomes O(1) like the capacity one beside it.
-        if !fleet.windows.is_empty() {
+        if timed(fleet) {
             let merged: Vec<usize> = routes[from].iter().chain(&routes[to]).copied().collect();
-            if schedule(distances, fleet, &merged).is_none() {
+            if schedule(distances, fleet, &merged).is_err() {
                 continue;
             }
         }
@@ -337,7 +398,7 @@ fn consolidate(distances: &Distances, fleet: &Fleet, routes: &mut Vec<Vec<usize>
                 for position in 0..=route.len() {
                     let mut candidate = route.clone();
                     candidate.insert(position, *stop);
-                    if schedule(distances, fleet, &candidate).is_none() {
+                    if schedule(distances, fleet, &candidate).is_err() {
                         continue;
                     }
                     let added = round_cost(distances, &candidate) - before;
@@ -395,7 +456,7 @@ fn two_opt(distances: &Distances, fleet: &Fleet, route: &mut Vec<usize>) {
                     // Cheaper is not the same as drivable. Reversing a run reorders the arrivals
                     // behind it, which is precisely the move a window is most likely to refuse —
                     // so a shorter round that misses an appointment is put straight back.
-                    if schedule(distances, fleet, route).is_some() {
+                    if schedule(distances, fleet, route).is_ok() {
                         improved = true;
                     } else {
                         route[i - 1..j].reverse();
@@ -413,7 +474,9 @@ fn assemble(distances: &Distances, costs: &[f64], fleet: &Fleet, stops: Vec<usiz
     let served = schedule(distances, fleet, &stops).expect("the plan only keeps feasible routes");
     let mut edges = Vec::new();
     let mut reached_at = Vec::new();
-    let mut elapsed = 0.0;
+    // The clock starts at the gate, not at zero: a van whose depot opens at eight has not been
+    // driving since midnight, and the first street it takes is reached that much later.
+    let mut elapsed = fleet.depot_window.map_or(0.0, |(opens, _)| opens);
     let mut previous = 0;
     for (position, stop) in stops.iter().chain(std::iter::once(&usize::MAX)).enumerate() {
         // The sentinel is the leg home: every round ends where it started.
@@ -455,7 +518,7 @@ pub fn manifest(assignments: &[Assignment]) -> BTreeMap<usize, Vec<usize>> {
 /// whose parameters are mutually exclusive, which is a schema saying "this is really two things".
 pub struct FleetSolver;
 
-const KNOWN: [&str; 10] = [
+const KNOWN: [&str; 11] = [
     "channel",
     "depot",
     "stops",
@@ -466,6 +529,7 @@ const KNOWN: [&str; 10] = [
     "restriction_property",
     "windows",
     "service",
+    "depot_window",
 ];
 
 impl Solver for FleetSolver {
@@ -513,21 +577,25 @@ impl Solver for FleetSolver {
                 .collect::<Result<Vec<f64>, Rejection>>()?,
             _ => return Err(Rejection::request("demands is an array of numbers")),
         };
+        let window = |value: &Value| match value.as_array().map(|pair| (pair.len(), pair)) {
+            Some((2, pair)) => match (pair[0].as_f64(), pair[1].as_f64()) {
+                (Some(opens), Some(closes)) => Ok((opens, closes)),
+                _ => Err(Rejection::request("a window is two numbers")),
+            },
+            _ => Err(Rejection::request("a window is a [opens, closes] pair")),
+        };
         // `[[opens, closes], ...]`, in seconds from the start of the round. Absent means the plain
         // capacitated problem, where any order is as drivable as any other.
         let windows = match &request.params["windows"] {
             Value::Null => Vec::new(),
-            Value::Array(values) => values
-                .iter()
-                .map(|value| match value.as_array().map(|pair| (pair.len(), pair)) {
-                    Some((2, pair)) => match (pair[0].as_f64(), pair[1].as_f64()) {
-                        (Some(opens), Some(closes)) => Ok((opens, closes)),
-                        _ => Err(Rejection::request("a window is two numbers")),
-                    },
-                    _ => Err(Rejection::request("a window is a [opens, closes] pair")),
-                })
-                .collect::<Result<Vec<(f64, f64)>, Rejection>>()?,
+            Value::Array(values) => values.iter().map(window).collect::<Result<Vec<(f64, f64)>, Rejection>>()?,
             _ => return Err(Rejection::request("windows is an array of [opens, closes] pairs")),
+        };
+        // One pair rather than a list: the whole fleet leaves from and returns to one yard, so the
+        // day has one pair of ends. Absent means a day with none.
+        let depot_window = match &request.params["depot_window"] {
+            Value::Null => None,
+            value => Some(window(value)?),
         };
         let service = match &request.params["service"] {
             Value::Null => Vec::new(),
@@ -545,6 +613,7 @@ impl Solver for FleetSolver {
             vehicles: request.params["vehicles"].as_u64().unwrap_or(1) as usize,
             windows,
             service,
+            depot_window,
         };
 
         let channel_name = request.params["channel"].as_str().unwrap_or("vehicle");
@@ -610,6 +679,7 @@ mod tests {
             vehicles: 1,
             windows,
             service: Vec::new(),
+            depot_window: None,
         }
     }
 
@@ -649,7 +719,7 @@ mod tests {
         consolidate(&distances, &fleet, &mut routes);
 
         assert_eq!(routes.len(), 1, "one van, one round");
-        assert!(schedule(&distances, &fleet, &routes[0]).is_some(), "and it can be driven");
+        assert!(schedule(&distances, &fleet, &routes[0]).is_ok(), "and it can be driven");
         let mut served = routes[0].clone();
         served.sort();
         assert_eq!(served, vec![0, 1, 2], "with every stop still served exactly once");
@@ -696,10 +766,44 @@ mod tests {
 
         two_opt(&distances, &fleet, &mut route);
 
-        assert!(schedule(&distances, &fleet, &route).is_some(), "the pass left a round that cannot be driven");
+        assert!(schedule(&distances, &fleet, &route).is_ok(), "the pass left a round that cannot be driven");
         assert_eq!(route, vec![1, 0, 2], "the cheaper order idles at stop 0 and reaches stop 1 twenty-five late");
         // Spelled out, so the test still says what it is about if the numbers above ever move:
         // the move it declined was a real saving and a real infeasibility, not a no-op.
-        assert!(schedule(&distances, &fleet, &[0, 1, 2]).is_none());
+        assert!(schedule(&distances, &fleet, &[0, 1, 2]).is_err());
+    }
+
+    /// The leg home is priced, which is the one thing no stop window could ever have said.
+    ///
+    /// `[0, 1, 2]` on the line reaches its last stop at 30 and drives 30 more to get back. With the
+    /// gate shutting at 40 the outward half fits and the return does not, so a check that stopped
+    /// at the last stop would call this round drivable — and the van would come home to a locked
+    /// yard.
+    #[test]
+    fn a_round_that_cannot_get_home_before_the_gate_shuts_is_refused() {
+        let mut fleet = fleet_of(Vec::new());
+        fleet.depot_window = Some((0.0, 40.0));
+
+        assert!(matches!(schedule(&line(), &fleet, &[0, 1, 2]), Err(Missed::Depot { .. })), "thirty out, thirty back");
+        fleet.depot_window = Some((0.0, 60.0));
+        assert!(schedule(&line(), &fleet, &[0, 1, 2]).is_ok(), "and exactly sixty is home on time, not late");
+    }
+
+    /// The open is a floor under the departure, and everything behind it moves.
+    ///
+    /// Not the same as shifting the stop windows: stop 1 shuts at 25 and the drive there is 10, so
+    /// a van leaving at zero makes it and a van leaving at 20 does not. Nothing about the stop
+    /// changed between the two.
+    #[test]
+    fn the_gate_opening_pushes_every_arrival_back() {
+        let mut fleet = fleet_of(vec![(0.0, 100.0), (0.0, 25.0), (0.0, 100.0)]);
+        assert_eq!(schedule(&line(), &fleet, &[1]), Ok(vec![20.0]), "stop 1 is twenty out and shuts at twenty-five");
+
+        fleet.depot_window = Some((20.0, 1000.0));
+
+        assert!(
+            matches!(schedule(&line(), &fleet, &[1]), Err(Missed::Stop { stop: 1, .. })),
+            "leaving at twenty arrives at forty, and the door shut at twenty-five"
+        );
     }
 }
