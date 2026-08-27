@@ -195,3 +195,43 @@ pub fn solve_fault(container: &[u8]) -> Result<Vec<u8>, JsError> {
     trama_solver::server::Solver::solve(&trama_power::solver::PowerSolver, &request)
         .map_err(|rejection| JsError::new(&rejection.message))
 }
+
+/// Plan a fleet over a street network: which vehicle serves which stops, and in what order.
+///
+/// `stops[0]` is the depot every vehicle leaves from and returns to; the rest are what has to be
+/// served, one unit of demand each, so `capacity` is a count of stops per round. The channel
+/// carries the vehicle's own number from one, and zero before it has reached a street — which is
+/// what lets one map show several rounds at once, each painted by whose it is.
+///
+/// No time windows: there is no honest way to ask for "this stop opens at nine" with map clicks,
+/// and a fixed value invented here would be a modelling assumption the page never stated. The
+/// crate takes them; this entry point deliberately does not.
+#[wasm_bindgen]
+pub fn solve_fleet(
+    container: &[u8],
+    stops: &[u32],
+    vehicles: u32,
+    capacity: f32,
+    speed_property: Option<String>,
+    restriction_property: Option<String>,
+    t1_seconds: f32,
+) -> Result<Vec<u8>, JsError> {
+    let Some((depot, rest)) = stops.split_first() else {
+        return Err(JsError::new("a fleet needs a depot and at least one stop"));
+    };
+    let request = trama_solver::server::Request {
+        container: container.to_vec(),
+        params: serde_json::json!({
+            "depot": depot,
+            "stops": rest,
+            "vehicles": vehicles,
+            "capacity": capacity,
+            "speed_property": speed_property,
+            "restriction_property": restriction_property,
+        }),
+        t0_seconds: 0.0,
+        t1_seconds,
+    };
+    trama_solver::server::Solver::solve(&trama_routing::fleet::FleetSolver, &request)
+        .map_err(|rejection| JsError::new(&rejection.message))
+}

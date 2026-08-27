@@ -78,6 +78,11 @@
         <button class="ghost" data-example="net3.inp" disabled>Ejemplo: Net3</button>
         <button class="ghost" data-example="teruel.trama" disabled>Ejemplo: Teruel entera</button>
         <button class="ghost" data-example="oberrhein.trama" disabled>Ejemplo: red eléctrica</button>
+        <!-- A second electrical network, because the first cannot answer every electrical question:
+             mv_oberrhein declares no short-circuit power for its infeed, which is what a pandapower
+             file usually looks like, so the fault study has nothing to work from and the page does
+             not even offer it there. -->
+        <button class="ghost" data-example="cigre-mv.trama" disabled>Ejemplo: red con datos de falta</button>
         <button class="ghost" data-example="network.geojson" disabled>Ejemplo: GeoJSON</button>
       </div>
 
@@ -372,9 +377,12 @@
               ["power", "pandapower"].includes(choice)
               ? { step: 3600, window: 82800 }
               : // A property of the shape has no clock at all: one instant is the whole answer.
-                ["critical", "isolation"].includes(choice)
+                // A short circuit is the same shape of answer for a different reason — IEC 60909
+                // deliberately ignores what the network was doing, so it has no hour to be at.
+                ["critical", "isolation", "fault"].includes(choice)
                 ? { step: 60, window: 60 }
-                : { step: 60, window: choice === "routing" ? 1800 : 600 };
+                : // A round is an hour of driving; a single route is half of one.
+                  { step: 60, window: choice === "routing" ? 1800 : choice === "fleet" ? 3600 : 600 };
         makeState = (choice) => {
           const channel = channelFor(choice);
           if (channel === undefined) return null;
@@ -427,7 +435,7 @@
 
         map.on("click", (moment) => {
           const picked = document.querySelector("#engine-choice").value;
-          if (["routing", "reach"].includes(picked)) addWaypoint(moment.lngLat);
+          if (["routing", "reach", "fleet"].includes(picked)) addWaypoint(moment.lngLat);
           // Isolation needs both: where service comes from, and what is being closed.
           else if (picked === "isolation") (waypoints.length === 0 ? addWaypoint : addCut)(moment.lngLat);
           // The physical solvers take the same closures and answer with physics: close the
@@ -468,8 +476,19 @@
       function updateWaypointCount() {
         const choice = document.querySelector("#engine-choice").value;
         const row = document.querySelector("#route-row");
-        row.hidden = !["routing", "reach", "isolation", "epanet", "swmm"].includes(choice);
+        row.hidden = !["routing", "reach", "isolation", "epanet", "swmm", "fleet"].includes(choice);
         const count = document.querySelector("#waypoint-count");
+        if (choice === "fleet") {
+          // Two jobs again, like isolation: the first click is the depot and the rest are what
+          // has to be served, so the row says which one is next rather than counting them alike.
+          count.textContent =
+            waypoints.length === 0
+              ? "pulsa donde está el depósito"
+              : waypoints.length === 1
+                ? "ahora pulsa las paradas"
+                : `desde el depósito, ${waypoints.length - 1} ${waypoints.length === 2 ? "parada" : "paradas"}`;
+          return;
+        }
         if (["epanet", "swmm"].includes(choice)) {
           // Optional on purpose: zero closures simulates the network as it stands.
           count.textContent =
@@ -798,6 +817,14 @@
           offsite: true,
         },
         {
+          value: "fault",
+          label: "electricidad · corriente de cortocircuito",
+          channel: "fault_current",
+          paints: "fault_current",
+          needs: "una red eléctrica que declare el nivel de falta de su red externa",
+          does: "calcula la corriente que vería un cortocircuito en cada nudo, por la norma IEC 60909, caso máximo. Es el número con el que se dimensiona un interruptor. No depende de lo que la red esté haciendo — la norma ignora la demanda a propósito — así que no tiene curva ni eje de tiempo: un instante es toda la respuesta. Necesita que el fichero diga cuánta potencia de falta entrega la red de la que cuelga, un dato que un flujo de carga nunca lee y que muchos ficheros no traen.",
+        },
+        {
           value: "routing",
           label: "ruta más rápida",
           channel: "on_route",
@@ -812,6 +839,14 @@
           paints: "reach",
           needs: "una red con velocidades por tramo",
           does: "propaga desde el punto que elijas respetando los sentidos únicos y los giros prohibidos, igual que la ruta, y el reloj de abajo es el presupuesto: arrastra para ver hasta dónde se llega en cada minuto.",
+        },
+        {
+          value: "fleet",
+          label: "reparto · varias furgonetas",
+          channel: "vehicle",
+          paints: "vehicle",
+          needs: "una red de calles, un depósito y al menos una parada",
+          does: "reparte las paradas entre tres furgonetas que salen del primer punto que pulses y vuelven a él, respetando sentidos y giros prohibidos, y pinta cada ronda del color de su vehículo. Pulsa primero el depósito y luego las paradas. Sin ventanas horarias: no hay forma honesta de pedir «esta parada abre a las nueve» a base de clics, y un valor fijo inventado aquí sería una suposición que la página no dice.",
         },
         {
           value: "isolation",
@@ -998,7 +1033,8 @@
           show([["error", '<span class="error">pulsa un punto de servicio y al menos un tramo que cortar</span>']]);
           return;
         }
-        const needed = { routing: 2, reach: 1 }[choiceNow] ?? 0;
+        // A fleet needs two clicks with different jobs: the depot and one stop for it to serve.
+        const needed = { routing: 2, reach: 1, fleet: 2 }[choiceNow] ?? 0;
         if (waypoints.length < needed) {
           const what = needed === 1 ? "un punto" : `al menos ${needed} puntos`;
           show([["error", `<span class="error">elige ${what} sobre la red</span>`]]);
@@ -1021,6 +1057,23 @@
             ? wasm.solve_power(container, Float32Array.from(DEMAND_CURVE), Number(scrub.max))
             : choice === "pandapower"
             ? await solveOverHttp(Number(scrub.max))
+            : choice === "fault"
+            // No window and no demand curve: IEC 60909's maximum case is one number per bus,
+            // and the file's own fault level is the only thing it reads that a load flow does not.
+            ? wasm.solve_fault(container)
+            : choice === "fleet"
+            // Three vans, and a capacity that is a count of stops rather than a weight, so the
+            // rounds come out roughly even instead of one van taking everything. The same two
+            // columns the route reads: a van turns like any other vehicle.
+            ? wasm.solve_fleet(
+                container,
+                Uint32Array.from(waypoints),
+                3,
+                Math.ceil((waypoints.length - 1) / 3),
+                "roads:speed_ms",
+                "roads:no_turn",
+                Number(scrub.max),
+              )
             : choice === "critical"
               ? wasm.solve_critical(container, Number(scrub.max))
               : choice === "isolation"

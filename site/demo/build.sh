@@ -64,6 +64,9 @@ cp "$root/fixtures/teruel.trama" "$here/examples/teruel.trama"
 # URL for it to fetch. Dropping a pandapower .json still compiles here — it just cannot be solved
 # from the page afterwards, which the page says.
 cp "$root/fixtures/oberrhein.trama" "$here/examples/oberrhein.trama"
+# And CIGRE's medium-voltage benchmark, which is the one that carries the fault level the short
+# circuit needs. Two electrical examples because one of them cannot answer one of the questions.
+cp "$root/fixtures/cigre-mv.trama" "$here/examples/cigre-mv.trama"
 
 echo "service worker"
 # The precache list is generated because it cannot be written by hand: whether the EPANET module
