@@ -218,7 +218,7 @@
        * filesystem: the container goes in as a file, the deltas come out as one. Nothing here
        * is a shim around that shape — it is the shape the toolkits already had.
        */
-      async function solveWithWasi(binary, container, seconds, closed = []) {
+      async function solveWithWasi(binary, container, seconds, closed = [], fire = []) {
         const { WASI, File, OpenFile, PreopenDirectory, ConsoleStdout } = await import("./vendor/wasi/index.js");
         const output = new File(new Uint8Array());
         const messages = [];
@@ -231,7 +231,16 @@
           ["tmp", new Directory(new Map())],
         ]));
         const wasi = new WASI(
-          [binary, "/network.trama", "/deltas.bin", String(seconds), ...(closed.length > 0 ? [closed.join(",")] : [])],
+          // Both lists are positional, so asking for hydrants without closing anything still has
+          // to fill the slot before them — an empty string, which the binary parses to no ids.
+          [
+            binary,
+            "/network.trama",
+            "/deltas.bin",
+            String(seconds),
+            ...(closed.length > 0 || fire.length > 0 ? [closed.join(",")] : []),
+            ...(fire.length > 0 ? [fire.join(",")] : []),
+          ],
           [],
           [
             new OpenFile(new File(new Uint8Array())),
@@ -379,7 +388,9 @@
               : // A property of the shape has no clock at all: one instant is the whole answer.
                 // A short circuit is the same shape of answer for a different reason — IEC 60909
                 // deliberately ignores what the network was doing, so it has no hour to be at.
-                ["critical", "isolation", "fault"].includes(choice)
+                // A hydrant's rating is a search over simulations, not a course of one: the answer
+                // is a single number per node, whatever the day does around it.
+                ["critical", "isolation", "fault", "fire"].includes(choice)
                 ? { step: 60, window: 60 }
                 : // A round is an hour of driving; a single route is half of one.
                   { step: 60, window: choice === "routing" ? 1800 : choice === "fleet" ? 3600 : 600 };
@@ -435,7 +446,9 @@
 
         map.on("click", (moment) => {
           const picked = document.querySelector("#engine-choice").value;
-          if (["routing", "reach", "fleet"].includes(picked)) addWaypoint(moment.lngLat);
+          // A hydrant is a node, so the fire study picks points the way a route does — the same
+          // gesture EPANET uses for edges, aimed one entity kind over.
+          if (["routing", "reach", "fleet", "fire"].includes(picked)) addWaypoint(moment.lngLat);
           // Isolation needs both: where service comes from, and what is being closed.
           else if (picked === "isolation") (waypoints.length === 0 ? addWaypoint : addCut)(moment.lngLat);
           // The physical solvers take the same closures and answer with physics: close the
@@ -476,8 +489,22 @@
       function updateWaypointCount() {
         const choice = document.querySelector("#engine-choice").value;
         const row = document.querySelector("#route-row");
-        row.hidden = !["routing", "reach", "isolation", "epanet", "swmm", "fleet"].includes(choice);
+        row.hidden = !["routing", "reach", "isolation", "epanet", "swmm", "fleet", "fire"].includes(choice);
         const count = document.querySelector("#waypoint-count");
+        if (choice === "fire") {
+          // Closures carry over from the EPANET study, so the row says what is being rated and
+          // under what — the two halves of the question a real fire-flow study asks.
+          const shut = cutEdges.length === 0 ? "" : `, con ${cutEdges.length} ${cutEdges.length === 1 ? "tramo cerrado" : "tramos cerrados"}`;
+          // Counted unique, because that is what gets rated: two clicks land on one junction
+          // easily, and a row that said three while the solver answered twice would be lying
+          // about the work it is about to do.
+          const hydrants = new Set(waypoints).size;
+          count.textContent =
+            hydrants === 0
+              ? "pulsa los nudos donde valorar un hidrante"
+              : `${hydrants} ${hydrants === 1 ? "hidrante" : "hidrantes"}${shut}`;
+          return;
+        }
         if (choice === "fleet") {
           // Two jobs again, like isolation: the first click is the depot and the rest are what
           // has to be served, so the row says which one is next rather than counting them alike.
@@ -790,6 +817,14 @@
           does: "resuelve la hidráulica con el toolkit de EPANET 2.3, 24 horas en pasos de una hora. Tras simular, elige la capa: caudal, presión, edad del agua, cloro o el % que llega desde cada fuente. Pulsa tramos para cerrar válvulas y resimular el escenario.",
         },
         {
+          value: "fire",
+          label: "EPANET · caudal de incendio",
+          channel: "fire_flow",
+          paints: "fire_flow",
+          needs: "una red importada de un .inp de EPANET y al menos un hidrante elegido",
+          does: "pulsa los nudos donde habría un hidrante: para cada uno busca cuánto caudal podría dar mientras la red sigue manteniendo 20 psi. No es la lectura de una simulación sino una búsqueda sobre muchas, porque lo que un hidrante puede dar no es una propiedad de su tubería sino de la red entera ese día. Es el número que bomberos y aseguradoras piden por escrito. Puedes cerrar tramos antes: «cuánto da este hidrante con esa válvula cerrada» es lo que pregunta un estudio de verdad.",
+        },
+        {
           value: "swmm",
           label: "SWMM · saneamiento y pluviales",
           channel: "depth",
@@ -1034,7 +1069,7 @@
           return;
         }
         // A fleet needs two clicks with different jobs: the depot and one stop for it to serve.
-        const needed = { routing: 2, reach: 1, fleet: 2 }[choiceNow] ?? 0;
+        const needed = { routing: 2, reach: 1, fleet: 2, fire: 1 }[choiceNow] ?? 0;
         if (waypoints.length < needed) {
           const what = needed === 1 ? "un punto" : `al menos ${needed} puntos`;
           show([["error", `<span class="error">elige ${what} sobre la red</span>`]]);
@@ -1049,8 +1084,17 @@
           // Closures travel as the stable ids the deltas use, read from the graph the page
           // already holds — indices are this page's private address space, ids are the file's.
           const closedIds = cutEdges.map((index) => String(routableGraph.edges[index].id));
+          // Hydrants travel as the same stable ids the closures do, read from the graph the page
+          // holds: indices are this page's private address space, ids are the file's.
+          // Deduplicated: two clicks land on one junction easily, and rating a hydrant is a
+          // search over simulations — paying for it twice buys the same number.
+          const fireIds = [...new Set(waypoints.map((index) => String(routableGraph.nodes[index].id)))];
           const deltas = choice === "epanet"
             ? await solveWithWasi("trama-epanet-wasi", container, Number(scrub.max), closedIds)
+            : choice === "fire"
+            // One instant of hydraulics and the rating that rides on it: the search is the answer,
+            // and a day of it would be twenty-four times the work for the same number.
+            ? await solveWithWasi("trama-epanet-wasi", container, 0, closedIds, fireIds)
             : choice === "swmm"
             ? await solveWithWasi("trama-swmm-wasi", container, Number(scrub.max), closedIds)
             : choice === "power"
