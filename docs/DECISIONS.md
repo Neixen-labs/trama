@@ -895,3 +895,17 @@ Scaling the bus coordinates by the ratio the network declares — 0.5019 km per 
 **Time windows are deliberately not exposed.** The crate takes them, including the depot window from #204. There is no honest way to ask "this stop opens at nine" with map clicks, and a fixed value invented inside the page would be a modelling assumption stated nowhere — so the wasm entry point does not take them and the page says why. It is the one thing here that is missing on purpose.
 
 **Verified in a browser, not by reading.** Playwright with a software GL backend, because the first attempt through a background tab showed a black map and nearly became a bug report: a hidden tab gets no `requestAnimationFrame`, so MapLibre never finishes loading its style and never mounts the layer. The page was fine; the instrument was not. Teruel draws, a fleet of three vans plans and paints 6,283 deltas over its old town, the fault study writes 15 and ramps to 26 kA, and the plain route still writes 2,263.
+
+## 2026-08-27 — The fire flow reaches the page, through one more argument
+
+**Decision:** `trama-epanet-wasi` takes a fifth argument — the nodes to rate, as stable entity ids — and the playground offers the fire-flow study over it.
+
+**The calculation existed everywhere except where anyone would meet it.** `fire_flow` has been in the crate since #180 and the importer declares the channel on every `.inp` it reads; the HTTP solver takes a `fire_nodes` parameter and the manifest documents it. The WASI binary took `<container> <deltas> [t1] [closed]` and had no slot for hydrants, so the browser had no way to ask. One argument closed the gap; no new calculation was written.
+
+**It is the same binary, and that is checked rather than assumed.** Rating two junctions of Net3 from the page gives 1,743 and 16,920 gpm; running the native binary over the same container with the same two ids gives 1,742.5 and 16,920.0. The rounding is the colour ramp's, not the solver's. Same code, two runtimes, one answer — which is the solver contract's whole claim, tested here rather than asserted.
+
+**Two clicks land on one junction easily.** The page deduplicates the hydrant list before sending it, and the row counts unique nodes rather than clicks: rating a hydrant is a search over simulations, not a reading of one, so paying twice buys the same number. It showed up as 510 deltas where the native run wrote 509 — a difference of exactly one duplicated rating.
+
+**A known limit, stated rather than hidden:** the map paints each rated node as the gradient into its neighbours, and the ramp gives the range, but the page does not list a number per hydrant. For the one answer a fire department asks for in writing, a reader may well want the figure and not the colour. It is left for whoever finds the omission louder than this note.
+
+**The local build silently omits EPANET without a WASI SDK.** `site/demo/build.sh` says so on stdout and carries on, which is right for a site build but means a developer can test a playground where the hydraulic solver is simply absent rather than broken. Verifying this change needed the SDK — wasi-sdk-33, the version `deploy-pages.yml` pins — and that is worth knowing before concluding anything about EPANET from a local page.
